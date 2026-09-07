@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Tyrone Dashboard Orchestrator - Rocky Linux Deployment Script
+# Tyrone Dashboard Orchestrator - Universal Deployment Script
+# Supports: Ubuntu, Debian, Rocky Linux, AlmaLinux, RHEL, CentOS
 # Automated Installation of System Dependencies, Node.js, Python, Caddy & Services
 # ==============================================================================
 
@@ -13,7 +14,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 echo -e "${BLUE}====================================================${NC}"
-echo -e "${BLUE}   Tyrone Dashboard - Rocky Linux Deployment Setup ${NC}"
+echo -e "${BLUE}   Tyrone Dashboard - Universal Deployment Setup    ${NC}"
 echo -e "${BLUE}====================================================${NC}"
 
 # 1. Root Privilege Check
@@ -28,6 +29,19 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 echo -e "${GREEN}[1/8] Working Directory:${NC} $PROJECT_DIR"
 
+# Detect OS Package Manager
+if command -v apt-get &> /dev/null; then
+    PKG_MGR="apt"
+elif command -v dnf &> /dev/null; then
+    PKG_MGR="dnf"
+elif command -v yum &> /dev/null; then
+    PKG_MGR="yum"
+else
+    echo -e "${RED}[ERROR] Unsupported distribution. Package manager (apt/dnf/yum) not found.${NC}"
+    exit 1
+fi
+echo -e "${GREEN}      Detected Package Manager:${NC} $PKG_MGR"
+
 # 2. Detect Server IP Address
 SERVER_IP=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || hostname -I | awk '{print $1}')
 if [ -z "$SERVER_IP" ]; then
@@ -36,30 +50,48 @@ fi
 echo -e "${GREEN}[2/8] Detected Server IP:${NC} $SERVER_IP"
 
 # 3. Install Core System Tools & Build Dependencies
-echo -e "${GREEN}[3/8] Installing System Dependencies via DNF...${NC}"
-dnf install -y epel-release dnf-plugins-core
-dnf install -y gcc gcc-c++ make sqlite-devel python3 python3-pip python3-devel git curl
+echo -e "${GREEN}[3/8] Installing System Build Dependencies...${NC}"
+if [ "$PKG_MGR" = "apt" ]; then
+    apt-get update -y
+    apt-get install -y build-essential libsqlite3-dev python3 python3-pip python3-dev git curl gpg
+else
+    $PKG_MGR install -y epel-release dnf-plugins-core || true
+    $PKG_MGR install -y gcc gcc-c++ make sqlite-devel python3 python3-pip python3-devel git curl
+fi
 
 # 4. Install Node.js 20 (LTS)
 echo -e "${GREEN}[4/8] Setting up Node.js 20 LTS...${NC}"
 if ! command -v node &> /dev/null || [ $(node -v | cut -d'.' -f1 | tr -d 'v') -lt 18 ]; then
-    dnf module reset nodejs -y 2>/dev/null || true
-    curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
-    dnf install -y nodejs
+    if [ "$PKG_MGR" = "apt" ]; then
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt-get install -y nodejs
+    else
+        dnf module reset nodejs -y 2>/dev/null || true
+        curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+        $PKG_MGR install -y nodejs
+    fi
 fi
 echo -e "      Node Version: $(node -v)"
 echo -e "      NPM Version:  $(npm -v)"
 
 # 5. Install Python Async Dependencies for Redfish Engine
 echo -e "${GREEN}[5/8] Installing Python Async Backend Dependencies...${NC}"
-pip3 install --upgrade pip --quiet
-pip3 install aiohttp urllib3 fastapi uvicorn pydantic --quiet
+pip3 install --upgrade pip --quiet --break-system-packages 2>/dev/null || pip3 install --upgrade pip --quiet
+pip3 install aiohttp urllib3 fastapi uvicorn pydantic --quiet --break-system-packages 2>/dev/null || pip3 install aiohttp urllib3 fastapi uvicorn pydantic --quiet
 
 # 6. Install & Configure Caddy Reverse Proxy
 echo -e "${GREEN}[6/8] Installing Caddy Web Server...${NC}"
 if ! command -v caddy &> /dev/null; then
-    dnf copr enable -y @caddy/caddy || true
-    dnf install -y caddy
+    if [ "$PKG_MGR" = "apt" ]; then
+        apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+        apt-get update -y
+        apt-get install -y caddy
+    else
+        dnf copr enable -y @caddy/caddy || true
+        $PKG_MGR install -y caddy
+    fi
 fi
 
 # Copy project Caddyfile to /etc/caddy/Caddyfile
@@ -96,14 +128,22 @@ fi
 npm install
 npm run build
 
-# Configure Firewalld if active
-if systemctl is-active --quiet firewalld; then
+# Configure Firewall (firewalld or ufw)
+if systemctl is-active --quiet firewalld 2>/dev/null; then
     echo -e "${YELLOW}Configuring firewalld rules for ports 80, 8080, 3000, 8000...${NC}"
     firewall-cmd --permanent --add-port=80/tcp || true
     firewall-cmd --permanent --add-port=8080/tcp || true
     firewall-cmd --permanent --add-port=3000/tcp || true
     firewall-cmd --permanent --add-port=8000/tcp || true
     firewall-cmd --reload || true
+fi
+
+if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
+    echo -e "${YELLOW}Configuring ufw rules for ports 80, 8080, 3000, 8000...${NC}"
+    ufw allow 80/tcp || true
+    ufw allow 8080/tcp || true
+    ufw allow 3000/tcp || true
+    ufw allow 8000/tcp || true
 fi
 
 # 8. Setup & Start Systemd Services
@@ -148,4 +188,3 @@ echo -e " Check status anytime with:"
 echo -e "   systemctl status tyrone-dashboard"
 echo -e "   systemctl status caddy"
 echo -e "${BLUE}====================================================${NC}"
-

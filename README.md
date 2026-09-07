@@ -53,9 +53,9 @@ Caddy will:
 
 ---
 
-## 🐧 Automated Deployment on Rocky Linux Server
+## 🐧 Automated Deployment on Linux Servers (Ubuntu & Rocky Linux)
 
-When fetching this repository on a fresh Rocky Linux server from GitHub:
+When fetching this repository on a fresh **Ubuntu** or **Rocky Linux** server from GitHub:
 
 ```bash
 git clone <your-repo-url>
@@ -64,11 +64,12 @@ sudo bash deploy.sh
 ```
 
 ### What `deploy.sh` Automatically Handles:
-- Installs DNF build tools (`gcc`, `make`, `sqlite-devel`, `python3-devel`, `git`, `curl`).
-- Installs Node.js 20 LTS & NPM.
-- Installs Python dependencies for Redfish FastAPI Engine (`aiohttp`, `fastapi`, `uvicorn`, `pydantic`, `urllib3`).
-- Installs & configures Caddy reverse-proxy.
-- Auto-detects server IP address and updates `.env` configuration.
-- Builds static production assets (`npm run build`).
-- Configures Firewalld rules for ports `80`, `8080`, `3000`, `8000`.
-- Configures and launches background `systemd` services (`tyrone-dashboard` & `caddy`).
+- **OS Auto-Detection**: Detects whether your server runs Ubuntu/Debian (`apt`) or Rocky Linux/RHEL (`dnf`/`yum`).
+- **Build Tools**: Installs C/C++ compilers, Python dev tools, SQLite header dependencies, git, and curl.
+- **Node.js 20 LTS**: Installs Node.js 20 and NPM from NodeSource.
+- **Python Async Engine**: Installs required packages for the Redfish FastAPI backend (`aiohttp`, `fastapi`, `uvicorn`, `pydantic`, `urllib3`).
+- **Caddy Web Server**: Configures official repositories and installs Caddy reverse-proxy.
+- **Auto IP Binding**: Detects the server's primary network IP and configures `.env` (`ISO_HOSTING_URL=http://<SERVER_IP>:8080`).
+- **Asset Compilation**: Runs `npm install` and compiles production static assets (`npm run build`).
+- **Firewall Rules**: Automatically updates `ufw` (Ubuntu) or `firewalld` (Rocky Linux) rules for ports `80`, `8080`, `3000`, `8000`.
+- **Systemd Integration**: Configures auto-restarting background `systemd` services (`tyrone-dashboard` & `caddy`).
