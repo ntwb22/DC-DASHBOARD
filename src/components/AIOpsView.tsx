@@ -45,7 +45,7 @@ export function AIOpsView() {
           {messages.length === 0 ? (
             <div className="text-center space-y-3">
               <h2 className="text-2xl font-normal text-slate-800 tracking-tight">
-                Hello dcmadmin!
+                Hello admin!
               </h2>
             </div>
           ) : (

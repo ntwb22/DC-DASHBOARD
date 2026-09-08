@@ -7,7 +7,7 @@ interface SettingsViewProps {
   onUpdateUsername?: (newName: string) => void;
 }
 
-export function SettingsView({ activeUsername = "dcmadmin", onUpdateUsername }: SettingsViewProps) {
+export function SettingsView({ activeUsername = "admin", onUpdateUsername }: SettingsViewProps) {
   const [activeSettingsTab, setActiveSettingsTab] = useState<
     "user_management" | "email_subscriptions" | "ai_ops"
   >("user_management");
@@ -22,11 +22,14 @@ export function SettingsView({ activeUsername = "dcmadmin", onUpdateUsername }: 
   const [users, setUsers] = useState<Array<{ id: string; username: string; password?: string; role: string; description: string; limit: string }>>(() => {
     try {
       const saved = localStorage.getItem("tyrone_console_users");
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        const filtered = parsed.filter((u: any) => u.username !== "dcmadmin");
+        if (filtered.length > 0) return filtered;
+      }
     } catch { }
     return [
-      { id: "1", username: "dcmadmin", password: "password", role: "Administrator", description: "Built-In Account", limit: "N/A" },
-      { id: "2", username: "admin", password: "admin", role: "Administrator", description: "System Administrator", limit: "N/A" }
+      { id: "1", username: "admin", password: "admin", role: "Administrator", description: "System Administrator", limit: "N/A" }
     ];
   });
 
@@ -58,8 +61,8 @@ export function SettingsView({ activeUsername = "dcmadmin", onUpdateUsername }: 
   const [userToDelete, setUserToDelete] = useState<{ id: string; username: string } | null>(null);
 
   const handleDeleteUser = (user: { id: string; username: string }) => {
-    if (user.username === "dcmadmin") {
-      alert("Built-in account 'dcmadmin' cannot be deleted.");
+    if (user.username === "admin") {
+      alert("Built-in account 'admin' cannot be deleted.");
       return;
     }
     setUserToDelete(user);

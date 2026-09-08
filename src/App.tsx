@@ -53,6 +53,10 @@ import {
   LogOut,
   HelpCircle,
   HardDrive,
+  Bell,
+  AlertOctagon,
+  CheckCircle2,
+  SlidersHorizontal,
   Heart,
   FileText,
   Lock,
@@ -297,6 +301,7 @@ export default function App() {
   const [alerts, setAlerts] = useState<HardwareLog[]>([]);
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [lastScanTime, setLastScanTime] = useState<string>("");
+  const [showErrorAlertsModal, setShowErrorAlertsModal] = useState<boolean>(false);
   const [refreshKey, setRefreshKey] = useState<number>(0);
 
   // Search filter
@@ -1020,15 +1025,13 @@ export default function App() {
 
     let isAuthenticated = false;
     if (matchedUser) {
-      const storedPass = matchedUser.password || (matchedUser.username.toLowerCase() === "dcmadmin" ? "password" : "admin");
+      const storedPass = matchedUser.password || "admin";
       isAuthenticated = pass === storedPass ||
-        (matchedUser.username.toLowerCase() === "dcmadmin" && (pass === "dcmadmin" || pass === "admin" || pass === "password" || pass === "tyrone")) ||
-        (matchedUser.username.toLowerCase() === "admin" && (pass === "admin" || pass === "dcmadmin" || pass === "password"));
+        (matchedUser.username.toLowerCase() === "admin" && (pass === "admin" || pass === "password"));
     } else {
       // Fallback for system defaults
       isAuthenticated = (
-        (user.toLowerCase() === "dcmadmin" && (pass === "dcmadmin" || pass === "admin" || pass === "password" || pass === "tyrone")) ||
-        (user.toLowerCase() === "admin" && (pass === "admin" || pass === "dcmadmin" || pass === "password")) ||
+        (user.toLowerCase() === "admin" && (pass === "admin" || pass === "password")) ||
         (user.toLowerCase() === "root" && (pass === "root" || pass === "tyrone"))
       );
     }
@@ -1176,9 +1179,20 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 text-white text-xs font-normal">
+            {/* Error Alert System Quick Header Access Button */}
+            <button
+              onClick={() => setShowErrorAlertsModal(true)}
+              className="px-2.5 py-1 bg-red-950/80 hover:bg-red-900 text-white rounded-md text-xs font-bold cursor-pointer flex items-center gap-1.5 transition-all border border-red-500/50 shadow-xs"
+              title="Open Error Alert System"
+            >
+              <Bell className="w-3.5 h-3.5 text-red-300 animate-pulse" />
+              <span>Alerts ({alerts.length})</span>
+            </button>
+            <span className="text-white/50">|</span>
+
             <div className="flex items-center gap-1.5">
               <User className="w-3.5 h-3.5 text-white/90" />
-              <span className="font-medium text-white">{loginUsername || "dcmadmin"}</span>
+              <span className="font-medium text-white">{loginUsername || "admin"}</span>
             </div>
             <span className="text-white/50">|</span>
             <button
@@ -1384,7 +1398,7 @@ export default function App() {
               {activeTab === "settings" && (
                 <motion.div key="tab-settings" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full">
                   <SettingsView
-                    activeUsername={loginUsername || localStorage.getItem("tyrone_user") || "dcmadmin"}
+                    activeUsername={loginUsername || localStorage.getItem("tyrone_user") || "admin"}
                     onUpdateUsername={(newName) => {
                       setLoginUsername(newName);
                       try {
@@ -1403,6 +1417,119 @@ export default function App() {
       {showChatbot && (
         <div className="fixed bottom-4 right-4 z-50 w-96 max-w-full shadow-2xl">
           <DashboardChatbot servers={servers} alerts={alerts} onClose={() => setShowChatbot(false)} />
+        </div>
+      )}
+
+      {/* Error Alert System Management Modal */}
+      {showErrorAlertsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs select-none">
+          <div className="bg-white border border-slate-300 rounded shadow-2xl max-w-3xl w-full overflow-hidden text-slate-800 text-xs flex flex-col max-h-[85vh]">
+            
+            {/* Header */}
+            <div className="bg-[#7a0c0c] text-white px-5 py-3 flex items-center justify-between font-sans shrink-0">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-red-300 animate-pulse" />
+                <span className="font-bold text-sm tracking-wide">Enterprise Error Alert System</span>
+              </div>
+              <button type="button" onClick={() => setShowErrorAlertsModal(false)} className="text-white/80 hover:text-white cursor-pointer p-0.5">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-5 font-sans overflow-y-auto flex-1 space-y-4">
+              <div className="flex items-center justify-between bg-slate-50 p-3 border border-slate-200 rounded">
+                <div className="space-y-0.5">
+                  <span className="text-slate-800 font-bold text-xs">Active Real-Time Hardware & Redfish Error Stream</span>
+                  <p className="text-slate-500 text-[11px]">System hardware faults, thermal warnings, and connection state logs across monitored servers.</p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      const newAlert: HardwareLog = {
+                        id: `err-alert-${Date.now()}`,
+                        type: "Thermal",
+                        message: "CRITICAL: High Temperature alert (>85°C) triggered on CPU Package 0. Emergency throttling active.",
+                        severity: "Critical",
+                        timestamp: new Date().toLocaleTimeString(),
+                        server: servers[0]?.bmcIp || "172.16.11.4"
+                      };
+                      setAlerts(prev => [newAlert, ...prev]);
+                    }}
+                    className="px-3 py-1.5 bg-red-700 hover:bg-red-800 text-white font-bold rounded text-[11px] cursor-pointer shadow-xs flex items-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Test Error Alert</span>
+                  </button>
+
+                  <button
+                    onClick={clearAlertHistory}
+                    className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded text-[11px] cursor-pointer flex items-center gap-1"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Clear Alerts</span>
+                  </button>
+                </div>
+              </div>
+
+              {alerts.length === 0 ? (
+                <div className="bg-emerald-50 border border-emerald-200 rounded p-8 text-center space-y-2">
+                  <CheckCircle2 className="w-8 h-8 text-emerald-600 mx-auto" />
+                  <h4 className="text-xs font-bold text-emerald-900">No Active System Errors or Warnings</h4>
+                  <p className="text-[11px] text-emerald-700">All monitored data center endpoints and hardware sensors are operating normally.</p>
+                </div>
+              ) : (
+                <div className="border border-slate-200 rounded overflow-hidden">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-100 text-slate-700 font-bold uppercase tracking-wider text-[10px]">
+                      <tr>
+                        <th className="p-2.5 pl-3">Severity</th>
+                        <th className="p-2.5">Category</th>
+                        <th className="p-2.5">Endpoint Server</th>
+                        <th className="p-2.5">Error Log Description</th>
+                        <th className="p-2.5 pr-3 text-right">Time</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200 font-mono text-[11px]">
+                      {alerts.map((al) => (
+                        <tr key={al.id} className="hover:bg-slate-50">
+                          <td className="p-2.5 pl-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              al.severity === "Critical"
+                                ? "bg-red-100 text-red-700 border border-red-200"
+                                : al.severity === "Warning"
+                                ? "bg-amber-100 text-amber-800 border border-amber-200"
+                                : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                            }`}>
+                              {al.severity}
+                            </span>
+                          </td>
+                          <td className="p-2.5 font-sans font-medium text-slate-800">{al.type}</td>
+                          <td className="p-2.5 text-blue-600 font-bold">{al.server}</td>
+                          <td className="p-2.5 font-sans text-slate-600">{al.message}</td>
+                          <td className="p-2.5 pr-3 text-right text-slate-400 text-[10px]">{al.timestamp}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-3 px-5 bg-slate-100 flex items-center justify-between border-t border-slate-200 shrink-0">
+              <span className="text-[11px] text-slate-500 font-mono">Total System Log Entries: {alerts.length}</span>
+              <button
+                type="button"
+                onClick={() => setShowErrorAlertsModal(false)}
+                className="px-5 py-1.5 bg-[#7a0c0c] hover:bg-[#590808] text-white font-bold rounded cursor-pointer text-xs"
+              >
+                Close
+              </button>
+            </div>
+
+          </div>
         </div>
       )}
 

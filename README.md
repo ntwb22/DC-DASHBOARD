@@ -66,7 +66,7 @@ sudo bash deploy.sh
 ### What `deploy.sh` Automatically Handles:
 - **OS Auto-Detection**: Detects whether your server runs Ubuntu/Debian (`apt`) or Rocky Linux/RHEL (`dnf`/`yum`).
 - **Build Tools**: Installs C/C++ compilers, Python dev tools, SQLite header dependencies, git, and curl.
-- **Node.js 20 LTS**: Installs Node.js 20 and NPM from NodeSource.
+- **Node.js 22 LTS**: Installs Node.js 22 and NPM from NodeSource.
 - **Python Async Engine**: Installs required packages for the Redfish FastAPI backend (`aiohttp`, `fastapi`, `uvicorn`, `pydantic`, `urllib3`).
 - **Caddy Web Server**: Configures official repositories and installs Caddy reverse-proxy.
 - **Auto IP Binding**: Detects the server's primary network IP and configures `.env` (`ISO_HOSTING_URL=http://<SERVER_IP>:8080`).

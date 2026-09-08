@@ -59,15 +59,15 @@ else
     $PKG_MGR install -y gcc gcc-c++ make sqlite-devel python3 python3-pip python3-devel git curl
 fi
 
-# 4. Install Node.js 20 (LTS)
-echo -e "${GREEN}[4/8] Setting up Node.js 20 LTS...${NC}"
+# 4. Install Node.js 22 (LTS)
+echo -e "${GREEN}[4/8] Setting up Node.js 22 LTS...${NC}"
 if ! command -v node &> /dev/null || [ $(node -v | cut -d'.' -f1 | tr -d 'v') -lt 18 ]; then
     if [ "$PKG_MGR" = "apt" ]; then
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
         apt-get install -y nodejs
     else
         dnf module reset nodejs -y 2>/dev/null || true
-        curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+        curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
         $PKG_MGR install -y nodejs
     fi
 fi

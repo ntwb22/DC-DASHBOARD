@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { X, RotateCcw } from "lucide-react";
 
 export const ALL_GADGETS = [
+  "Error Alert System",
   "Temperature",
   "Temperature Trending in a Day",
   "Power Trending in a Day",
@@ -32,6 +33,7 @@ export const ALL_GADGETS = [
 ];
 
 export const DEFAULT_ENABLED_GADGETS = [
+  "Error Alert System",
   "Summary of Hierarchy",
   "Device Health Summary",
   "Power Capacity",
