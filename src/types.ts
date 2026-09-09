@@ -79,6 +79,7 @@ export interface ConnectionConfig {
   bmcUsername?: string;
   bmcPassword?: string;
   category?: "SM" | "AS";
+  chassisUri?: string;
 }
 
 export interface FleetServer extends ConnectionConfig {

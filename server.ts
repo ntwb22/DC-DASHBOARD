@@ -819,31 +819,116 @@ async function startServer() {
     res.json(ips);
   });
 
-  app.post("/api/redfish/discover", async (req, res) => {
-    const { subnet } = req.body;
-    if (!subnet) return res.status(400).json({ error: "Subnet is required" });
-    if (relays.size === 0) return res.status(400).json({ error: "No relay agents connected" });
+  // High-Speed Concurrent Redfish Subnet Discovery Engine (SSL Bypass, TLS 1.2+, 254 Parallel IPs)
+  const runSubnetRedfishScan = async (subnetPrefix = "172.16.12", timeoutMs = 2500): Promise<any[]> => {
+    const cleanSubnet = subnetPrefix.endsWith('.') ? subnetPrefix.slice(0, -1) : subnetPrefix;
+    const discoveredMap = new Map<string, any>();
+    const ips = Array.from({ length: 254 }, (_, i) => `${cleanSubnet}.${i + 1}`);
+    const concurrencyLimit = 50;
 
-    const requestId = uuidv4();
-    const discoveryPromise = new Promise((resolve) => {
-      pendingRequests.set(requestId, resolve);
-      setTimeout(() => {
-        if (pendingRequests.has(requestId)) {
-          resolve({ error: "Discovery timeout" });
-          pendingRequests.delete(requestId);
+    const scanIp = async (ip: string) => {
+      for (const proto of ["https", "http"]) {
+        const url = `${proto}://${ip}/redfish/v1/`;
+        try {
+          const agent = proto === "https" ? sharedHttpsAgent : sharedHttpAgent;
+          const res = await axios.get(url, {
+            httpsAgent: agent,
+            httpAgent: agent,
+            timeout: timeoutMs,
+            headers: { Accept: "application/json" }
+          });
+
+          if (res.data) {
+            const data = res.data;
+            const vendor = data.Product || data.Vendor || data.Manufacturer || "Generic Redfish Device";
+            const model = data.Model || data.Product || "Redfish Server BMC";
+            const name = data.Name || `Redfish Target at ${ip}`;
+            const redfishVer = data.RedfishVersion || "1.0.0";
+
+            discoveredMap.set(ip, {
+              id: ip,
+              address: ip,
+              ip,
+              url: `${proto}://${ip}`,
+              vendor,
+              manufacturer: vendor,
+              model,
+              name,
+              product: data.Product || vendor,
+              redfishVersion: redfishVer,
+              desc: `Redfish Target found at ${ip} (${vendor})`,
+              status: "Online",
+              detectedAt: new Date().toISOString().replace("T", " ").slice(0, 19)
+            });
+            console.log(`[REDSCAN] [STILL ONLINE] Redfish Target found at ${ip} (${vendor})`);
+            break;
+          }
+        } catch (_) {
+          // Quietly skip timeouts and non-Redfish endpoints
         }
-      }, 120000); // 2 minute timeout for discovery
+      }
+    };
+
+    const queue = [...ips];
+    const workers = Array(concurrencyLimit).fill(null).map(async () => {
+      while (queue.length > 0) {
+        const ip = queue.shift();
+        if (ip) await scanIp(ip);
+      }
     });
 
-    const payload = JSON.stringify({
-      type: "discovery",
-      requestId,
-      payload: { subnet }
+    await Promise.all(workers);
+    return Array.from(discoveredMap.values());
+  };
+
+  app.post("/api/redfish/discover", async (req, res) => {
+    const { subnet = "172.16.12", timeoutMs = 2500 } = req.body;
+    console.log(`[REDSCAN API] Starting subnet scan (${subnet}.1 - .254)...`);
+    
+    // Run direct local high-speed parallel subnet scan
+    const localDiscovered = await runSubnetRedfishScan(subnet, timeoutMs);
+
+    // If relay agents are connected, also relay the scan
+    let relayDiscovered: any[] = [];
+    if (relays.size > 0) {
+      const requestId = uuidv4();
+      const discoveryPromise = new Promise<any>((resolve) => {
+        pendingRequests.set(requestId, resolve);
+        setTimeout(() => {
+          if (pendingRequests.has(requestId)) {
+            resolve({ payload: { servers: [] } });
+            pendingRequests.delete(requestId);
+          }
+        }, 10000);
+      });
+
+      const payload = JSON.stringify({
+        type: "discovery",
+        requestId,
+        payload: { subnet }
+      });
+
+      relays.forEach(ws => ws.send(payload));
+      const relayRes: any = await discoveryPromise;
+      if (relayRes?.payload?.servers) {
+        relayDiscovered = relayRes.payload.servers;
+      }
+    }
+
+    // Merge discovered servers
+    const mergedMap = new Map<string, any>();
+    [...localDiscovered, ...relayDiscovered].forEach(item => {
+      const key = item.ip || item.address || item.id;
+      if (key) mergedMap.set(key, item);
     });
 
-    relays.forEach(ws => ws.send(payload));
-    const result = await discoveryPromise;
-    res.json(result);
+    const finalServers = Array.from(mergedMap.values());
+    res.json({
+      success: true,
+      subnet,
+      count: finalServers.length,
+      servers: finalServers
+    });
   });
 
   // --- SSDP DISCOVERY ENGINE & ENDPOINTS ---
@@ -1825,10 +1910,19 @@ async function startServer() {
             }
           }
 
-          console.error(`[Redfish Proxy Error] [${status}] [${error.code || "N/A"}] ${targetUrl}:`, {
-            message,
-            details: error.response?.data,
-          });
+          const isSessionLimit =
+            String(message).includes("simultaneous sessions exceeding the limit") ||
+            error.response?.data?.error?.code === "Base.1.12.SessionLimitExceeded" ||
+            error.response?.data?.code === "Base.1.12.SessionLimitExceeded";
+
+          if (isSessionLimit) {
+            console.warn(`[Redfish Proxy Warning] SessionLimitExceeded on ${targetUrl}: Target BMC session limit reached. Client automatically falls back to Basic Auth.`);
+          } else {
+            console.error(`[Redfish Proxy Error] [${status}] [${error.code || "N/A"}] ${targetUrl}:`, {
+              message,
+              details: error.response?.data,
+            });
+          }
 
           throw {
             status,

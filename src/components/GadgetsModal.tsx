@@ -3,6 +3,7 @@ import { X, RotateCcw } from "lucide-react";
 
 export const ALL_GADGETS = [
   "Error Alert System",
+  "Network Port Monitoring",
   "Temperature",
   "Temperature Trending in a Day",
   "Power Trending in a Day",
@@ -34,12 +35,12 @@ export const ALL_GADGETS = [
 
 export const DEFAULT_ENABLED_GADGETS = [
   "Error Alert System",
+  "Network Port Monitoring",
   "Summary of Hierarchy",
   "Device Health Summary",
   "Power Capacity",
   "Temperature Trending in a Day",
   "Power Trending in a Day",
-  "Events by Severity",
   "Device Statistics"
 ];
 

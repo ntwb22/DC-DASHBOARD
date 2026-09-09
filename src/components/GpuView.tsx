@@ -346,7 +346,7 @@ export function GpuView({ servers = [] }: GpuViewProps) {
       {/* Top Navigation Tabs matching screenshot */}
       <div className="flex items-center gap-1 border-b border-slate-400 overflow-x-auto pt-1 pb-0">
         {[
-          { id: "gpu_list", label: "GPU List" }
+          { id: "gpu_list", label: "GPU Availability" }
         ].map(tab => {
           const isActive = activeSubTab === tab.id;
           return (
@@ -354,8 +354,8 @@ export function GpuView({ servers = [] }: GpuViewProps) {
               key={tab.id}
               onClick={() => setActiveSubTab(tab.id as any)}
               className={`px-5 py-2 text-xs font-bold rounded-t cursor-pointer border-t-2 border-x transition-colors ${isActive
-                  ? "bg-white text-slate-900 border-t-[#7a0c0c] border-x-slate-300 shadow-xs z-10"
-                  : "bg-[#7a0c0c] text-white/90 hover:bg-[#520000] border-transparent"
+                ? "bg-white text-slate-900 border-t-[#7a0c0c] border-x-slate-300 shadow-xs z-10"
+                : "bg-[#7a0c0c] text-white/90 hover:bg-[#520000] border-transparent"
                 }`}
             >
               {tab.label}
@@ -409,16 +409,6 @@ export function GpuView({ servers = [] }: GpuViewProps) {
               <span className="text-slate-800 font-medium text-xs">
                 Total: <strong className="font-bold">{sortedGpus.length}</strong>
               </span>
-              <button
-                onClick={() => setShowAddTaskModal(true)}
-                disabled={selectedUuids.length === 0}
-                className={`px-4 py-1.5 text-xs font-bold rounded transition-colors shadow-xs cursor-pointer ${selectedUuids.length > 0
-                    ? "bg-[#7a0c0c] hover:bg-[#520000] text-white"
-                    : "bg-[#94a3b8] text-white cursor-not-allowed opacity-90"
-                  }`}
-              >
-                Add Task
-              </button>
             </div>
           </div>
 
@@ -550,10 +540,10 @@ export function GpuView({ servers = [] }: GpuViewProps) {
                           <td className="p-2 text-center">
                             <span
                               className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase ${gpu.health === "OK"
-                                  ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
-                                  : gpu.health === "Warning"
-                                    ? "bg-amber-100 text-amber-800 border border-amber-300"
-                                    : "bg-rose-100 text-rose-800 border border-rose-300"
+                                ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                                : gpu.health === "Warning"
+                                  ? "bg-amber-100 text-amber-800 border border-amber-300"
+                                  : "bg-rose-100 text-rose-800 border border-rose-300"
                                 }`}
                             >
                               {gpu.health}

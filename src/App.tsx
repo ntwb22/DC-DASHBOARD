@@ -5,10 +5,8 @@ import { Dashboard } from "./components/Dashboard";
 import { GlobalInventory } from "./components/GlobalInventory";
 import { HierarchyView } from "./components/HierarchyView";
 import { EventsView } from "./components/EventsView";
-import { AIOpsView } from "./components/AIOpsView";
 import { ReliabilityView } from "./components/ReliabilityView";
 import { SustainabilityView } from "./components/SustainabilityView";
-import { GpuView } from "./components/GpuView";
 import { ReportsView } from "./components/ReportsView";
 import { SettingsView } from "./components/SettingsView";
 import { DashboardChatbot } from "./components/DashboardChatbot";
@@ -58,12 +56,15 @@ import {
   CheckCircle2,
   SlidersHorizontal,
   Heart,
+  HeartPulse,
+  ClipboardCheck,
+  Sparkles,
+  FileBarChart,
   FileText,
   Lock,
   Key,
   Settings,
   ClipboardList,
-  FileBarChart,
   Smartphone
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
@@ -90,6 +91,8 @@ interface ServerProfile {
   model?: string;
   vendor?: string;
   memory?: string | number;
+  category?: "SM" | "AS";
+  chassisUri?: string;
 }
 
 interface HardwareLog {
@@ -246,7 +249,7 @@ export default function App() {
 
   // Active Tab View State matching sidebar
   const [activeTab, setActiveTab] = useState<
-    "dashboard" | "hierarchy" | "global_inventory" | "sustainability" | "reliability" | "events" | "gpu" | "aiops" | "reports" | "settings" | "inventory_details"
+    "dashboard" | "hierarchy" | "global_inventory" | "sustainability" | "reliability" | "events" | "reports" | "settings" | "inventory_details"
   >("dashboard");
 
   // Sidebar Devices Submenu Expansion State
@@ -595,6 +598,11 @@ export default function App() {
     };
     window.addEventListener("fleet-updated", handleFleetUpdate);
 
+    const handleTabChange = (e: any) => {
+      if (e.detail) setActiveTab(e.detail);
+    };
+    window.addEventListener("change-tab", handleTabChange);
+
     const handleHardwareEvent = (e: any) => {
       const newLog = e.detail;
       setAlerts((prev) => {
@@ -611,6 +619,7 @@ export default function App() {
 
     return () => {
       window.removeEventListener("fleet-updated", handleFleetUpdate);
+      window.removeEventListener("change-tab", handleTabChange);
       window.removeEventListener("hardware-event", handleHardwareEvent);
     };
   }, []);
@@ -1061,10 +1070,8 @@ export default function App() {
     { id: "hierarchy", label: "Hierarchy", icon: Network },
     { id: "global_inventory", label: "Devices", icon: Smartphone },
     { id: "sustainability", label: "Sustainability", icon: Zap },
-    { id: "reliability", label: "Reliability", icon: Activity },
-    { id: "events", label: "Events", icon: ClipboardList },
-    { id: "gpu", label: "GPUs", icon: Cpu },
-    { id: "aiops", label: "AI Ops", icon: Bot },
+    { id: "reliability", label: "Reliability", icon: HeartPulse },
+    { id: "events", label: "Events", icon: ClipboardCheck },
     { id: "reports", label: "Reports", icon: FileBarChart },
     { id: "settings", label: "Settings", icon: Settings }
   ];
@@ -1149,32 +1156,32 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#dce1e7] text-slate-800 flex flex-col font-sans relative">
-      {/* Top Red Header Bar - Tyrone Data Center Manager Console */}
-      <header className="relative bg-[#680505] text-white py-3 px-4 md:px-6 border-b border-[#4d0000] sticky top-0 z-50 flex items-center justify-between shadow-md select-none">
+      {/* Top Red Header Bar - Tyrone Data Center Manager Console (Slim Version) */}
+      <header className="relative bg-[#680505] text-white py-1.5 px-3 md:px-5 border-b border-[#4d0000] sticky top-0 z-50 flex items-center justify-between shadow-md select-none">
         {/* Subtle datacenter rack background overlay */}
         <div
           className="absolute inset-0 bg-cover bg-center opacity-20 mix-blend-overlay pointer-events-none overflow-hidden"
           style={{ backgroundImage: `url('/login-bg.png')` }}
         />
 
-        <div className="relative z-10 flex items-center gap-4 md:gap-6">
+        <div className="relative z-10 flex items-center gap-3 md:gap-4">
           <img 
             src="/tyrone-logo.png" 
             alt="Tyrone Logo" 
-            className="h-12 md:h-16 max-w-[260px] object-contain shrink-0 filter brightness-0 invert" 
+            className="h-10 md:h-12 max-w-[240px] object-contain shrink-0 filter brightness-0 invert font-extrabold" 
           />
-          <span className="text-lg sm:text-xl md:text-2xl font-extrabold text-white tracking-wide leading-none">Data Center Manager Console</span>
+          <span className="text-base sm:text-lg md:text-xl font-extrabold text-white tracking-wide leading-none">Data Center Manager Console</span>
         </div>
 
-        <div className="relative z-10 flex items-center gap-4 text-xs font-sans">
-          {/* Rounded White Pill Search Box */}
+        <div className="relative z-10 flex items-center gap-3 text-xs font-sans">
+          {/* Slim Rounded White Search Box */}
           <div className="relative flex items-center">
-            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 pointer-events-none" />
+            <Search className="w-3 h-3 text-slate-500 absolute left-2.5 pointer-events-none" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 pr-3 py-1 bg-white text-slate-800 rounded-full text-xs w-44 sm:w-64 border-0 focus:outline-none focus:ring-2 focus:ring-red-400/50 shadow-inner font-medium"
+              className="pl-8 pr-2.5 py-0.5 bg-white text-slate-800 rounded-full text-xs w-40 sm:w-56 border-0 focus:outline-none focus:ring-2 focus:ring-red-400/50 shadow-inner font-medium"
             />
           </div>
 
@@ -1258,9 +1265,9 @@ export default function App() {
 
       {/* Main Container Layout with Left Navigation Sidebar */}
       <div className="flex-1 flex min-h-0 relative overflow-hidden">
-        {/* Left Sidebar Menu Panel - Tyrone Red Theme */}
+        {/* Left Sidebar Menu Panel - Red Theme matching exact reference format */}
         <aside className="w-48 sm:w-52 bg-[#680505] text-white flex flex-col shrink-0 border-r border-[#4d0000] font-semibold select-none z-20 overflow-y-auto max-h-[calc(100vh-38px)]">
-          <div className="py-1.5 space-y-0.5">
+          <div className="py-0.5 space-y-0.5">
             {sidebarTabs.map((t) => {
               const Icon = t.icon;
               const isActive = activeTab === t.id || (t.id === "global_inventory" && activeTab === "inventory_details");
@@ -1269,7 +1276,7 @@ export default function App() {
                   key={t.id}
                   onClick={() => setActiveTab(t.id as any)}
                   className={`w-full px-4 py-2.5 text-left flex items-center justify-between cursor-pointer transition-colors ${isActive
-                      ? "bg-[#e3e7eb] text-[#680505] font-bold shadow-xs"
+                      ? "bg-[#e3e8ee] text-[#680505] font-bold shadow-xs"
                       : "text-white hover:bg-[#520000]"
                     }`}
                 >
@@ -1277,7 +1284,7 @@ export default function App() {
                     <Icon className={`w-4.5 h-4.5 shrink-0 ${isActive ? "text-[#680505]" : "text-white"}`} />
                     <span className="text-sm font-bold tracking-tight">{t.label}</span>
                   </div>
-                  <ChevronsRight className={`w-4 h-4 shrink-0 ${isActive ? "text-[#680505]" : "text-white/80"}`} />
+                  <ChevronsRight className={`w-4 h-4 shrink-0 ${isActive ? "text-[#680505]" : "text-white"}`} />
                 </button>
               );
             })}
@@ -1365,11 +1372,7 @@ export default function App() {
                 </motion.div>
               )}
 
-              {activeTab === "aiops" && (
-                <motion.div key="tab-aiops" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full">
-                  <AIOpsView servers={servers} alerts={alerts} />
-                </motion.div>
-              )}
+
 
               {activeTab === "reliability" && (
                 <motion.div key="tab-reliability" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full">
@@ -1383,15 +1386,11 @@ export default function App() {
                 </motion.div>
               )}
 
-              {activeTab === "gpu" && (
-                <motion.div key="tab-gpu" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full">
-                  <GpuView servers={servers} />
-                </motion.div>
-              )}
+
 
               {activeTab === "reports" && (
-                <motion.div key="tab-reports" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full">
-                  <ReportsView servers={servers} alerts={alerts} />
+                <motion.div key="tab-reports" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full flex-1 flex flex-col">
+                  <ReportsView servers={servers} />
                 </motion.div>
               )}
 
@@ -1445,24 +1444,6 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => {
-                      const newAlert: HardwareLog = {
-                        id: `err-alert-${Date.now()}`,
-                        type: "Thermal",
-                        message: "CRITICAL: High Temperature alert (>85°C) triggered on CPU Package 0. Emergency throttling active.",
-                        severity: "Critical",
-                        timestamp: new Date().toLocaleTimeString(),
-                        server: servers[0]?.bmcIp || "172.16.11.4"
-                      };
-                      setAlerts(prev => [newAlert, ...prev]);
-                    }}
-                    className="px-3 py-1.5 bg-red-700 hover:bg-red-800 text-white font-bold rounded text-[11px] cursor-pointer shadow-xs flex items-center gap-1"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Test Error Alert</span>
-                  </button>
-
                   <button
                     onClick={clearAlertHistory}
                     className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded text-[11px] cursor-pointer flex items-center gap-1"

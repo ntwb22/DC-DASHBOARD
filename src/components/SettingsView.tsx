@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Plus, Save, Trash2, X, Pencil, Check, RefreshCw, Key } from "lucide-react";
+import { Plus, Save, Trash2, X, Pencil, Check, RefreshCw, Key, Eye, EyeOff } from "lucide-react";
 import { ConfirmModal } from "./ConfirmModal";
 
 interface SettingsViewProps {
@@ -9,7 +9,7 @@ interface SettingsViewProps {
 
 export function SettingsView({ activeUsername = "admin", onUpdateUsername }: SettingsViewProps) {
   const [activeSettingsTab, setActiveSettingsTab] = useState<
-    "user_management" | "email_subscriptions" | "ai_ops"
+    "user_management" | "email_subscriptions"
   >("user_management");
 
   const [consoleUsernameInput, setConsoleUsernameInput] = useState<string>(activeUsername);
@@ -121,8 +121,14 @@ export function SettingsView({ activeUsername = "admin", onUpdateUsername }: Set
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showOldPassword, setShowOldPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [passwordStatus, setPasswordStatus] = useState<string | null>(null);
   const [usernameStatus, setUsernameStatus] = useState<string | null>(null);
+
+  const [showUserPassword, setShowUserPassword] = useState(false);
+  const [showConfirmUserPassword, setShowConfirmUserPassword] = useState(false);
 
   const handleChangeUsername = (e: React.FormEvent) => {
     e.preventDefault();
@@ -312,8 +318,7 @@ export function SettingsView({ activeUsername = "admin", onUpdateUsername }: Set
       <div className="flex items-center gap-1 border-b border-slate-300 pb-0">
         {[
           { id: "user_management", label: "User Management" },
-          { id: "email_subscriptions", label: "Email Subscriptions" },
-          { id: "ai_ops", label: "AI Ops" }
+          { id: "email_subscriptions", label: "Email Subscriptions" }
         ].map((tab) => (
           <button
             key={tab.id}
@@ -457,37 +462,61 @@ export function SettingsView({ activeUsername = "admin", onUpdateUsername }: Set
             <form onSubmit={handleChangePassword} className="space-y-3">
               <div className="grid grid-cols-12 items-center gap-4">
                 <label className="col-span-4 text-xs font-bold text-slate-700 text-right">Old Password</label>
-                <div className="col-span-8">
+                <div className="col-span-8 relative flex items-center">
                   <input
-                    type="password"
+                    type={showOldPassword ? "text" : "password"}
                     value={oldPassword}
                     onChange={e => setOldPassword(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
+                    className="w-full px-3 py-1.5 pr-9 border border-slate-300 rounded text-xs focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowOldPassword(!showOldPassword)}
+                    className="absolute right-2 text-slate-400 hover:text-slate-600 focus:outline-none cursor-pointer"
+                    title={showOldPassword ? "Hide password" : "Show password"}
+                  >
+                    {showOldPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
 
               <div className="grid grid-cols-12 items-center gap-4">
                 <label className="col-span-4 text-xs font-bold text-slate-700 text-right">New Password</label>
-                <div className="col-span-8">
+                <div className="col-span-8 relative flex items-center">
                   <input
-                    type="password"
+                    type={showNewPassword ? "text" : "password"}
                     value={newPassword}
                     onChange={e => setNewPassword(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
+                    className="w-full px-3 py-1.5 pr-9 border border-slate-300 rounded text-xs focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPassword(!showNewPassword)}
+                    className="absolute right-2 text-slate-400 hover:text-slate-600 focus:outline-none cursor-pointer"
+                    title={showNewPassword ? "Hide password" : "Show password"}
+                  >
+                    {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
 
               <div className="grid grid-cols-12 items-center gap-4">
                 <label className="col-span-4 text-xs font-bold text-slate-700 text-right">Confirm Password</label>
-                <div className="col-span-8">
+                <div className="col-span-8 relative flex items-center">
                   <input
-                    type="password"
+                    type={showConfirmPassword ? "text" : "password"}
                     value={confirmPassword}
                     onChange={e => setConfirmPassword(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
+                    className="w-full px-3 py-1.5 pr-9 border border-slate-300 rounded text-xs focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    className="absolute right-2 text-slate-400 hover:text-slate-600 focus:outline-none cursor-pointer"
+                    title={showConfirmPassword ? "Hide password" : "Show password"}
+                  >
+                    {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
 
@@ -586,74 +615,7 @@ export function SettingsView({ activeUsername = "admin", onUpdateUsername }: Set
 
 
 
-      {/* AI OPS SUB-TAB */}
-      {activeSettingsTab === "ai_ops" && (
-        <div className="bg-white border border-slate-300 rounded shadow-xs overflow-hidden">
-          <div className="bg-[#680505] text-white px-4 py-2.5 text-xs font-bold flex items-center justify-between border-b border-[#4d0000]">
-            <span>MCP Server Configuration</span>
-            <button
-              onClick={handleSaveMcpsettings}
-              className="px-3 py-1 bg-white/10 hover:bg-white/20 text-white rounded text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
-              title="Save MCP Settings"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>Save Config</span>
-            </button>
-          </div>
-          <div className="p-6 space-y-4 max-w-2xl">
-            {mcpStatus && (
-              <div className="p-2.5 rounded text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-2">
-                <Check className="w-4 h-4 text-emerald-600" />
-                <span>{mcpStatus}</span>
-              </div>
-            )}
-            <p className="text-xs text-slate-600 font-medium leading-relaxed">
-              Enable the MCP (Model Context Protocol) server to allow AI agents to interact with TCM Data Center Manager. Generate an API key to authenticate your AI agent.
-            </p>
-            <div className="grid grid-cols-12 items-center gap-4 pt-2">
-              <label className="col-span-4 text-slate-700 font-bold text-xs text-left">Enable MCP Server</label>
-              <div className="col-span-8 flex items-center">
-                <input
-                  type="checkbox"
-                  checked={enableMcpServer}
-                  onChange={(e) => setEnableMcpServer(e.target.checked)}
-                  className="w-4 h-4 accent-[#680505] border-slate-300 rounded cursor-pointer"
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-12 items-center gap-4">
-              <label className="col-span-4 text-slate-700 font-bold text-xs text-left">API Key</label>
-              <div className="col-span-8 flex items-center gap-2">
-                <input
-                  type="text"
-                  readOnly
-                  value={mcpApiKey}
-                  placeholder="Click Generate to create API key"
-                  className="flex-1 px-3 py-2 bg-slate-50 border border-slate-300 rounded text-xs font-mono text-slate-800 focus:outline-none font-bold"
-                />
-                <button
-                  type="button"
-                  onClick={handleGenerateApiKey}
-                  className="px-4 py-2 bg-[#680505] hover:bg-[#520000] text-white text-xs font-bold rounded cursor-pointer transition-colors shadow-xs flex items-center gap-1"
-                >
-                  <Key className="w-3.5 h-3.5" />
-                  <span>Generate API Key</span>
-                </button>
-              </div>
-            </div>
 
-            <div className="pt-2">
-              <button
-                onClick={handleSaveMcpsettings}
-                className="px-5 py-2 bg-[#680505] hover:bg-[#520000] text-white font-bold rounded text-xs transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
-              >
-                <Save className="w-4 h-4" />
-                <span>Save MCP Configuration</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Add SMTP Subscription Modal */}
       {showAddSmtpModal && (
@@ -821,27 +783,43 @@ export function SettingsView({ activeUsername = "admin", onUpdateUsername }: Set
 
               <div className="grid grid-cols-12 items-center gap-4">
                 <label className="col-span-4 text-slate-700 font-bold text-xs text-left">Password</label>
-                <div className="col-span-8">
+                <div className="col-span-8 relative flex items-center">
                   <input
-                    type="password"
+                    type={showUserPassword ? "text" : "password"}
                     value={userPassword}
                     onChange={e => setUserPassword(e.target.value)}
                     placeholder="Required"
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs placeholder-slate-400 focus:outline-none focus:border-[#680505]"
+                    className="w-full px-3 py-1.5 pr-9 bg-white border border-slate-300 rounded text-xs placeholder-slate-400 focus:outline-none focus:border-[#680505]"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowUserPassword(!showUserPassword)}
+                    className="absolute right-2 text-slate-400 hover:text-slate-600 focus:outline-none cursor-pointer"
+                    title={showUserPassword ? "Hide password" : "Show password"}
+                  >
+                    {showUserPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
 
               <div className="grid grid-cols-12 items-center gap-4">
                 <label className="col-span-4 text-slate-700 font-bold text-xs text-left">Confirm Password</label>
-                <div className="col-span-8">
+                <div className="col-span-8 relative flex items-center">
                   <input
-                    type="password"
+                    type={showConfirmUserPassword ? "text" : "password"}
                     value={confirmUserPassword}
                     onChange={e => setConfirmUserPassword(e.target.value)}
                     placeholder="Required"
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs placeholder-slate-400 focus:outline-none focus:border-[#680505]"
+                    className="w-full px-3 py-1.5 pr-9 bg-white border border-slate-300 rounded text-xs placeholder-slate-400 focus:outline-none focus:border-[#680505]"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmUserPassword(!showConfirmUserPassword)}
+                    className="absolute right-2 text-slate-400 hover:text-slate-600 focus:outline-none cursor-pointer"
+                    title={showConfirmUserPassword ? "Hide password" : "Show password"}
+                  >
+                    {showConfirmUserPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
             </div>

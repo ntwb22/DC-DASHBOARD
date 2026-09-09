@@ -34,6 +34,8 @@ interface ServerProfile {
   weight?: string;
   size?: string;
   deratedPowerW?: number | string;
+  category?: "SM" | "AS";
+  chassisUri?: string;
 }
 
 interface GlobalInventoryProps {
@@ -135,7 +137,9 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
           const redfish = new RedfishService({
             url: ip.startsWith("http") ? ip : `https://${ip}`,
             username: (s.bmcUsername && s.bmcUsername.trim()) ? s.bmcUsername.trim() : "admin",
-            password: (s.bmcPassword && s.bmcPassword.trim()) ? s.bmcPassword.trim() : "netweb@123"
+            password: (s.bmcPassword && s.bmcPassword.trim()) ? s.bmcPassword.trim() : "netweb@123",
+            category: s.category,
+            chassisUri: s.chassisUri
           });
 
           const sysUri = await redfish.resolveSystemId();
@@ -144,7 +148,9 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
           let serial = sysDetails?.SerialNumber || sysDetails?.SKU || sysDetails?.Id;
           if (!serial || serial === "N/A" || serial === "0000000000" || serial === "NA") {
             try {
-              const chassis = await redfish.proxyRequest("/redfish/v1/Chassis/1")
+              const chassisUri = await redfish.resolveChassisId();
+              const chassis = await redfish.proxyRequest(chassisUri)
+                .catch(() => redfish.proxyRequest("/redfish/v1/Chassis/1"))
                 .catch(() => redfish.proxyRequest("/redfish/v1/Chassis/Self"))
                 .catch(() => redfish.proxyRequest("/redfish/v1/Chassis/System.Embedded.1"));
               if (chassis?.SerialNumber && chassis.SerialNumber !== "N/A" && chassis.SerialNumber !== "0000000000") {
@@ -314,23 +320,63 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
     setShowDiscoveryModal(true);
   };
 
-  const handleAddDiscoveryTaskSubmit = () => {
-    const taskName = `DISC-${discProtocol}-${discFirstAddr.split('.').pop() || '1'}`;
+  const handleAddDiscoveryTaskSubmit = async () => {
+    const parts = discFirstAddr.split('.');
+    const subnetPrefix = parts.length >= 3 ? `${parts[0]}.${parts[1]}.${parts[2]}` : "172.16.12";
+    const taskId = Date.now().toString();
+    const taskName = `DISC-${discProtocol}-${subnetPrefix}.1-.254`;
+
     const newTask = {
-      id: Date.now().toString(),
+      id: taskId,
       name: taskName,
       protocol: discProtocol,
-      range: `${discFirstAddr} - ${discLastAddr}`,
+      range: `${subnetPrefix}.1 - ${subnetPrefix}.254`,
       vendor: discVendor,
-      status: "Completed (7 devices found)"
+      status: "Scanning subnet (1..254) in progress..."
     };
     setDiscoveryTasks(prev => [newTask, ...prev]);
-
-    // Close the modal cleanly without triggering manual add modal
     setShowDiscoveryModal(false);
-    
-    // Switch view to discovery tab so user sees the newly added task
     setActiveTab("discovery");
+
+    try {
+      const redfishService = new RedfishService();
+      const res: any = await redfishService.discoverServers(subnetPrefix);
+      const serverList = res?.servers || (Array.isArray(res) ? res : []);
+      const count = serverList.length;
+      setDiscoveryTasks(prev => prev.map(t => t.id === taskId ? {
+        ...t,
+        status: `Completed (${count} Redfish target${count === 1 ? '' : 's'} found)`
+      } : t));
+
+      if (serverList.length > 0) {
+        setExtraDiscoveredSsdp(prev => {
+          const combined = [...prev];
+          serverList.forEach((s: any) => {
+            const ip = s.ip || s.address || s.id;
+            if (ip && !combined.some(existing => existing.address === ip || existing.id === ip)) {
+              combined.push({
+                id: ip,
+                address: ip,
+                url: s.url || `https://${ip}/redfish/v1/`,
+                manufacturer: s.vendor || s.manufacturer || "Generic Redfish Device",
+                model: s.product || s.model || "Redfish BMC Target",
+                desc: `Redfish Target found at ${ip} (${s.vendor || 'Generic Redfish Device'})`,
+                serial: `SN-${ip.replace(/\./g, '')}`,
+                udn: `uuid:tyrone-${ip.replace(/\./g, '-')}`,
+                st: "urn:dmtf-org:service:redfish-rest:1"
+              });
+            }
+          });
+          return combined;
+        });
+      }
+    } catch (e: any) {
+      console.warn("Subnet discovery scan failed:", e.message);
+      setDiscoveryTasks(prev => prev.map(t => t.id === taskId ? {
+        ...t,
+        status: `Completed (Scan finished: ${e.message})`
+      } : t));
+    }
   };
 
   const handleSaveColumns = (cols: string[]) => {
@@ -483,9 +529,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
       {/* Top Sub-Tabs Bar */}
       <div className="flex items-center gap-1 mb-2 overflow-x-auto shrink-0 border-b border-slate-300 pb-0.5">
         {[
-          { id: "all", label: "All Devices" },
-          { id: "discovery", label: "Discovery and Import" },
-          { id: "ssdp", label: "Devices Detected by SSDP" }
+          { id: "all", label: "All Devices" }
         ].map((t) => (
           <button
             key={t.id}
@@ -767,316 +811,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
             </table>
           </div>
         </div>
-      ) : activeTab === "discovery" ? (
-        /* Discovery and Import Sub-View (matching Image 2) */
-        <div className="flex-1 flex flex-col min-h-0 bg-white border border-slate-300 rounded shadow-sm overflow-hidden">
-          <div className="bg-[#7a0c0c] text-white px-4 py-2 font-bold text-xs flex items-center justify-between">
-            <span>Discovery and Import</span>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowDiscoveryModal(true)}
-                className="px-4 py-1 bg-[#520000] hover:bg-[#3a0000] text-white font-bold rounded text-xs transition-colors cursor-pointer"
-              >
-                Add Discovery Task
-              </button>
-              <button
-                onClick={() => setShowDiscoveryModal(true)}
-                className="px-4 py-1 bg-[#520000] hover:bg-[#3a0000] text-white font-bold rounded text-xs transition-colors cursor-pointer"
-              >
-                Add Import Task
-              </button>
-            </div>
-          </div>
-
-          <div className="p-4 flex-1 overflow-auto space-y-4">
-            <div className="border border-slate-300 rounded p-4 bg-slate-50 text-slate-700 text-xs">
-              <p className="font-bold text-slate-800 mb-1">Active Discovery & Import Tasks</p>
-              <p>Configure network IP ranges or upload device CSV payloads to discover IPMI, Redfish, or SNMP target BMC nodes.</p>
-            </div>
-            
-            <div className="border border-slate-300 rounded overflow-hidden">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead className="bg-slate-100 border-b border-slate-300 font-bold text-slate-700">
-                  <tr>
-                    <th className="p-2.5 border-r border-slate-300">Task Name</th>
-                    <th className="p-2.5 border-r border-slate-300">Protocol</th>
-                    <th className="p-2.5 border-r border-slate-300">IP Range</th>
-                    <th className="p-2.5 border-r border-slate-300">Vendor</th>
-                    <th className="p-2.5 border-r border-slate-300">Status</th>
-                    <th className="p-2.5">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {discoveryTasks.map((task) => (
-                    <tr key={task.id} className="hover:bg-slate-50">
-                      <td className="p-2.5 border-r border-slate-200 font-bold">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedTaskForDevices({
-                            id: task.id,
-                            name: task.name,
-                            range: task.range,
-                            vendor: task.vendor,
-                            count: 22
-                          })}
-                          className="text-[#008080] hover:text-red-800 font-bold hover:underline cursor-pointer border-none bg-transparent p-0 text-left"
-                          title="Click to view all discovered devices"
-                        >
-                          {task.name}
-                        </button>
-                      </td>
-                      <td className="p-2.5 border-r border-slate-200 font-mono">{task.protocol}</td>
-                      <td className="p-2.5 border-r border-slate-200 font-mono">{task.range}</td>
-                      <td className="p-2.5 border-r border-slate-200">{task.vendor}</td>
-                      <td className="p-2.5 border-r border-slate-200">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedTaskForDevices({
-                            id: task.id,
-                            name: task.name,
-                            range: task.range,
-                            vendor: task.vendor,
-                            count: 22
-                          })}
-                          className="text-emerald-700 hover:text-emerald-900 font-bold hover:underline cursor-pointer border-none bg-transparent p-0 flex items-center gap-1"
-                        >
-                          <span>{task.status}</span>
-                        </button>
-                      </td>
-                      <td className="p-2.5 flex items-center gap-3">
-                        <button
-                          onClick={() => setSelectedTaskForDevices({
-                            id: task.id,
-                            name: task.name,
-                            range: task.range,
-                            vendor: task.vendor,
-                            count: 22
-                          })}
-                          className="text-[#008080] font-bold hover:underline cursor-pointer"
-                        >
-                          View Devices
-                        </button>
-                        <button
-                          onClick={() => {
-                            setDiscoveryTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: "Completed (22 devices found)" } : t));
-                          }}
-                          className="text-red-700 font-bold hover:underline cursor-pointer"
-                        >
-                          Re-run
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      ) : activeTab === "provisioning" ? (
-        /* Provisioning Status Sub-View (matching Image 3) */
-        <div className="flex-1 flex flex-col min-h-0 bg-white border border-slate-300 rounded shadow-sm overflow-hidden">
-          <div className="bg-[#7a0c0c] text-white px-4 py-2 font-bold text-xs">
-            Provisioning Status
-          </div>
-
-          <div className="p-4 flex-1 overflow-y-auto">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              {provisioningTasks.map((card) => (
-                <div key={card.id} className="border border-slate-300 rounded p-3.5 bg-slate-50 flex flex-col justify-between space-y-2 text-[11px]">
-                  <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                    <span className="font-bold text-slate-800 text-xs">{card.title}</span>
-                    <span className={`w-5 h-5 rounded-full flex items-center justify-center font-bold text-white ${card.color.includes("emerald") ? "bg-emerald-600" : "bg-rose-600"}`}>
-                      {card.icon}
-                    </span>
-                  </div>
-
-                  <div className="space-y-1 font-medium text-slate-700">
-                    <div className="font-bold text-slate-800">{card.status}</div>
-                    <div className="grid grid-cols-2 gap-1 text-[10px]">
-                      <div>Create Time:</div><div className="font-mono">{card.createTime}</div>
-                      <div>Begin Time:</div><div className="font-mono">{card.beginTime}</div>
-                      <div>End Time:</div><div className="font-mono">{card.endTime}</div>
-                    </div>
-                    {card.memo && <div>Memo: {card.memo}</div>}
-                    <div>ISO Image URL: <span className="font-mono text-red-700 truncate block">{card.url}</span></div>
-                    <div>Reset Server: {card.reset}</div>
-                    <div><button onClick={() => alert(`Details for ${card.title}`)} className="text-red-700 hover:underline font-bold">Result</button></div>
-                  </div>
-
-                  <div className="flex items-center justify-end gap-2 border-t border-slate-200 pt-2 text-slate-500">
-                    <button title="Re-run" onClick={() => setProvisioningTasks(prev => prev.map(p => p.id === card.id ? { ...p, status: "Succeeded: 1 Failed: 0", icon: "✓", color: "text-emerald-600" } : p))} className="hover:text-red-700 font-bold">▶</button>
-                    <button title="Delete" onClick={() => setProvisioningTasks(prev => prev.filter(p => p.id !== card.id))} className="hover:text-red-700 font-bold">🗑</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      ) : activeTab === "ssdp" ? (
-        /* Devices Detected by SSDP Sub-View (matching Image 4) */
-        <div className="flex-1 flex flex-col min-h-0 bg-white border border-slate-300 rounded shadow-sm overflow-hidden">
-          {/* Header Banner */}
-          <div className="bg-[#7a0c0c] text-white px-4 py-2 font-bold text-xs flex items-center justify-between shrink-0">
-            <span>Devices Detected by SSDP</span>
-          </div>
-
-          {/* Action & Filter Toolbar matching Image 4 */}
-          <div className="p-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between flex-wrap gap-3 text-xs shrink-0">
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={ssdpSearchQuery}
-                onChange={(e) => setSsdpSearchQuery(e.target.value)}
-                placeholder="Search Address / Model / UDN"
-                className="w-48 px-2 py-1 bg-white border border-slate-300 rounded text-xs focus:outline-none focus:border-[#7a0c0c]"
-              />
-              <button
-                onClick={() => {}}
-                className="px-4 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs cursor-pointer"
-              >
-                Search
-              </button>
-              <button
-                onClick={() => {
-                  setSsdpSearchQuery("");
-                  setExtraDiscoveredSsdp([]);
-                  setSelectedSsdpIds([]);
-                  setIsSsdpCleared(true);
-                  try {
-                    localStorage.setItem("tyrone_ssdp_cleared", "true");
-                  } catch {}
-                  setSsdpScanMessage("SSDP detected devices section cleared.");
-                }}
-                className="px-4 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs cursor-pointer"
-              >
-                Clear
-              </button>
-              <select className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-semibold focus:outline-none cursor-pointer">
-                <option value="all">Show All</option>
-              </select>
-            </div>
-
-            <div className="flex items-center gap-3 text-xs font-medium text-slate-700">
-              <div>Detected at: <span className="font-mono font-bold text-slate-900">{ssdpDetectedAt}</span></div>
-              <div>Total Devices: <span className="font-bold text-slate-900">{ssdpDevicesList.length}</span></div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    setIsSsdpCleared(false);
-                    try { localStorage.removeItem("tyrone_ssdp_cleared"); } catch {}
-                    handleTriggerSsdpDetect();
-                  }}
-                  disabled={isSsdpDetecting}
-                  className="px-4 py-1.5 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs cursor-pointer flex items-center gap-1.5"
-                >
-                  {isSsdpDetecting ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Scanning UDP 1900...</span>
-                    </>
-                  ) : (
-                    <span>SSDP Detect</span>
-                  )}
-                </button>
-                <button
-                  onClick={handleOpenDiscoveryModalForSelected}
-                  className="px-4 py-1.5 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs cursor-pointer"
-                >
-                  Add Discovery Task
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* SSDP Scan Banner Notification */}
-          {ssdpScanMessage && (
-            <div className="bg-amber-50 border-b border-amber-200 px-4 py-1.5 text-xs text-amber-900 font-medium flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2">
-                <RefreshCw className={`w-3.5 h-3.5 text-amber-700 ${isSsdpDetecting ? "animate-spin" : ""}`} />
-                <span>{ssdpScanMessage}</span>
-              </div>
-              <button onClick={() => setSsdpScanMessage(null)} className="text-amber-600 hover:text-amber-900 font-bold">✕</button>
-            </div>
-          )}
-
-          {/* SSDP Devices Table matching Image 4 */}
-          <div className="flex-1 overflow-auto">
-            <table className="w-full text-left border-collapse text-xs">
-              <thead>
-                <tr className="bg-slate-100 border-b border-slate-300 text-slate-700 font-bold text-[11px] sticky top-0 z-10">
-                  <th className="p-2 border-r border-slate-200 w-8 text-center">
-                    <input
-                      type="checkbox"
-                      checked={ssdpDevicesList.length > 0 && selectedSsdpIds.length === ssdpDevicesList.length}
-                      onChange={() => {
-                        if (selectedSsdpIds.length === ssdpDevicesList.length) setSelectedSsdpIds([]);
-                        else setSelectedSsdpIds(ssdpDevicesList.map(d => d.id));
-                      }}
-                      className="w-3.5 h-3.5 accent-[#7a0c0c]"
-                    />
-                  </th>
-                  <th className="p-2 border-r border-slate-200">Address ↑↓</th>
-                  <th className="p-2 border-r border-slate-200">Manufacturer ↑↓</th>
-                  <th className="p-2 border-r border-slate-200">Model ↑↓</th>
-                  <th className="p-2 border-r border-slate-200">Model Description</th>
-                  <th className="p-2 border-r border-slate-200">Serial Number ↑↓</th>
-                  <th className="p-2">UDN ↑↓</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200 font-medium">
-                {ssdpDevicesList.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="p-8 text-center text-slate-400 font-bold italic text-xs">
-                      No SSDP devices detected. Click "SSDP Detect" to scan the local subnet.
-                    </td>
-                  </tr>
-                ) : (
-                  ssdpDevicesList
-                    .filter(d => d.address.includes(ssdpSearchQuery) || d.manufacturer.toLowerCase().includes(ssdpSearchQuery.toLowerCase()) || d.model.toLowerCase().includes(ssdpSearchQuery.toLowerCase()) || d.udn.toLowerCase().includes(ssdpSearchQuery.toLowerCase()))
-                    .map(dev => (
-
-                    <tr key={dev.id} className="hover:bg-slate-50">
-                      <td className="p-2 border-r border-slate-200 text-center">
-                        <input
-                          type="checkbox"
-                          checked={selectedSsdpIds.includes(dev.id)}
-                          onChange={() => {
-                            setSelectedSsdpIds(prev => prev.includes(dev.id) ? prev.filter(i => i !== dev.id) : [...prev, dev.id]);
-                          }}
-                          className="w-3.5 h-3.5 accent-[#7a0c0c]"
-                        />
-                      </td>
-                      <td className="p-2 border-r border-slate-200 font-mono font-bold text-blue-700">
-                        <a
-                          href={`https://${dev.address}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-blue-700 hover:text-blue-900 hover:underline cursor-pointer"
-                          title={`Open BMC Web Console (https://${dev.address})`}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <span>{dev.address}</span>
-                          <ExternalLink className="w-3 h-3 opacity-70" />
-                        </a>
-                      </td>
-                      <td className="p-2 border-r border-slate-200">{dev.manufacturer}</td>
-                      <td className="p-2 border-r border-slate-200 font-bold text-slate-800">{dev.model}</td>
-                      <td className="p-2 border-r border-slate-200 text-slate-600 truncate max-w-xs">{dev.desc}</td>
-                      <td className="p-2 border-r border-slate-200 font-mono text-slate-700">{dev.serial}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ) : (
-        <div className="bg-white border border-slate-300 rounded p-8 text-center space-y-2">
-          <h3 className="text-sm font-bold uppercase text-slate-800">Module Configuration</h3>
-          <p className="text-xs text-slate-500">Configure parameters for {activeTab}.</p>
-        </div>
-      )}
+      ) : null}
 
       {/* Select Columns Modal */}
       <SelectColumnsModal

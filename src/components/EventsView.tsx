@@ -83,7 +83,8 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
             username: bmcUser,
             password: bmcPass
           });
-          const logs = await service.getEventLogs("1").catch(() => []);
+          const sysId = await service.resolveSystemId().catch(() => "");
+          const logs = await service.getEventLogs(sysId).catch(() => []);
           if (Array.isArray(logs) && logs.length > 0) {
             const mapped = logs.map((l: any, idx: number) => ({
               id: l.Id || `bmc-${server.bmcIp}-${idx}`,
@@ -458,9 +459,9 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
             );
           })}
         </svg>
-        <div className="absolute flex flex-col items-center justify-center pointer-events-none">
-          <span className="text-xs font-black text-slate-800 leading-none">{total}</span>
-          <span className="text-[8px] font-semibold text-slate-400 uppercase tracking-tighter">Events</span>
+        <div className="absolute flex flex-col items-center justify-center pointer-events-none text-center leading-none">
+          <span className="text-sm font-extrabold text-slate-800 dark:text-zinc-100">{total}</span>
+          <span className="text-[8.5px] font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-tight mt-0.5">Events</span>
         </div>
       </div>
     );
@@ -482,25 +483,44 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
   };
 
   const tabs = [
-    { id: "events" as const, label: "Events & SEL Logs" },
+    { id: "events" as const, label: "Events" },
   ];
 
   return (
     <div className="flex-1 flex flex-col overflow-y-auto min-h-0 bg-[#dce1e7] p-3 font-sans w-full h-full text-xs">
-      {/* Top tabs */}
-      <div className="flex items-center gap-1 mb-3">
-        {tabs.map(t => (
+      {/* Single Line Header Bar */}
+      <div className="bg-[#7a0c0c] text-white py-2 px-4 rounded flex flex-wrap items-center justify-between gap-3 shadow-xs mb-3">
+        <div className="flex items-center gap-2 font-bold text-xs">
+          <Bell className="w-4 h-4 text-amber-300" />
+          <span className="text-sm font-extrabold uppercase tracking-wider">Events</span>
+        </div>
+
+        <div className="flex items-center gap-2">
           <button
-            key={t.id}
-            onClick={() => setActiveTab(t.id)}
-            className={`px-5 py-2 text-xs font-bold uppercase tracking-wider rounded-t transition-all cursor-pointer ${activeTab === t.id
-                ? "bg-white text-[#7a0c0c] border border-b-0 border-slate-300 shadow-xs font-extrabold"
-                : "bg-[#7a0c0c] text-white hover:bg-[#520000]"
-              }`}
+            type="button"
+            onClick={() => {
+              const nextState = !fetchFullHistory;
+              setFetchFullHistory(nextState);
+            }}
+            className={`px-3 py-1 rounded text-xs font-bold transition-all cursor-pointer border flex items-center gap-1.5 ${
+              fetchFullHistory
+                ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-600 shadow-xs"
+                : "bg-white/20 hover:bg-white/30 text-white border-white/30"
+            }`}
+            title={fetchFullHistory ? "Currently showing full log history. Click to show recent 10 logs only." : "Currently showing recent 10 logs with details. Click to view previous historical logs."}
           >
-            {t.label}
+            <Radio className="w-3.5 h-3.5" />
+            <span>{fetchFullHistory ? "Showing All Logs (Click for Recent 10)" : "Show Previous Logs"}</span>
           </button>
-        ))}
+          <button 
+            onClick={fetchLiveLogs} 
+            disabled={isRefreshingLogs}
+            className="flex items-center gap-1 text-white/90 hover:text-white cursor-pointer text-xs font-semibold bg-white/10 px-2.5 py-1 rounded hover:bg-white/20 transition-colors"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingLogs ? "animate-spin" : ""}`} />
+            <span>Refresh Live</span>
+          </button>
+        </div>
       </div>
 
       {/* ========================================================================= */}
@@ -508,189 +528,130 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
       {/* ========================================================================= */}
       {activeTab === "events" && (
         <div className="flex-1 flex flex-col min-h-0 w-full space-y-3">
-          {/* Events title bar */}
-          <div className="bg-[#7a0c0c] text-white py-2.5 text-xs font-bold tracking-wider rounded-t flex items-center justify-between px-4 shadow-xs">
-            <div className="flex items-center gap-2">
-              <Bell className="w-4 h-4 text-amber-300" />
-              <span>Real-Time Datacenter & BMC Events</span>
-            </div>
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  const nextState = !fetchFullHistory;
-                  setFetchFullHistory(nextState);
-                }}
-                className={`px-3 py-1 rounded text-xs font-bold transition-all cursor-pointer border flex items-center gap-1.5 ${
-                  fetchFullHistory
-                    ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-600 shadow-xs"
-                    : "bg-white/20 hover:bg-white/30 text-white border-white/30"
-                }`}
-                title={fetchFullHistory ? "Currently showing full log history. Click to show recent 10 logs only." : "Currently showing recent 10 logs with details. Click to view previous historical logs."}
-              >
-                <Radio className="w-3.5 h-3.5" />
-                <span>{fetchFullHistory ? "Showing All Logs (Click for Recent 10)" : "Show Previous Logs"}</span>
-              </button>
-              <button 
-                onClick={fetchLiveLogs} 
-                disabled={isRefreshingLogs}
-                className="flex items-center gap-1 text-white/90 hover:text-white cursor-pointer text-xs font-semibold bg-white/10 px-2.5 py-1 rounded hover:bg-white/20 transition-colors"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingLogs ? "animate-spin" : ""}`} />
-                <span>Refresh Live</span>
-              </button>
-            </div>
-          </div>
 
-          {/* Charts Row */}
-          <div className="bg-white border border-slate-300 rounded-b p-4 shadow-xs">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {/* Events by Severity */}
-              <div className="bg-slate-50/70 border border-slate-200/80 rounded-lg p-3 flex flex-col justify-between">
-                <h4 className="text-xs font-extrabold uppercase tracking-wider text-slate-700 mb-2 border-b border-slate-200 pb-1 flex items-center justify-between">
-                  <span>Events by Severity</span>
-                  <span className="text-[10px] font-normal text-slate-500 font-mono">{activeAlerts.length} Total</span>
-                </h4>
-                <div className="flex items-center gap-4 py-1">
-                  <DonutChart
-                    data={[
-                      { label: "Critical", value: severityCounts.Critical, color: "#ef4444" },
-                      { label: "Warning", value: severityCounts.Warning, color: "#f59e0b" },
-                      { label: "Informative", value: severityCounts.Informative, color: "#3b82f6" },
-                    ]}
-                    size={90}
-                  />
-                  <div className="text-[11px] space-y-1.5 flex-1">
-                    {[
-                      { label: "Critical", count: severityCounts.Critical, dotColor: "bg-red-500", textStyle: "text-red-700 font-bold" },
-                      { label: "Warning", count: severityCounts.Warning, dotColor: "bg-amber-500", textStyle: "text-amber-800 font-bold" },
-                      { label: "Informative", count: severityCounts.Informative, dotColor: "bg-blue-500", textStyle: "text-blue-700 font-medium" }
-                    ].map((item) => (
-                      <button
-                        key={item.label}
-                        type="button"
-                        onClick={() => {
-                          setSelectedSeverityFilter(item.label);
-                          setVisibleLimit(50);
-                        }}
-                        className={`flex items-center gap-2 hover:bg-white px-2 py-1 rounded cursor-pointer transition-all w-full text-left border border-transparent hover:border-slate-200 group ${
-                          selectedSeverityFilter === item.label ? "bg-white border-amber-300 ring-1 ring-amber-400 shadow-2xs" : "bg-transparent"
-                        }`}
-                        title={`Click to filter by ${item.label}`}
-                      >
-                        <span className={`w-2.5 h-2.5 rounded-full ${item.dotColor} group-hover:scale-110 transition-transform shrink-0`} />
-                        <span className="text-slate-600 group-hover:text-slate-900 font-semibold text-[11px]">{item.label}:</span>
-                        <span className={`ml-auto font-mono text-xs ${item.textStyle}`}>{item.count}</span>
-                      </button>
-                    ))}
-                  </div>
+          {/* Event Severity Pie Chart Card */}
+          <div className="bg-white border border-slate-300 rounded p-3 shadow-xs flex items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <DonutChart
+                data={[
+                  { label: "Critical", value: severityCounts.Critical, color: "#ef4444" },
+                  { label: "Warning", value: severityCounts.Warning, color: "#f59e0b" },
+                  { label: "Informative", value: severityCounts.Informative, color: "#3b82f6" },
+                ]}
+                size={100}
+                innerRadiusRatio={0.58}
+              />
+              <div className="space-y-1">
+                <div className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
+                  <span>Event Severity Distribution</span>
+                  <span className="text-[10px] font-mono font-normal text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                    {activeAlerts.length} Total Logs
+                  </span>
                 </div>
-              </div>
-
-              {/* Events by Category */}
-              <div className="bg-slate-50/70 border border-slate-200/80 rounded-lg p-3 flex flex-col justify-between">
-                <h4 className="text-xs font-extrabold uppercase tracking-wider text-slate-700 mb-2 border-b border-slate-200 pb-1">
-                  Events by Category
-                </h4>
-                <div className="flex items-start gap-3 py-1">
-                  <DonutChart
-                    data={Object.entries(categoryCounts).map(([cat, count]) => ({
-                      label: cat,
-                      value: Number(count) || 0,
-                      color: categoryColorMap[cat] || "#64748b"
-                    }))}
-                    size={90}
-                  />
-                  <div className="text-[10px] grid grid-cols-1 gap-1 flex-1 max-h-[110px] overflow-y-auto pr-1">
-                    {Object.entries(categoryCounts).map(([cat, count]) => {
-                      const color = categoryColorMap[cat] || "#64748b";
-                      return (
-                        <button
-                          key={cat}
-                          type="button"
-                          onClick={() => {
-                            setSearchText(cat);
-                            setVisibleLimit(50);
-                          }}
-                          className={`flex items-center gap-1.5 hover:bg-white px-1.5 py-0.5 rounded cursor-pointer transition-colors w-full text-left border border-transparent hover:border-slate-200 group ${
-                            searchText.toLowerCase() === cat.toLowerCase() ? "bg-white border-blue-300 ring-1 ring-blue-400" : "bg-transparent"
-                          }`}
-                          title={`Click to filter by ${cat}`}
-                        >
-                          <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
-                          <span className="text-slate-600 truncate group-hover:text-slate-900 font-medium text-[10px] flex-1">{cat}</span>
-                          <span className="font-mono font-bold text-slate-800 text-[10px] bg-slate-200/60 px-1.5 py-0.2 rounded-full">{count}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                <div className="flex items-center gap-3 text-xs pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedSeverityFilter(selectedSeverityFilter === "Critical" ? "All" : "Critical");
+                      setVisibleLimit(50);
+                    }}
+                    className={`flex items-center gap-1.5 px-2 py-0.5 rounded cursor-pointer transition-all border ${
+                      selectedSeverityFilter === "Critical" ? "bg-red-50 border-red-300 ring-1 ring-red-400 font-bold" : "bg-slate-50 border-slate-200 hover:bg-slate-100"
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full bg-red-500 shrink-0" />
+                    <span className="text-red-700 font-bold">Critical: {severityCounts.Critical}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedSeverityFilter(selectedSeverityFilter === "Warning" ? "All" : "Warning");
+                      setVisibleLimit(50);
+                    }}
+                    className={`flex items-center gap-1.5 px-2 py-0.5 rounded cursor-pointer transition-all border ${
+                      selectedSeverityFilter === "Warning" ? "bg-amber-50 border-amber-300 ring-1 ring-amber-400 font-bold" : "bg-slate-50 border-slate-200 hover:bg-slate-100"
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0" />
+                    <span className="text-amber-800 font-bold">Warning: {severityCounts.Warning}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedSeverityFilter(selectedSeverityFilter === "Informative" ? "All" : "Informative");
+                      setVisibleLimit(50);
+                    }}
+                    className={`flex items-center gap-1.5 px-2 py-0.5 rounded cursor-pointer transition-all border ${
+                      selectedSeverityFilter === "Informative" ? "bg-blue-50 border-blue-300 ring-1 ring-blue-400 font-bold" : "bg-slate-50 border-slate-200 hover:bg-slate-100"
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0" />
+                    <span className="text-blue-700 font-bold">Informative: {severityCounts.Informative}</span>
+                  </button>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Controls & Device Selection Section */}
-          <div className="bg-white border border-slate-300 rounded p-3 shadow-xs space-y-3">
-            {/* Device / Server Single Selector Bar */}
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="flex items-center gap-1.5 text-slate-800 font-bold text-xs bg-slate-100 px-3 py-1.5 rounded border border-slate-300">
-                  <Server className="w-4 h-4 text-[#7a0c0c]" />
-                  <span>Target Device / Server:</span>
-                </div>
 
-                {/* Single Dropdown Selector */}
+
+          {/* Minimalist Filter & Actions Toolbar */}
+          <div className="bg-white border border-slate-300 rounded px-3 py-2 shadow-xs flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Server Filter Dropdown */}
+              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-300 px-2.5 py-1 rounded">
+                <Server className="w-3.5 h-3.5 text-[#7a0c0c] shrink-0" />
+                <span className="font-bold text-slate-700">Server:</span>
                 <select
                   value={selectedServerFilter}
                   onChange={e => setSelectedServerFilter(e.target.value)}
-                  className="bg-white border border-slate-300 text-slate-900 font-bold text-xs rounded px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-red-500 shadow-xs cursor-pointer min-w-[260px]"
+                  className="bg-transparent text-slate-800 font-bold text-xs focus:outline-none cursor-pointer"
                 >
-                  <option value="ALL">🖥️ All Target Servers ({activeAlerts.length} events)</option>
+                  <option value="ALL">All Target Servers ({activeAlerts.length} events)</option>
                   {availableServers.map(s => {
                     const count = activeAlerts.filter(a => (a.server || "").toLowerCase() === s.ip.toLowerCase()).length;
                     return (
                       <option key={s.ip} value={s.ip}>
-                        🖥️ {s.name} ({s.ip}) — [{count} events]
+                        {s.name} ({s.ip}) — [{count}]
                       </option>
                     );
                   })}
                 </select>
-
-                {/* Severity Filter Dropdown */}
-                <div className="flex items-center gap-1.5 bg-slate-100 border border-slate-300 px-2.5 py-1.5 rounded">
-                  <span className="font-bold text-slate-700 text-xs">Severity:</span>
-                  <select
-                    value={selectedSeverityFilter}
-                    onChange={e => setSelectedSeverityFilter(e.target.value)}
-                    className="bg-white border border-slate-300 rounded px-2 py-0.5 font-bold text-slate-800 text-xs focus:outline-none cursor-pointer"
-                  >
-                    <option value="All">All Severities</option>
-                    <option value="Critical">Critical Only</option>
-                    <option value="Warning">Warning Only</option>
-                    <option value="Informative">Informative Only</option>
-                  </select>
-                </div>
               </div>
 
-              {/* Action Buttons */}
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleExportCSV}
-                  className="px-3 py-1.5 bg-slate-700 hover:bg-slate-800 text-white rounded font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+              {/* Severity Filter Dropdown */}
+              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-300 px-2.5 py-1 rounded">
+                <span className="font-bold text-slate-700">Severity:</span>
+                <select
+                  value={selectedSeverityFilter}
+                  onChange={e => setSelectedSeverityFilter(e.target.value)}
+                  className="bg-transparent text-slate-800 font-bold text-xs focus:outline-none cursor-pointer"
                 >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Export CSV</span>
-                </button>
-                <button
-                  onClick={handleClearAll}
-                  className="px-3 py-1.5 bg-red-700 hover:bg-red-800 text-white rounded font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Clear Logs</span>
-                </button>
+                  <option value="All">All Severities</option>
+                  <option value="Critical">Critical Only</option>
+                  <option value="Warning">Warning Only</option>
+                  <option value="Informative">Informative Only</option>
+                </select>
               </div>
-                {/* Group Duplicates Checkbox */}
-              <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 whitespace-nowrap font-semibold bg-slate-100 border border-slate-300 px-2.5 py-1 rounded">
+            </div>
+
+            {/* Right Action Buttons */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={handleExportCSV}
+                className="px-2.5 py-1 bg-slate-700 hover:bg-slate-800 text-white rounded font-bold text-[11px] flex items-center gap-1 cursor-pointer transition-colors"
+              >
+                <Download className="w-3 h-3" />
+                <span>Export CSV</span>
+              </button>
+              <button
+                onClick={handleClearAll}
+                className="px-2.5 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white rounded font-bold text-[11px] flex items-center gap-1 cursor-pointer transition-colors"
+              >
+                <Trash2 className="w-3 h-3" />
+                <span>Clear Logs</span>
+              </button>
+              <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 font-semibold bg-slate-50 border border-slate-300 px-2 py-1 rounded text-[11px]">
                 <input
                   type="checkbox"
                   checked={compressedView}

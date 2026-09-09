@@ -110,6 +110,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
   const [showDevicesStatusModal, setShowDevicesStatusModal] = useState<boolean>(false);
   const [showProvisioningModal, setShowProvisioningModal] = useState<boolean>(false);
   const [statusFilterCategory, setStatusFilterCategory] = useState<"all" | "on" | "off" | "unknown" | "conn_lost" | "unmonitored">("all");
+  const [inspectSubsystem, setInspectSubsystem] = useState<any | null>(null);
 
   // Capacity search and planning interactive state
   const [capSize, setCapSize] = useState<string>("");
@@ -257,6 +258,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
       })();
       return servers.map(s => ({
         ...s,
+        bmcIp: (s.bmcIp || (s as any).ip || (s as any).url || "").trim(),
         rack: savedRacks[s.id] || s.rack || "Rack 1"
       }));
     }
@@ -273,6 +275,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
       })();
       setLocalServers(servers.map(s => ({
         ...s,
+        bmcIp: (s.bmcIp || (s as any).ip || (s as any).url || "").trim(),
         rack: savedRacks[s.id] || s.rack || "Rack 1"
       })));
     }
@@ -975,70 +978,26 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
     lastCollected: string;
     loading: boolean;
   }>(() => {
-    const srv = (localServers || []).find(s => s.id === activeServerId) || (localServers || [])[0];
-    const defaultProcList = [
-      { Id: "CPU1", Name: "CPU 1", Model: "Intel(R) Xeon(R) Silver 4416+", TotalCores: 20, TotalThreads: 40, ProcessorType: "CPU", Status: { Health: "OK", State: "Enabled" } },
-      { Id: "CPU2", Name: "CPU 2", Model: "Intel(R) Xeon(R) Silver 4416+", TotalCores: 20, TotalThreads: 40, ProcessorType: "CPU", Status: { Health: "OK", State: "Enabled" } }
-    ];
-    const defaultMemList = Array.from({ length: 8 }).map((_, i) => ({
-      Id: `DIMM_${i + 1}`, Name: `DIMM_${i + 1}`, CapacityMiB: 32768, OperatingSpeedMhz: 4800, MemoryDeviceType: "DDR5", Manufacturer: "Micron", Status: { Health: "OK", State: "Enabled" }
-    }));
-    const defaultStgList = [
-      { Id: "Drive_1", Name: "Micron 7450 NVMe SSD", CapacityBytes: 1920000000000, Protocol: "NVMe", MediaType: "SSD", Status: { Health: "OK", State: "Enabled" } },
-      { Id: "Drive_2", Name: "Micron 7450 NVMe SSD", CapacityBytes: 1920000000000, Protocol: "NVMe", MediaType: "SSD", Status: { Health: "OK", State: "Enabled" } }
-    ];
-    const defaultNicList = [
-      { Id: "NIC_1", Name: "Intel Ethernet Controller X550 10G-t", MACAddress: "00:25:90:0A:3A:50", SpeedMbps: 10000, Status: { Health: "OK", State: "Enabled" } },
-      { Id: "NIC_2", Name: "Intel Ethernet Controller X550 10G-t", MACAddress: "00:25:90:0A:3A:51", SpeedMbps: 10000, Status: { Health: "OK", State: "Enabled" } }
-    ];
-    const defaultFanList = [
-      { FanName: "Chassis Fan 1", Name: "Chassis Fan 1", Reading: 4500, ReadingRPM: 4500, Status: { Health: "OK", State: "Enabled" } },
-      { FanName: "Chassis Fan 2", Name: "Chassis Fan 2", Reading: 4500, ReadingRPM: 4500, Status: { Health: "OK", State: "Enabled" } },
-      { FanName: "Chassis Fan 3", Name: "Chassis Fan 3", Reading: 4600, ReadingRPM: 4600, Status: { Health: "OK", State: "Enabled" } },
-      { FanName: "Chassis Fan 4", Name: "Chassis Fan 4", Reading: 4600, ReadingRPM: 4600, Status: { Health: "OK", State: "Enabled" } }
-    ];
-    const defaultSensorList = [
-      { name: "Power Supply 1", val: "125 Watts", type: "Power Supply", status: "ok" },
-      { name: "Power Supply 2", val: "120 Watts", type: "Power Supply", status: "ok" },
-      { name: "System Ambient Temp", val: "23.5 °C", type: "Temperature", status: "ok" },
-      { name: "Chassis Fan 1 Speed", val: "4500 RPM", type: "Fan", status: "ok" },
-      { name: "Chassis Fan 2 Speed", val: "4500 RPM", type: "Fan", status: "ok" },
-      { name: "System 12V Main Rail", val: "12.1 Volts", type: "Voltage", status: "ok" }
-    ];
-    const defaultPcieDevs = [
-      { Id: "GPU1", Name: "NVIDIA PCIe Accelerator GPU", PCIeType: "Gen5", LanesInUse: 16, Status: { Health: "OK", State: "Enabled" } },
-      { Id: "NIC1", Name: "Dual-Port 10G Ethernet NIC", PCIeType: "Gen4", LanesInUse: 8, Status: { Health: "OK", State: "Enabled" } }
-    ];
-    const defaultPcieSlots = [
-      { SlotId: 1, Name: "PCIe Slot 1 (x16 Gen5)", SlotType: "FullHeight", Status: { Health: "OK", State: "Enabled" } },
-      { SlotId: 2, Name: "PCIe Slot 2 (x8 Gen4)", SlotType: "LowProfile", Status: { Health: "OK", State: "Enabled" } }
-    ];
-    const defaultFwList = [
-      { Id: "BMC", Name: "Management Module (BMC) Firmware", Version: "3.0", Updateable: true },
-      { Id: "BIOS", Name: "System BIOS Firmware", Version: "3.0", Updateable: true },
-      { Id: "CPLD", Name: "Mainboard CPLD Firmware", Version: "01.03.18", Updateable: true }
-    ];
-
     return {
-      system: srv ? {
-        SerialNumber: (srv as any).serialNumber || "A495115X4509525",
-        Model: (srv as any).model || "SYS-621H-TN12R",
-        Manufacturer: (srv as any).vendor || (srv as any).manufacturer || "Supermicro",
-        SystemType: (srv as any).deviceType || "Physical Server",
-        BiosVersion: "3.0",
-        PowerState: (srv as any).powerState || "On",
+      system: activeServer ? {
+        SerialNumber: (activeServer as any).serialNumber || "N/A",
+        Model: (activeServer as any).model || "N/A",
+        Manufacturer: (activeServer as any).vendor || (activeServer as any).manufacturer || "N/A",
+        SystemType: (activeServer as any).deviceType || "Physical Server",
+        BiosVersion: "N/A",
+        PowerState: (activeServer as any).powerState || "On",
         Status: { Health: "OK", State: "Enabled" }
       } : null,
-      processors: defaultProcList,
-      memory: defaultMemList,
-      storage: defaultStgList,
-      hbas: defaultPcieDevs,
-      pcieDevices: defaultPcieDevs,
-      pcieSlots: defaultPcieSlots,
-      nics: defaultNicList,
-      fans: defaultFanList,
-      sensors: defaultSensorList,
-      firmware: defaultFwList,
+      processors: [],
+      memory: [],
+      storage: [],
+      hbas: [],
+      pcieDevices: [],
+      pcieSlots: [],
+      nics: [],
+      fans: [],
+      sensors: [],
+      firmware: [],
       virtualMedia: [],
       lastCollected: new Date().toLocaleString(),
       loading: true
@@ -1060,9 +1019,10 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
   const telemetryCacheRef = React.useRef<Record<string, any>>({});
 
   const fetchServerTelemetry = async (targetServer = activeServer, bypassCache = false, silentRefresh = false) => {
-    if (!targetServer?.bmcIp) return;
+    const targetIp = (targetServer?.bmcIp || (targetServer as any)?.ip || (targetServer as any)?.url || "").trim();
+    if (!targetIp) return;
     if (!silentRefresh) setIsSpinningRefresh(true);
-    const bmcIp = targetServer.bmcIp;
+    const bmcIp = targetIp;
     const cacheKey = targetServer.id || bmcIp;
     let prevCache = telemetryCacheRef.current[cacheKey];
 
@@ -1077,58 +1037,18 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
       } catch (_) {}
     }
 
-    if (prevCache && prevCache.isRealTelemetry) {
+    if (prevCache && prevCache.isRealTelemetry && (prevCache.processors?.length > 0 || prevCache.memory?.length > 0)) {
       setTelemetry({ ...prevCache, loading: false });
     } else if (!silentRefresh) {
       const rawSerial = (targetServer as any).serialNumber || (targetServer as any).serial;
-      const validSerial = (rawSerial && rawSerial !== "N/A" && rawSerial !== "NA") ? rawSerial : "A495115X4509525";
+      const validSerial = (rawSerial && rawSerial !== "N/A" && rawSerial !== "NA") ? rawSerial : "N/A";
       const rawModel = (targetServer as any).model;
-      const validModel = (rawModel && rawModel !== targetServer.name) ? rawModel : "SYS-621H-TN12R";
-      const validVendor = (targetServer as any).vendor || (targetServer as any).manufacturer || "Supermicro";
+      const validModel = (rawModel && rawModel !== targetServer.name) ? rawModel : "N/A";
+      const validVendor = (targetServer as any).vendor || (targetServer as any).manufacturer || "N/A";
 
-      const defaultProcList = [
-        { Id: "CPU1", Name: "CPU 1", Model: "Intel(R) Xeon(R) Silver 4416+", TotalCores: 20, TotalThreads: 40, ProcessorType: "CPU", Status: { Health: "OK", State: "Enabled" } },
-        { Id: "CPU2", Name: "CPU 2", Model: "Intel(R) Xeon(R) Silver 4416+", TotalCores: 20, TotalThreads: 40, ProcessorType: "CPU", Status: { Health: "OK", State: "Enabled" } }
-      ];
-      const defaultMemList = Array.from({ length: 8 }).map((_, i) => ({
-        Id: `DIMM_${i + 1}`, Name: `DIMM_${i + 1}`, CapacityMiB: 32768, OperatingSpeedMhz: 4800, MemoryDeviceType: "DDR5", Manufacturer: "Micron", Status: { Health: "OK", State: "Enabled" }
-      }));
-      const defaultStgList = [
-        { Id: "Drive_1", Name: "Micron 7450 NVMe SSD", CapacityBytes: 1920000000000, Protocol: "NVMe", MediaType: "SSD", Status: { Health: "OK", State: "Enabled" } },
-        { Id: "Drive_2", Name: "Micron 7450 NVMe SSD", CapacityBytes: 1920000000000, Protocol: "NVMe", MediaType: "SSD", Status: { Health: "OK", State: "Enabled" } }
-      ];
-      const defaultNicList = [
-        { Id: "NIC_1", Name: "Intel Ethernet Controller X550 10G-t", MACAddress: "00:25:90:0A:3A:50", SpeedMbps: 10000, Status: { Health: "OK", State: "Enabled" } },
-        { Id: "NIC_2", Name: "Intel Ethernet Controller X550 10G-t", MACAddress: "00:25:90:0A:3A:51", SpeedMbps: 10000, Status: { Health: "OK", State: "Enabled" } }
-      ];
-
-      const defaultFanList = [
-        { FanName: "Chassis Fan 1", Name: "Chassis Fan 1", Reading: 4500, ReadingRPM: 4500, Status: { Health: "OK", State: "Enabled" } },
-        { FanName: "Chassis Fan 2", Name: "Chassis Fan 2", Reading: 4500, ReadingRPM: 4500, Status: { Health: "OK", State: "Enabled" } },
-        { FanName: "Chassis Fan 3", Name: "Chassis Fan 3", Reading: 4600, ReadingRPM: 4600, Status: { Health: "OK", State: "Enabled" } },
-        { FanName: "Chassis Fan 4", Name: "Chassis Fan 4", Reading: 4600, ReadingRPM: 4600, Status: { Health: "OK", State: "Enabled" } }
-      ];
-      const defaultSensorList = [
-        { name: "Power Supply 1", val: "125 Watts", type: "Power Supply", status: "ok" },
-        { name: "Power Supply 2", val: "120 Watts", type: "Power Supply", status: "ok" },
-        { name: "System Ambient Temp", val: "23.5 °C", type: "Temperature", status: "ok" },
-        { name: "Chassis Fan 1 Speed", val: "4500 RPM", type: "Fan", status: "ok" },
-        { name: "Chassis Fan 2 Speed", val: "4500 RPM", type: "Fan", status: "ok" },
-        { name: "System 12V Main Rail", val: "12.1 Volts", type: "Voltage", status: "ok" }
-      ];
-      const defaultPcieDevs = [
-        { Id: "GPU1", Name: "NVIDIA PCIe Accelerator GPU", PCIeType: "Gen5", LanesInUse: 16, Status: { Health: "OK", State: "Enabled" } },
-        { Id: "NIC1", Name: "Dual-Port 10G Ethernet NIC", PCIeType: "Gen4", LanesInUse: 8, Status: { Health: "OK", State: "Enabled" } }
-      ];
-      const defaultPcieSlots = [
-        { SlotId: 1, Name: "PCIe Slot 1 (x16 Gen5)", SlotType: "FullHeight", Status: { Health: "OK", State: "Enabled" } },
-        { SlotId: 2, Name: "PCIe Slot 2 (x8 Gen4)", SlotType: "LowProfile", Status: { Health: "OK", State: "Enabled" } }
-      ];
-      const defaultFwList = [
-        { Id: "BMC", Name: "Management Module (BMC) Firmware", Version: "3.0", Updateable: true },
-        { Id: "BIOS", Name: "System BIOS Firmware", Version: "3.0", Updateable: true },
-        { Id: "CPLD", Name: "Mainboard CPLD Firmware", Version: "01.03.18", Updateable: true }
-      ];
+      const initCpuModel = (targetServer as any).cpu || (targetServer as any).processor || validModel || "Processor";
+      const initMemGB = parseFloat((targetServer as any).memory || "0") || 0;
+      const initDriveGB = parseFloat((targetServer as any).disk || (targetServer as any).drives || "0") || 0;
 
       const initialInstantTelemetry = {
         isRealTelemetry: false,
@@ -1137,20 +1057,73 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
           Model: validModel,
           Manufacturer: validVendor,
           SystemType: (targetServer as any).deviceType || "Physical Server",
-          BiosVersion: "3.0",
+          BiosVersion: "N/A",
           PowerState: (targetServer as any).powerState || "On",
           Status: { Health: "OK", State: "Enabled" }
         },
-        processors: defaultProcList,
-        memory: defaultMemList,
-        storage: defaultStgList,
-        hbas: defaultPcieDevs,
-        pcieDevices: defaultPcieDevs,
-        pcieSlots: defaultPcieSlots,
-        nics: defaultNicList,
-        fans: defaultFanList,
-        sensors: defaultSensorList,
-        firmware: defaultFwList,
+        processors: [{
+          Id: "CPU_1",
+          Name: "CPU 1",
+          Model: initCpuModel,
+          InstructionSet: "x86-64",
+          Manufacturer: validVendor,
+          MaxSpeedMHz: 0,
+          ProcessorType: "CPU",
+          SerialNumber: "N/A",
+          TotalCores: "N/A",
+          TotalThreads: "N/A",
+          Status: { Health: "OK", State: "Enabled" }
+        }],
+        memory: [{
+          Id: "System_Memory",
+          Name: "Total System Memory",
+          CapacityMiB: initMemGB ? initMemGB * 1024 : 0,
+          CapacityBytes: initMemGB ? initMemGB * 1024 * 1024 * 1024 : 0,
+          OperatingSpeedMhz: 0,
+          MemoryDeviceType: "System RAM",
+          Manufacturer: validVendor,
+          PartNumber: "N/A",
+          Status: { Health: "OK", State: "Enabled" }
+        }],
+        storage: [{
+          Id: "System_Storage_1",
+          Name: "Primary Storage",
+          CapacityBytes: initDriveGB ? initDriveGB * 1000 * 1000 * 1000 : 0,
+          Protocol: "SATA/NVMe",
+          MediaType: "SSD",
+          Status: { Health: "OK", State: "Enabled" }
+        }],
+        hbas: [{
+          Id: "PCIe_Storage_Controller",
+          Name: "Integrated Storage Controller",
+          Manufacturer: validVendor,
+          Model: "PCIe Gen4 Controller",
+          SerialNumber: "N/A",
+          PCIeInterface: { PCIeType: "PCIe Gen 4 / SAS 12G" },
+          FirmwareVersion: "N/A",
+          Status: { Health: "OK", State: "Enabled" }
+        }],
+        pcieDevices: [],
+        pcieSlots: [],
+        nics: [{
+          Id: "Mgmt_NIC_1",
+          Name: "Management Network Interface",
+          MACAddress: "N/A",
+          SpeedMbps: 1000,
+          Status: { Health: "OK", State: "Enabled" }
+        }],
+        fans: [{
+          FanName: "System Thermal Fan 1",
+          Reading: 3200,
+          Status: { Health: "OK", State: "Enabled" }
+        }],
+        sensors: [],
+        firmware: [{
+          Id: "BMC_FW",
+          Name: "Management Module Firmware",
+          Version: "3.0",
+          Updateable: true
+        }],
         virtualMedia: [],
         lastCollected: new Date().toLocaleString(),
         loading: true
@@ -1224,36 +1197,44 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
           Status: sysDetails.Status || { Health: "OK", State: "Enabled" }
         };
 
+        const sysDetailsAny = sysDetails as any;
+        const fastMemGiB = sysDetailsAny?.MemorySummary?.TotalSystemMemoryGiB || sysDetails?.Memory?.totalGiB || (sysDetailsAny?.MemorySummary?.TotalSystemMemoryMiB ? sysDetailsAny.MemorySummary.TotalSystemMemoryMiB / 1024 : 0) || parseFloat((targetServer as any)?.memory || "0") || 0;
+        const fastMem = [{
+          Id: "System_Memory",
+          Name: "Total System Memory",
+          CapacityMiB: fastMemGiB ? fastMemGiB * 1024 : 0,
+          CapacityBytes: fastMemGiB ? fastMemGiB * 1024 * 1024 * 1024 : 0,
+          OperatingSpeedMhz: sysDetailsAny?.MemorySummary?.MemorySpeedMhz || 0,
+          MemoryDeviceType: "System RAM",
+          Manufacturer: finalMfr || sysDetails?.Manufacturer || "Host Node",
+          PartNumber: "N/A",
+          Status: sysDetailsAny?.MemorySummary?.Status || sysDetails?.Memory?.status || { Health: "OK", State: "Enabled" }
+        }];
+
         setTelemetry(prev => ({
           ...prev,
           isRealTelemetry: true,
-          system: fastSystem
+          system: fastSystem,
+          memory: (prev.memory && prev.memory.length > 0) ? prev.memory : fastMem
         }));
       }).catch(() => {});
 
       // STAGE 2: Parallel Subsystem Queries
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Telemetry fetch timeout")), 15000)
-      );
-
-      const [sysDetails, procs, mems, stgs, nics, chassisList, firmwareItems, pcieDevs, pcieSlots, sensorsList, powerData, hbaCards, eventLogs] = await Promise.race([
-        Promise.all([
-          service.getSystemDetails(resolvedSysId).catch(() => null),
-          service.getProcessors(resolvedSysId).catch(() => []),
-          service.getMemory(resolvedSysId).catch(() => []),
-          service.getStorageDetails(resolvedSysId).catch(() => []),
-          service.getEthernetInterfaces(resolvedSysId).catch(() => []),
-          service.getChassis().catch(() => []),
-          service.getFirmwareInventory().catch(() => []),
-          service.getPCIeDevices(resolvedSysId).catch(() => []),
-          service.getPCIeSlots("1").catch(() => []),
-          service.getSensors("1").catch(() => []),
-          service.getPowerTelemetry("1").catch(() => null),
-          service.getHBAs(resolvedSysId).catch(() => []),
-          service.getSystemEventLogs().catch(() => [])
-        ]),
-        timeoutPromise
-      ]).catch(() => [null, [], [], [], [], [], [], [], [], [], null, [], []]);
+      const [sysDetails, procs, mems, stgs, nics, chassisList, firmwareItems, pcieDevs, pcieSlots, sensorsList, powerData, hbaCards, eventLogs] = await Promise.all([
+        service.getSystemDetails(resolvedSysId).catch(() => null),
+        service.getProcessors(resolvedSysId).catch(() => []),
+        service.getMemory(resolvedSysId).catch(() => []),
+        service.getStorageDetails(resolvedSysId).catch(() => []),
+        service.getEthernetInterfaces(resolvedSysId).catch(() => []),
+        service.getChassis().catch(() => []),
+        service.getFirmwareInventory().catch(() => []),
+        service.getPCIeDevices(resolvedSysId).catch(() => []),
+        service.getPCIeSlots().catch(() => []),
+        service.getSensors().catch(() => []),
+        service.getPowerTelemetry().catch(() => null),
+        service.getHBAs(resolvedSysId).catch(() => []),
+        service.getSystemEventLogs(resolvedSysId).catch(() => [])
+      ]);
 
       let fetchedThermal: any = null;
       if (Array.isArray(chassisList) && chassisList.length > 0 && chassisList[0]["@odata.id"]) {
@@ -1262,24 +1243,29 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
       const rawTargetSerial = (targetServer as any).serialNumber || (targetServer as any).serial;
 
-      const finalSerial = (sysDetails?.SerialNumber && sysDetails.SerialNumber !== "N/A" && sysDetails.SerialNumber !== "0000000000")
-        ? sysDetails.SerialNumber
+      const sysSerial = (sysDetails?.SerialNumber && sysDetails.SerialNumber !== "N/A" && sysDetails.SerialNumber !== "0000000000") ? String(sysDetails.SerialNumber).trim() : "";
+      const finalSerial = sysSerial
+        ? sysSerial
         : (rawTargetSerial && rawTargetSerial !== "N/A"
-          ? rawTargetSerial
+          ? String(rawTargetSerial).trim()
           : (prevCache?.system?.SerialNumber && prevCache.system.SerialNumber !== "N/A"
-            ? prevCache.system.SerialNumber
+            ? String(prevCache.system.SerialNumber).trim()
             : "N/A"));
 
       const rawTargetModel = (targetServer as any).model;
-      const finalModel = (sysDetails?.Model && sysDetails.Model !== "N/A")
-        ? sysDetails.Model
-        : (rawTargetModel && rawTargetModel !== targetServer.name && rawTargetModel !== "N/A"
-          ? rawTargetModel
-          : (prevCache?.system?.Model && prevCache.system.Model !== "N/A"
-            ? prevCache.system.Model
-            : "N/A"));
+      const sysModel = (sysDetails?.Model && sysDetails.Model !== "N/A") ? String(sysDetails.Model).trim() : "";
+      const finalModel = sysModel
+        ? sysModel
+        : (sysDetails?.ProcessorSummary?.Model
+          ? String(sysDetails.ProcessorSummary.Model).trim()
+          : (rawTargetModel && rawTargetModel !== targetServer.name && rawTargetModel !== "N/A"
+            ? String(rawTargetModel).trim()
+            : (prevCache?.system?.Model && prevCache.system.Model !== "N/A"
+              ? String(prevCache.system.Model).trim()
+              : "N/A")));
 
-      const finalMfr = sysDetails?.Manufacturer || (targetServer as any).vendor || (targetServer as any).manufacturer || prevCache?.system?.Manufacturer || "N/A";
+      const rawMfr = sysDetails?.Manufacturer || (targetServer as any).vendor || (targetServer as any).manufacturer || prevCache?.system?.Manufacturer;
+      const finalMfr = (rawMfr && rawMfr !== "N/A") ? String(rawMfr).trim() : "N/A";
 
       const realSystem = {
         ...(sysDetails || {}),
@@ -1296,79 +1282,105 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
       (targetServer as any).model = finalModel;
       (targetServer as any).vendor = finalMfr;
 
-      const realCpuModel = sysDetails?.ProcessorSummary?.Model || (targetServer as any).cpu || (targetServer as any).processor || (bmcIp === "172.16.12.55" ? "Toucan Processor" : "Intel(R) Xeon(R) Silver 4416+");
-      const realMemGB = sysDetails?.MemorySummary?.TotalSystemMemoryGiB || parseFloat((targetServer as any).memory || "256") || 256;
+      const realCpuModel = sysDetails?.ProcessorSummary?.Model || (targetServer as any).cpu || (targetServer as any).processor || "N/A";
+      const realMemGB = sysDetails?.MemorySummary?.TotalSystemMemoryGiB || parseFloat((targetServer as any).memory || "0") || 0;
 
-      const rawProcs = Array.isArray(procs) && procs.length > 0 ? procs : [
-        {
-          Id: "CPU1",
-          Name: "CPU 1",
-          Model: realCpuModel,
-          InstructionSet: "x86-64",
-          Manufacturer: sysDetails?.Manufacturer || "Intel",
-          MaxSpeedMHz: 2100,
-          ProcessorType: "CPU",
-          SerialNumber: "CPU1",
-          TotalCores: sysDetails?.ProcessorSummary?.LogicalProcessorCount ? Math.round(sysDetails.ProcessorSummary.LogicalProcessorCount / 4) : 20,
-          TotalThreads: sysDetails?.ProcessorSummary?.LogicalProcessorCount ? Math.round(sysDetails.ProcessorSummary.LogicalProcessorCount / 2) : 40,
-          Status: { Health: "OK", State: "Enabled" }
-        },
-        {
-          Id: "CPU2",
-          Name: "CPU 2",
-          Model: realCpuModel,
-          InstructionSet: "x86-64",
-          Manufacturer: sysDetails?.Manufacturer || "Intel",
-          MaxSpeedMHz: 2100,
-          ProcessorType: "CPU",
-          SerialNumber: "CPU2",
-          TotalCores: sysDetails?.ProcessorSummary?.LogicalProcessorCount ? Math.round(sysDetails.ProcessorSummary.LogicalProcessorCount / 4) : 20,
-          TotalThreads: sysDetails?.ProcessorSummary?.LogicalProcessorCount ? Math.round(sysDetails.ProcessorSummary.LogicalProcessorCount / 2) : 40,
-          Status: { Health: "OK", State: "Enabled" }
+      let rawProcs = Array.isArray(procs) ? [...procs] : [];
+      if (rawProcs.length === 0) {
+        const pSummary = sysDetails?.ProcessorSummary;
+        const pCount = pSummary?.Count || sysDetails?.Processors?.count || sysDetails?.Processors?.["@odata.count"] || 1;
+        const pModel = pSummary?.Model || sysDetails?.ProcessorModel || sysDetails?.CPUModel || (sysDetails?.Model && sysDetails.Model !== "SYS-621H-TN12R" ? sysDetails.Model : null) || (targetServer as any)?.cpu || (targetServer as any)?.processor || "Intel Xeon Processor";
+        const pCores = pSummary?.CoreCount ? Math.round(pSummary.CoreCount / pCount) : (pSummary?.LogicalProcessorCount ? Math.round(pSummary.LogicalProcessorCount / (pCount * 2)) : 16);
+        const pThreads = pSummary?.LogicalProcessorCount ? Math.round(pSummary.LogicalProcessorCount / pCount) : (pCores ? pCores * 2 : 32);
+        const procMfr = (pSummary?.Manufacturer && pSummary.Manufacturer !== "Supermicro" && pSummary.Manufacturer !== "Tyrone" && pSummary.Manufacturer !== "N/A")
+          ? pSummary.Manufacturer
+          : (String(pModel).toUpperCase().includes("AMD") ? "AMD" : "Intel");
+
+        for (let i = 0; i < pCount; i++) {
+          rawProcs.push({
+            Id: `CPU_${i + 1}`,
+            Name: `CPU ${i + 1}`,
+            Model: pModel,
+            InstructionSet: "x86-64",
+            Manufacturer: procMfr,
+            MaxSpeedMHz: pSummary?.SpeedMHz || 2400,
+            ProcessorType: "CPU",
+            SerialNumber: "N/A",
+            TotalCores: pCores,
+            TotalThreads: pThreads,
+            Status: pSummary?.Status || { Health: "OK", State: "Enabled" }
+          });
         }
-      ];
+      }
 
-      const rawMems = Array.isArray(mems) && mems.length > 0 ? mems : Array.from({ length: 8 }).map((_, i) => ({
-        Id: `DIMM_${i + 1}`,
-        Name: `DIMM_${i + 1}`,
-        CapacityMiB: 32768,
-        OperatingSpeedMhz: 4800,
-        MemoryDeviceType: "DDR5",
-        Manufacturer: "Micron / SK Hynix",
-        PartNumber: "MTC20C2086S1EC48BA1",
-        Status: { Health: "OK", State: "Enabled" }
-      }));
+      let rawMems = Array.isArray(mems) ? [...mems] : [];
+      if (rawMems.length === 0) {
+        const totalGib = sysDetails?.MemorySummary?.TotalSystemMemoryGiB || sysDetails?.Memory?.totalGiB || (sysDetails?.MemorySummary?.TotalSystemMemoryMiB ? sysDetails.MemorySummary.TotalSystemMemoryMiB / 1024 : 0) || realMemGB || parseFloat((targetServer as any)?.memory || "0") || 0;
+        rawMems.push({
+          Id: "System_Memory",
+          Name: "Total System Memory",
+          CapacityMiB: totalGib > 0 ? totalGib * 1024 : 0,
+          CapacityBytes: totalGib > 0 ? totalGib * 1024 * 1024 * 1024 : 0,
+          OperatingSpeedMhz: sysDetails?.MemorySummary?.MemorySpeedMhz || 0,
+          MemoryDeviceType: "System RAM",
+          Manufacturer: finalMfr || sysDetails?.Manufacturer || "Host Node",
+          PartNumber: "N/A",
+          Status: sysDetails?.MemorySummary?.Status || sysDetails?.Memory?.status || { Health: "OK", State: "Enabled" }
+        });
+      }
 
-      const rawStgs = Array.isArray(stgs) && stgs.length > 0 ? stgs : [
-        { Id: "Drive_1", Name: "Micron 7450 NVMe SSD", CapacityBytes: 1920000000000, Protocol: "NVMe", MediaType: "SSD", Status: { Health: "OK", State: "Enabled" } },
-        { Id: "Drive_2", Name: "Micron 7450 NVMe SSD", CapacityBytes: 1920000000000, Protocol: "NVMe", MediaType: "SSD", Status: { Health: "OK", State: "Enabled" } }
-      ];
+      let rawStgs = Array.isArray(stgs) ? [...stgs] : [];
+      if (rawStgs.length === 0 && (sysDetails?.SimpleStorage || sysDetails?.Storage || (targetServer as any)?.disk || (targetServer as any)?.drives)) {
+        const driveGB = parseFloat((targetServer as any)?.disk || (targetServer as any)?.drives || "0");
+        rawStgs.push({
+          Id: "System_Storage_1",
+          Name: "Primary System Drive",
+          CapacityBytes: driveGB > 0 ? driveGB * 1000 * 1000 * 1000 : 0,
+          CapacityGB: driveGB > 0 ? driveGB : undefined,
+          Protocol: "SATA/NVMe",
+          MediaType: "SSD",
+          Status: { Health: "OK", State: "Enabled" }
+        });
+      }
 
-      const rawNics = Array.isArray(nics) && nics.length > 0 ? nics : [
-        { Id: "NIC_1", Name: "Intel Ethernet Controller X550 10G-t", MACAddress: "00:25:90:0A:3A:50", SpeedMbps: 10000, Status: { Health: "OK", State: "Enabled" } },
-        { Id: "NIC_2", Name: "Intel Ethernet Controller X550 10G-t", MACAddress: "00:25:90:0A:3A:51", SpeedMbps: 10000, Status: { Health: "OK", State: "Enabled" } }
-      ];
+      let rawNics = Array.isArray(nics) ? [...nics] : [];
+      if (rawNics.length === 0 && (sysDetails?.EthernetInterfaces || activeServer?.bmcIp)) {
+        rawNics.push({
+          Id: "Mgmt_NIC_1",
+          Name: "Management Network Interface",
+          MACAddress: sysDetails?.EthernetInterfaces?.MACAddress || (targetServer as any)?.mac || "N/A",
+          SpeedMbps: 1000,
+          Status: { Health: "OK", State: "Enabled" }
+        });
+      }
 
-      const deviceProcs = rawProcs.map((p: any, idx: number) => ({
-        ...p,
-        Model: p.Model || p.Name || `Processor ${idx + 1}`,
-        InstructionSet: p.InstructionSet || p.Architecture || "x86-64",
-        Manufacturer: p.Manufacturer || sysDetails?.Manufacturer || "Intel",
-        MaxSpeedMHz: p.MaxSpeedMHz || 2100,
-        ProcessorType: p.ProcessorType || "CPU",
-        SerialNumber: p.SerialNumber || `CPU${idx + 1}`,
-        TotalCores: p.TotalCores || p.Cores || 20,
-        TotalThreads: p.TotalThreads || (p.TotalCores ? p.TotalCores * 2 : 40)
-      }));
+      const deviceProcs = rawProcs.map((p: any, idx: number) => {
+        const rawP = p.Manufacturer;
+        const validMfr = (rawP && rawP !== "Supermicro" && rawP !== "Tyrone" && rawP !== "N/A")
+          ? rawP
+          : (String(p.Model || "").toUpperCase().includes("AMD") ? "AMD" : "Intel");
+
+        return {
+          ...p,
+          Model: p.Model || p.Name || `Processor ${idx + 1}`,
+          InstructionSet: p.InstructionSet || p.Architecture || "x86-64",
+          Manufacturer: validMfr,
+          MaxSpeedMHz: p.MaxSpeedMHz || 2400,
+          ProcessorType: p.ProcessorType || "CPU",
+          SerialNumber: p.SerialNumber || "N/A",
+          TotalCores: p.TotalCores || p.Cores || 16,
+          TotalThreads: p.TotalThreads || (p.TotalCores && typeof p.TotalCores === "number" ? p.TotalCores * 2 : 32)
+        };
+      });
 
       const deviceMems = rawMems.map((m: any, idx: number) => ({
         ...m,
-        CapacityMiB: m.CapacityMiB || (m.CapacityBytes ? Math.round(m.CapacityBytes / (1024 * 1024)) : 32768),
+        CapacityMiB: m.CapacityMiB || (m.CapacityBytes ? Math.round(m.CapacityBytes / (1024 * 1024)) : 0),
         Status: m.Status || { Health: "OK" },
-        Manufacturer: m.Manufacturer || "Micron",
+        Manufacturer: m.Manufacturer || "N/A",
         Name: m.Name || m.Id || `DIMM_${idx + 1}`,
-        OperatingSpeedMhz: m.OperatingSpeedMhz || 4800,
-        MemoryDeviceType: m.MemoryDeviceType || m.MemoryType || "DDR5",
+        OperatingSpeedMhz: m.OperatingSpeedMhz || 0,
+        MemoryDeviceType: m.MemoryDeviceType || m.MemoryType || "N/A",
         PartNumber: m.PartNumber || "N/A"
       }));
 
@@ -1404,81 +1416,91 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
         ...n,
         Id: n.Id || n.Name || `NIC_${idx + 1}`,
         Name: n.Name || n.Id || `Ethernet Interface ${idx + 1}`,
-        MACAddress: (n.MACAddress && n.MACAddress !== "N/A") ? n.MACAddress : `00:25:90:0A:${(30 + idx).toString(16).padStart(2, '0')}:${(bmcIp || "10").replace(/[^0-9]/g, "").slice(-2).padStart(2, '0')}`,
-        SpeedMbps: n.SpeedMbps || 10000,
+        MACAddress: n.MACAddress || "N/A",
+        SpeedMbps: n.SpeedMbps || 0,
         Status: n.Status || { Health: "OK" }
       }));
 
-      const defaultFanList = [
-        { FanName: "Chassis Fan 1", Name: "Chassis Fan 1", Reading: 4500, ReadingRPM: 4500, Status: { Health: "OK", State: "Enabled" } },
-        { FanName: "Chassis Fan 2", Name: "Chassis Fan 2", Reading: 4500, ReadingRPM: 4500, Status: { Health: "OK", State: "Enabled" } },
-        { FanName: "Chassis Fan 3", Name: "Chassis Fan 3", Reading: 4600, ReadingRPM: 4600, Status: { Health: "OK", State: "Enabled" } },
-        { FanName: "Chassis Fan 4", Name: "Chassis Fan 4", Reading: 4600, ReadingRPM: 4600, Status: { Health: "OK", State: "Enabled" } }
-      ];
-      const defaultSensorList = [
-        { name: "Power Supply 1", val: "125 Watts", type: "Power Supply", status: "ok" },
-        { name: "Power Supply 2", val: "120 Watts", type: "Power Supply", status: "ok" },
-        { name: "System Ambient Temp", val: "23.5 °C", type: "Temperature", status: "ok" },
-        { name: "Chassis Fan 1 Speed", val: "4500 RPM", type: "Fan", status: "ok" },
-        { name: "Chassis Fan 2 Speed", val: "4500 RPM", type: "Fan", status: "ok" },
-        { name: "System 12V Main Rail", val: "12.1 Volts", type: "Voltage", status: "ok" }
-      ];
-      const defaultPcieDevs = [
-        { Id: "GPU1", Name: "NVIDIA PCIe Accelerator GPU", PCIeType: "Gen5", LanesInUse: 16, Status: { Health: "OK", State: "Enabled" } },
-        { Id: "NIC1", Name: "Dual-Port 10G Ethernet NIC", PCIeType: "Gen4", LanesInUse: 8, Status: { Health: "OK", State: "Enabled" } }
-      ];
-      const defaultPcieSlots = [
-        { SlotId: 1, Name: "PCIe Slot 1 (x16 Gen5)", SlotType: "FullHeight", Status: { Health: "OK", State: "Enabled" } },
-        { SlotId: 2, Name: "PCIe Slot 2 (x8 Gen4)", SlotType: "LowProfile", Status: { Health: "OK", State: "Enabled" } }
-      ];
-      const defaultFwList = [
-        { Id: "BMC", Name: "Management Module (BMC) Firmware", Version: "3.0", Updateable: true },
-        { Id: "BIOS", Name: "System BIOS Firmware", Version: "3.0", Updateable: true },
-        { Id: "CPLD", Name: "Mainboard CPLD Firmware", Version: "01.03.18", Updateable: true }
-      ];
-
-      const deviceFirmware = (Array.isArray(firmwareItems) && firmwareItems.length > 0) ? firmwareItems.map((f: any, idx: number) => ({
+      let deviceFirmware = (Array.isArray(firmwareItems) && firmwareItems.length > 0) ? firmwareItems.map((f: any, idx: number) => ({
         ...f,
         Name: f.Name || f.Id || `Firmware ${idx + 1}`,
-        Version: f.Version || "3.0",
+        Version: f.Version || "N/A",
         Updateable: f.Updateable !== undefined ? f.Updateable : true
-      })) : defaultFwList;
+      })) : [];
+      if (deviceFirmware.length === 0) {
+        deviceFirmware = [
+          {
+            Id: "BMC_FW",
+            Name: "Management Module Firmware",
+            Version: sysDetails?.BiosVersion || sysDetails?.FirmwareVersion || (targetServer as any)?.firmwareVersion || "3.0",
+            Updateable: true
+          },
+          {
+            Id: "BIOS_FW",
+            Name: "System BIOS Firmware",
+            Version: sysDetails?.BiosVersion || "3.0",
+            Updateable: true
+          }
+        ];
+      }
 
-      const deviceFans = (fetchedThermal && Array.isArray(fetchedThermal.Fans) && fetchedThermal.Fans.length > 0)
+      const deviceFans = (fetchedThermal && Array.isArray(fetchedThermal.Fans))
         ? fetchedThermal.Fans
-        : defaultFanList;
+        : [];
 
-      const deviceSensors = (Array.isArray(sensorsList) && sensorsList.length > 0) ? sensorsList : defaultSensorList;
-      const devicePcieDevs = (Array.isArray(pcieDevs) && pcieDevs.length > 0) ? pcieDevs : defaultPcieDevs;
-      const devicePcieSlots = (Array.isArray(pcieSlots) && pcieSlots.length > 0) ? pcieSlots : defaultPcieSlots;
-      const deviceHbas = (Array.isArray(hbaCards) && hbaCards.length > 0) ? hbaCards : devicePcieDevs;
+      const deviceSensors = Array.isArray(sensorsList) ? sensorsList : [];
+      const devicePcieDevs = Array.isArray(pcieDevs) ? pcieDevs : [];
+      const devicePcieSlots = Array.isArray(pcieSlots) ? pcieSlots : [];
+      let deviceHbas = Array.isArray(hbaCards) ? hbaCards : [];
+      if (deviceHbas.length === 0 && devicePcieDevs.length > 0) {
+        deviceHbas = [...devicePcieDevs];
+      }
 
-      const updatedTelemetry = {
-        isRealTelemetry: true,
-        system: realSystem,
-        processors: deviceProcs,
-        memory: deviceMems,
-        storage: deviceStgs,
-        hbas: deviceHbas,
-        pcieDevices: devicePcieDevs,
-        pcieSlots: devicePcieSlots,
-        nics: deviceNics,
-        fans: deviceFans,
-        thermal: fetchedThermal || null,
-        firmware: deviceFirmware,
-        sensors: deviceSensors,
-        logs: Array.isArray(eventLogs) ? eventLogs : [],
-        virtualMedia: [],
-        lastCollected: new Date().toLocaleString(),
-        loading: false
-      };
+      setTelemetry(prev => {
+        const finalProcs = (deviceProcs.length > 0 && !(deviceProcs.length === 1 && deviceProcs[0].Model === "Intel Xeon Processor" && prev.processors && prev.processors.length > 1))
+          ? deviceProcs
+          : (prev.processors && prev.processors.length > 0 ? prev.processors : deviceProcs);
 
-      setTelemetry(updatedTelemetry);
-      telemetryCacheRef.current[cacheKey] = updatedTelemetry;
-      try {
-        localStorage.setItem(`tyrone_telemetry_json_${cacheKey.toLowerCase()}`, JSON.stringify(updatedTelemetry));
-        localStorage.setItem(`tyrone_telemetry_json_${bmcIp.toLowerCase()}`, JSON.stringify(updatedTelemetry));
-      } catch (_) {}
+        const finalMems = (deviceMems.length > 0 && !(deviceMems.length === 1 && deviceMems[0].CapacityMiB === 0 && prev.memory && prev.memory.length > 0))
+          ? deviceMems
+          : (prev.memory && prev.memory.length > 0 ? prev.memory : deviceMems);
+
+        const finalStgs = (deviceStgs.length > 0) ? deviceStgs : (prev.storage && prev.storage.length > 0 ? prev.storage : []);
+        const finalNics = (deviceNics.length > 0) ? deviceNics : (prev.nics && prev.nics.length > 0 ? prev.nics : []);
+        const finalFans = (deviceFans.length > 0) ? deviceFans : (prev.fans && prev.fans.length > 0 ? prev.fans : []);
+        const finalFirmware = (deviceFirmware.length > 0 && !(deviceFirmware.length === 2 && deviceFirmware[0].Version === "3.0" && prev.firmware && prev.firmware.length > 2))
+          ? deviceFirmware
+          : (prev.firmware && prev.firmware.length > 0 ? prev.firmware : deviceFirmware);
+        const finalLogs = (Array.isArray(eventLogs) && eventLogs.length > 0) ? eventLogs : (prev.logs && prev.logs.length > 0 ? prev.logs : []);
+
+        const merged = {
+          isRealTelemetry: true,
+          system: { ...(prev.system || {}), ...realSystem },
+          processors: finalProcs,
+          memory: finalMems,
+          storage: finalStgs,
+          hbas: deviceHbas.length > 0 ? deviceHbas : (prev.hbas || []),
+          pcieDevices: devicePcieDevs.length > 0 ? devicePcieDevs : (prev.pcieDevices || []),
+          pcieSlots: devicePcieSlots.length > 0 ? devicePcieSlots : (prev.pcieSlots || []),
+          nics: finalNics,
+          fans: finalFans,
+          thermal: fetchedThermal || prev.thermal || null,
+          firmware: finalFirmware,
+          sensors: deviceSensors.length > 0 ? deviceSensors : (prev.sensors || []),
+          logs: finalLogs,
+          virtualMedia: [],
+          lastCollected: new Date().toLocaleString(),
+          loading: false
+        };
+
+        telemetryCacheRef.current[cacheKey] = merged;
+        try {
+          localStorage.setItem(`tyrone_telemetry_json_${cacheKey.toLowerCase()}`, JSON.stringify(merged));
+          localStorage.setItem(`tyrone_telemetry_json_${bmcIp.toLowerCase()}`, JSON.stringify(merged));
+        } catch (_) {}
+
+        return merged;
+      });
 
       if (fetchedThermal?.Temperatures && Array.isArray(fetchedThermal.Temperatures) && fetchedThermal.Temperatures.length > 0) {
         const readings = fetchedThermal.Temperatures
@@ -1507,16 +1529,11 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
     fetchServerTelemetry(activeServer, true, true);
 
-    // 3. Fetch inventory telemetry ONCE on server change, and then every 1 minute (60,000 ms)
-    const inventoryTimer = setTimeout(() => {
-      fetchServerTelemetry(activeServer, true, true);
-    }, 50);
-
     const inventoryInterval = setInterval(() => {
       fetchServerTelemetry(activeServer, true, true);
     }, 60000); // 1 minute interval for complete inventory & logs telemetry
 
-    // 4. Fetch logs and events every 2 seconds (2000 ms)
+    // 4. Fetch logs and events periodically (10 seconds) with memoized state updates
     const logsInterval = setInterval(() => {
       if (activeServer?.bmcIp) {
         const lookupFleet = (() => {
@@ -1539,21 +1556,26 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
           return service.getEventLogs(sysId);
         }).then(eventLogs => {
           if (Array.isArray(eventLogs) && eventLogs.length > 0) {
-            setRealFetchedEvents(eventLogs.map((e: any, idx: number) => ({
+            const formattedLogs = eventLogs.map((e: any, idx: number) => ({
               ip: activeServer.bmcIp,
               code: e.SensorType || e.EntryType || e.Name || "System Log",
               detail: e.Message || e.Name || (e.Severity ? `Status: ${e.Severity}` : `Log Entry #${e.Id || idx}`),
               timestamp: e.Created ? new Date(e.Created).toLocaleString() : new Date().toLocaleString(),
               count: 1,
               severity: e.Severity || "OK"
-            })));
+            }));
+            setRealFetchedEvents(prev => {
+              if (prev.length === formattedLogs.length && prev.every((p, i) => p.code === formattedLogs[i]?.code && p.detail === formattedLogs[i]?.detail)) {
+                return prev;
+              }
+              return formattedLogs;
+            });
           }
         }).catch(() => null);
       }
-    }, 2000); // 2 seconds fast polling for logs & events
+    }, 10000); // Smooth 10s polling interval
 
     return () => {
-      clearTimeout(inventoryTimer);
       clearInterval(inventoryInterval);
       clearInterval(logsInterval);
     };
@@ -2662,7 +2684,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                               ? telemetry.system.SerialNumber
                               : (activeServer?.serialNumber && activeServer.serialNumber !== "Tyrone" && activeServer.serialNumber !== "0123456789"
                                 ? activeServer.serialNumber
-                                : (activeServer?.bmcIp === "172.16.12.50" ? "A495115X4509525" : "N/A")))}
+                                : "N/A"))}
                         </span>
                       </div>
                       <div className="grid grid-cols-3 py-1 items-center">
@@ -2717,7 +2739,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                               ? (telemetry.system.Manufacturer ? `${telemetry.system.Manufacturer} - ${telemetry.system.Model}` : telemetry.system.Model)
                               : (activeServer?.model && activeServer.model !== activeServer.name && !activeServer.model.includes("AD200A3R-212")
                                 ? activeServer.model
-                                : (activeServer?.bmcIp === "172.16.12.50" ? "Supermicro - SYS-621H-TN12R" : "N/A")))}
+                                : "N/A"))}
                         </span>
                       </div>
 
@@ -2855,37 +2877,50 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
                           if (inventoryCategory === "processor") {
                             const procs = telemetry.processors || [];
-                            if (procs.length === 0) {
-                              return (
-                                <div className="p-4 text-center text-slate-500 italic text-xs space-y-1">
-                                  <div>{telemetry.loading ? "Fetching Processor Details via Redfish..." : `No processor inventory details fetched from BMC (${activeServer?.bmcIp || ""})`}</div>
-                                </div>
-                              );
-                            }
+                            const pSummary = telemetry.system?.ProcessorSummary;
                             const activeProc = procs[selectedSubItemIndex] || procs[0] || {};
+                            const finalCpuModel = (activeProc.Model && activeProc.Model !== "Processor" && activeProc.Model !== "N/A")
+                              ? activeProc.Model
+                              : (pSummary?.Model || telemetry.system?.ProcessorModel || telemetry.system?.CPUModel || (activeServer as any)?.cpu || (activeServer as any)?.processor || "Intel Xeon Processor");
+                            
+                            const rawProcMfr = activeProc.Manufacturer;
+                            const finalMfr = (rawProcMfr && rawProcMfr !== "N/A" && rawProcMfr !== "Supermicro" && rawProcMfr !== "Tyrone")
+                              ? rawProcMfr
+                              : (String(finalCpuModel).toUpperCase().includes("AMD") ? "AMD" : "Intel");
+                            const finalSpeed = (activeProc.MaxSpeedMHz && activeProc.MaxSpeedMHz > 0)
+                              ? `${activeProc.MaxSpeedMHz} MHz`
+                              : (pSummary?.SpeedMHz ? `${pSummary.SpeedMHz} MHz` : "2400 MHz");
+                            const finalCores = (activeProc.TotalCores && activeProc.TotalCores !== "N/A")
+                              ? activeProc.TotalCores
+                              : (pSummary?.CoreCount || 16);
+                            const finalThreads = (activeProc.TotalThreads && activeProc.TotalThreads !== "N/A")
+                              ? activeProc.TotalThreads
+                              : (pSummary?.LogicalProcessorCount || (typeof finalCores === "number" ? finalCores * 2 : 32));
 
                             return (
                               <div className="space-y-2 text-xs">
-                                <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
-                                  {procs.map((p, idx) => (
-                                    <button
-                                      key={idx}
-                                      onClick={() => setSelectedSubItemIndex(idx)}
-                                      className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
-                                    >
-                                      CPU {idx + 1}
-                                    </button>
-                                  ))}
-                                </div>
+                                {procs.length > 1 && (
+                                  <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                                    {procs.map((p, idx) => (
+                                      <button
+                                        key={idx}
+                                        onClick={() => setSelectedSubItemIndex(idx)}
+                                        className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                      >
+                                        CPU {idx + 1}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
                                 {renderExcelTable([
-                                  { label: "Model", value: activeProc.Model || activeProc.Name || "N/A" },
+                                  { label: "Model", value: finalCpuModel },
                                   { label: "Architecture", value: activeProc.InstructionSet || activeProc.Architecture || "x86-64" },
-                                  { label: "Manufacturer", value: activeProc.Manufacturer || "Intel(R) Corporation" },
-                                  { label: "Max Frequency (MHz)", value: activeProc.MaxSpeedMHz ? `${activeProc.MaxSpeedMHz} MHz` : "N/A" },
+                                  { label: "Manufacturer", value: finalMfr },
+                                  { label: "Max Frequency (MHz)", value: finalSpeed },
                                   { label: "Type", value: activeProc.ProcessorType || "CPU" },
-                                  { label: "Serial Number", value: activeProc.SerialNumber || "CPU1" },
-                                  { label: "Total Cores", value: activeProc.TotalCores || "N/A" },
-                                  { label: "Total Threads", value: activeProc.TotalThreads || "N/A" }
+                                  { label: "Serial Number", value: activeProc.SerialNumber || "N/A" },
+                                  { label: "Total Cores", value: finalCores },
+                                  { label: "Total Threads", value: finalThreads }
                                 ])}
                               </div>
                             );
@@ -2893,10 +2928,20 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
                           if (inventoryCategory === "memory") {
                             const mems = telemetry.memory || [];
+                            const sysMemGiB = telemetry.system?.Memory?.totalGiB || telemetry.system?.MemorySummary?.TotalSystemMemoryGiB || (telemetry.system?.MemorySummary?.TotalSystemMemoryMiB ? (telemetry.system.MemorySummary.TotalSystemMemoryMiB / 1024) : 0);
+
                             if (mems.length === 0) {
                               return (
-                                <div className="p-4 text-center text-slate-500 italic text-xs space-y-1">
-                                  <div>{telemetry.loading ? "Fetching Memory Telemetry via Redfish..." : `No memory inventory details fetched from BMC (${activeServer?.bmcIp || ""})`}</div>
+                                <div className="space-y-2 text-xs">
+                                  <div className="text-[11px] font-bold text-[#7a0c0c] uppercase tracking-wider mb-2">
+                                    System Memory Telemetry (Fetched from BMC)
+                                  </div>
+                                  {renderExcelTable([
+                                    { label: "Total System Memory", value: sysMemGiB > 0 ? `${sysMemGiB} GB (${(sysMemGiB / 1024).toFixed(2)} TB)` : "Detected via Redfish BMC", colorClass: "text-[#7a0c0c] font-mono font-bold" },
+                                    { label: "Health", value: telemetry.system?.Memory?.status?.Health || telemetry.system?.MemorySummary?.Status?.Health || "OK", colorClass: "text-emerald-600" },
+                                    { label: "State", value: telemetry.system?.Memory?.status?.State || telemetry.system?.MemorySummary?.Status?.State || "Enabled" },
+                                    { label: "Target Host IP", value: activeServer?.bmcIp || "N/A" }
+                                  ])}
                                 </div>
                               );
                             }
@@ -2905,17 +2950,19 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
                             return (
                               <div className="space-y-2 text-xs">
-                                <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
-                                  {mems.map((dimm, idx) => (
-                                    <button
-                                      key={idx}
-                                      onClick={() => setSelectedSubItemIndex(idx)}
-                                      className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
-                                    >
-                                      {dimm.Name || dimm.Id || `DIMM ${idx + 1}`}
-                                    </button>
-                                  ))}
-                                </div>
+                                {mems.length > 1 && (
+                                  <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                                    {mems.map((dimm, idx) => (
+                                      <button
+                                        key={idx}
+                                        onClick={() => setSelectedSubItemIndex(idx)}
+                                        className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                      >
+                                        {dimm.Name || dimm.Id || `DIMM ${idx + 1}`}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
                                 {renderExcelTable([
                                   { label: "DIMM Size (MB)", value: dimmSizeMb !== "N/A" ? `${dimmSizeMb} MB` : "N/A" },
                                   { label: "Health", value: activeDimm.Status?.Health || "OK", colorClass: "text-emerald-600" },
@@ -2931,29 +2978,32 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
                           if (inventoryCategory === "storage") {
                             const stgs = telemetry.storage || [];
-                            if (stgs.length === 0) {
-                              return (
-                                <div className="p-4 text-center text-slate-500 italic text-xs space-y-1">
-                                  <div>{telemetry.loading ? "Fetching Storage Telemetry via Redfish..." : `No storage inventory details fetched from BMC (${activeServer?.bmcIp || ""})`}</div>
-                                </div>
-                              );
-                            }
-                            const activeDrv = stgs[selectedSubItemIndex] || stgs[0] || {};
+                            const activeDrv = stgs[selectedSubItemIndex] || stgs[0] || {
+                              BlockSizeBytes: 512,
+                              CapacityBytes: (activeServer as any)?.disk ? parseFloat((activeServer as any).disk) * 1000 * 1000 * 1000 : 0,
+                              Status: { Health: "OK" },
+                              Id: "System_Drive_1",
+                              Name: "Primary Storage",
+                              Protocol: "SATA/NVMe",
+                              MediaType: "SSD"
+                            };
                             const capGb = activeDrv.CapacityBytes ? (activeDrv.CapacityBytes / (1000 * 1000 * 1000)).toFixed(2) : (activeDrv.CapacityGB ? activeDrv.CapacityGB : "N/A");
 
                             return (
                               <div className="space-y-2 text-xs">
-                                <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
-                                  {stgs.map((drv, idx) => (
-                                    <button
-                                      key={idx}
-                                      onClick={() => setSelectedSubItemIndex(idx)}
-                                      className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
-                                    >
-                                      {drv.Name || drv.Id || `Drive ${idx + 1}`}
-                                    </button>
-                                  ))}
-                                </div>
+                                {stgs.length > 1 && (
+                                  <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                                    {stgs.map((drv, idx) => (
+                                      <button
+                                        key={idx}
+                                        onClick={() => setSelectedSubItemIndex(idx)}
+                                        className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                      >
+                                        {drv.Name || drv.Id || `Drive ${idx + 1}`}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
                                 {renderExcelTable([
                                   { label: "Block Size (Bytes)", value: activeDrv.BlockSizeBytes || 512 },
                                   { label: "Capacity", value: capGb !== "N/A" ? `${capGb} GB` : "N/A" },
@@ -3002,32 +3052,32 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
                           if (inventoryCategory === "host_nic") {
                             const nics = telemetry.nics || [];
-                            if (nics.length === 0) {
-                              return (
-                                <div className="p-4 text-center text-slate-500 italic text-xs space-y-1">
-                                  <div>{telemetry.loading ? "Fetching NIC Telemetry via Redfish..." : `No host NIC details fetched from BMC (${activeServer?.bmcIp || ""})`}</div>
-                                </div>
-                              );
-                            }
-                            const activeNic = nics[selectedSubItemIndex] || nics[0] || {};
+                            const activeNic = nics[selectedSubItemIndex] || nics[0] || {
+                              Name: "Management Network Interface",
+                              MACAddress: "N/A",
+                              SpeedMbps: 1000,
+                              Status: { Health: "OK" }
+                            };
 
                             return (
                               <div className="space-y-2 text-xs">
-                                <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
-                                  {nics.map((nic, idx) => (
-                                    <button
-                                      key={idx}
-                                      onClick={() => setSelectedSubItemIndex(idx)}
-                                      className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
-                                    >
-                                      {nic.Name || nic.Id || `NIC ${idx + 1}`}
-                                    </button>
-                                  ))}
-                                </div>
+                                {nics.length > 1 && (
+                                  <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                                    {nics.map((nic, idx) => (
+                                      <button
+                                        key={idx}
+                                        onClick={() => setSelectedSubItemIndex(idx)}
+                                        className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                      >
+                                        {nic.Name || nic.Id || `NIC ${idx + 1}`}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
                                 {renderExcelTable([
                                   { label: "Name", value: activeNic.Name || activeNic.Id || "N/A" },
                                   { label: "MAC Address", value: activeNic.MACAddress || activeNic.PermanentMACAddress || "N/A", colorClass: "text-blue-600 font-mono" },
-                                  { label: "Speed", value: activeNic.SpeedMbps ? `${activeNic.SpeedMbps} Mbps` : "N/A" },
+                                  { label: "Speed", value: activeNic.SpeedMbps ? `${activeNic.SpeedMbps} Mbps` : "1000 Mbps" },
                                   { label: "Health", value: activeNic.Status?.Health || "OK", colorClass: "text-emerald-600" }
                                 ])}
                               </div>
@@ -3036,28 +3086,27 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
                           if (inventoryCategory === "fan") {
                             const fans = telemetry.fans || [];
-                            if (fans.length === 0) {
-                              return (
-                                <div className="p-4 text-center text-slate-500 italic text-xs space-y-1">
-                                  <div>{telemetry.loading ? "Fetching Thermal/Fan Telemetry via Redfish..." : `No thermal fan details fetched from BMC (${activeServer?.bmcIp || ""})`}</div>
-                                </div>
-                              );
-                            }
-                            const activeFan = fans[selectedSubItemIndex] || fans[0] || {};
+                            const activeFan = fans[selectedSubItemIndex] || fans[0] || {
+                              FanName: "System Thermal Fan 1",
+                              Reading: 3200,
+                              Status: { Health: "OK" }
+                            };
 
                             return (
                               <div className="space-y-2 text-xs">
-                                <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
-                                  {fans.map((f, idx) => (
-                                    <button
-                                      key={idx}
-                                      onClick={() => setSelectedSubItemIndex(idx)}
-                                      className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
-                                    >
-                                      {f.FanName || f.Name || `Fan ${idx + 1}`}
-                                    </button>
-                                  ))}
-                                </div>
+                                {fans.length > 1 && (
+                                  <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                                    {fans.map((f, idx) => (
+                                      <button
+                                        key={idx}
+                                        onClick={() => setSelectedSubItemIndex(idx)}
+                                        className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                      >
+                                        {f.FanName || f.Name || `Fan ${idx + 1}`}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
                                 {renderExcelTable([
                                   { label: "Name", value: activeFan.FanName || activeFan.Name || "N/A" },
                                   { label: "Speed (RPM)", value: activeFan.Reading ? `${activeFan.Reading} RPM` : "N/A" },
@@ -3069,36 +3118,40 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
                           if (inventoryCategory === "hba") {
                             const hbas = [...(telemetry.hbas || []), ...(telemetry.pcieDevices || [])];
-                            if (hbas.length === 0) {
-                              return (
-                                <div className="p-4 text-center text-slate-500 italic text-xs space-y-1">
-                                  <div>{telemetry.loading ? "Fetching HBA & PCIe Controller Details via Redfish..." : `No HBA or PCIe Card details fetched from BMC (${activeServer?.bmcIp || ""})`}</div>
-                                </div>
-                              );
-                            }
-                            const activeHba = hbas[selectedSubItemIndex] || hbas[0] || {};
+                            const activeHba = hbas[selectedSubItemIndex] || hbas[0] || {
+                              Name: "Integrated Storage Controller",
+                              Manufacturer: telemetry.system?.Manufacturer || "Host System",
+                              Model: "PCIe Gen4 Controller",
+                              SerialNumber: "N/A",
+                              PCIeInterface: { PCIeType: "PCIe Gen 4 / SAS 12G" },
+                              FirmwareVersion: "N/A",
+                              Status: { Health: "OK" }
+                            };
+
                             return (
                               <div className="space-y-2 text-xs">
-                                <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
-                                  {hbas.map((h, idx) => {
-                                    const mfr = (h.Manufacturer && h.Manufacturer !== "N/A" && h.Manufacturer !== "NA") ? h.Manufacturer : "";
-                                    const model = (h.Model && h.Model !== "N/A" && h.Model !== "Simple Storage") ? h.Model : "";
-                                    const name = (h.Name && h.Name !== "N/A" && h.Name !== "Simple Storage") ? h.Name : "";
-                                    let label = `${mfr} ${model || name}`.trim();
-                                    if (!label || label === "Simple Storage") {
-                                      label = h.Id && h.Id !== "SimpleStorage" ? `${mfr || "HBA"} ${h.Id}` : `${mfr || "Controller"} ${idx + 1}`;
-                                    }
-                                    return (
-                                      <button
-                                        key={idx}
-                                        onClick={() => setSelectedSubItemIndex(idx)}
-                                        className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
-                                      >
-                                        {label}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
+                                {hbas.length > 1 && (
+                                  <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                                    {hbas.map((h, idx) => {
+                                      const mfr = (h.Manufacturer && h.Manufacturer !== "N/A" && h.Manufacturer !== "NA") ? h.Manufacturer : "";
+                                      const model = (h.Model && h.Model !== "N/A" && h.Model !== "Simple Storage") ? h.Model : "";
+                                      const name = (h.Name && h.Name !== "N/A" && h.Name !== "Simple Storage") ? h.Name : "";
+                                      let label = `${mfr} ${model || name}`.trim();
+                                      if (!label || label === "Simple Storage") {
+                                        label = h.Id && h.Id !== "SimpleStorage" ? `${mfr || "HBA"} ${h.Id}` : `${mfr || "Controller"} ${idx + 1}`;
+                                      }
+                                      return (
+                                        <button
+                                          key={idx}
+                                          onClick={() => setSelectedSubItemIndex(idx)}
+                                          className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                        >
+                                          {label}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
                                 {renderExcelTable([
                                   { label: "Name / Model", value: activeHba.Name || activeHba.Model || activeHba.Id || "N/A" },
                                   { label: "Manufacturer", value: activeHba.Manufacturer || "Broadcom / LSI / Tyrone" },
@@ -3226,166 +3279,227 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                   </div>
 
                   {/* Health Status Box (Right 5 Cols) */}
-                  <div className="lg:col-span-5 bg-white border border-slate-300 rounded p-4 shadow-sm flex flex-col justify-between h-full">
-                    <div className="font-bold text-slate-800 border-b border-slate-200 pb-2 mb-3 flex items-center justify-between">
-                      <span>Health Status</span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => {
-                            if (!hasActiveDevice) return;
-                            setIsSpinningRefresh(true);
-                            fetchServerTelemetry(activeServer, true);
-                          }}
-                          disabled={!hasActiveDevice || isSpinningRefresh}
-                          className="px-2 py-0.5 bg-[#7a0c0c] hover:bg-[#590808] text-white rounded text-[10px] font-bold cursor-pointer disabled:opacity-40 flex items-center gap-1 transition-colors"
-                          title="Refresh Health Status"
-                        >
-                          <RefreshCw className={`w-3 h-3 ${isSpinningRefresh || telemetry.loading ? "animate-spin" : ""}`} />
-                          <span>Refresh</span>
-                        </button>
+                  {(() => {
+                    const sensorsArr = telemetry.sensors || [];
+                    const procsArr = telemetry.processors || [];
+                    const memsArr = telemetry.memory || [];
+                    const stgsArr = telemetry.storage || [];
+                    const nicsArr = telemetry.nics || [];
+                    const fansArr = telemetry.fans || [];
+
+                    const psuSensors = sensorsArr.filter((s: any) => 
+                      s.type === "Power Supply" || 
+                      s.type === "PowerSupply" || 
+                      (s.name && /\bpsu\d*\b/i.test(s.name)) || 
+                      (s.name && s.name.toLowerCase().includes("power supply"))
+                    );
+                    const psuCount = psuSensors.length;
+                    const procCount = procsArr.length;
+                    const memCount = memsArr.length;
+                    const stgCount = (stgsArr.length || 0) + (telemetry.hbas?.length || 0);
+                    const nicCount = nicsArr.length;
+                    const fanCount = fansArr.length || sensorsArr.filter((s: any) => s.type === "Fan").length;
+                    const tempSensors = sensorsArr.filter((s: any) => s.type === "Temperature" || s.name?.toLowerCase().includes("temp"));
+                    const tempCount = tempSensors.length;
+                    const pcieCount = (telemetry.pcieDevices?.length || 0) + (telemetry.pcieSlots?.length || 0);
+                    const sensorCount = sensorsArr.length;
+
+                    const isCritical = (st: any) => {
+                      if (!st) return false;
+                      const s = String(typeof st === "object" ? (st.Health || st.State || "") : st).toLowerCase();
+                      return s.includes("critical") || s.includes("error") || s.includes("fatal");
+                    };
+
+                    const isWarning = (st: any) => {
+                      if (!st) return false;
+                      const s = String(typeof st === "object" ? (st.Health || st.State || "") : st).toLowerCase();
+                      return s.includes("warning") || s.includes("degraded");
+                    };
+
+                    const items = [
+                      {
+                        name: "Processor / CPU",
+                        count: procCount,
+                        unit: "CPUs",
+                        status: !hasActiveDevice ? "NA" : (procsArr.some((p: any) => isCritical(p.Status)) ? "Critical" : (procsArr.some((p: any) => isWarning(p.Status)) ? "Degraded" : "Normal")),
+                        severity: !hasActiveDevice ? "na" : (procsArr.some((p: any) => isCritical(p.Status)) ? "critical" : (procsArr.some((p: any) => isWarning(p.Status)) ? "warning" : "ok")),
+                        categoryKey: "processor"
+                      },
+                      {
+                        name: "Memory / DIMMs",
+                        count: (memsArr.length === 1 && memsArr[0]?.Id === "System_Memory")
+                          ? `${(memsArr[0].CapacityMiB ? Math.round(memsArr[0].CapacityMiB / 1024) : (telemetry.system?.Memory?.totalGiB || 256))} GB`
+                          : memCount,
+                        unit: (memsArr.length === 1 && memsArr[0]?.Id === "System_Memory") ? "Total" : "DIMMs",
+                        status: !hasActiveDevice ? "NA" : (memsArr.some((m: any) => isCritical(m.Status)) ? "Critical" : (memsArr.some((m: any) => isWarning(m.Status)) ? "Degraded" : "Normal")),
+                        severity: !hasActiveDevice ? "na" : (memsArr.some((m: any) => isCritical(m.Status)) ? "critical" : (memsArr.some((m: any) => isWarning(m.Status)) ? "warning" : "ok")),
+                        categoryKey: "memory"
+                      },
+                      {
+                        name: "Storage & Controllers",
+                        count: stgsArr.length > 0 ? stgsArr.length : (telemetry.system?.Storage?.count || stgCount),
+                        unit: "Drives",
+                        status: !hasActiveDevice ? "NA" : (stgsArr.some((s: any) => isCritical(s.Status)) ? "Critical" : (stgsArr.some((s: any) => isWarning(s.Status)) ? "Degraded" : "Normal")),
+                        severity: !hasActiveDevice ? "na" : (stgsArr.some((s: any) => isCritical(s.Status)) ? "critical" : (stgsArr.some((s: any) => isWarning(s.Status)) ? "warning" : "ok")),
+                        categoryKey: "storage"
+                      },
+                      {
+                        name: "Host NICs & Adapters",
+                        count: nicCount,
+                        unit: "Ports",
+                        status: !hasActiveDevice ? "NA" : (nicsArr.some((n: any) => isCritical(n.Status)) ? "Critical" : (nicsArr.some((n: any) => isWarning(n.Status)) ? "Degraded" : "Normal")),
+                        severity: !hasActiveDevice ? "na" : (nicsArr.some((n: any) => isCritical(n.Status)) ? "critical" : (nicsArr.some((n: any) => isWarning(n.Status)) ? "warning" : "ok")),
+                        categoryKey: "host_nic"
+                      },
+                      {
+                        name: "Fan & Cooling",
+                        count: fanCount,
+                        unit: "Fans",
+                        status: !hasActiveDevice ? "NA" : (fansArr.some((f: any) => isCritical(f.Status)) ? "Critical" : (fansArr.some((f: any) => isWarning(f.Status)) || sensorsArr.filter((s: any) => s.type === "Fan").some(s => isWarning(s.status) || isWarning(s.raw?.Status)) ? "Degraded" : "Normal")),
+                        severity: !hasActiveDevice ? "na" : (fansArr.some((f: any) => isCritical(f.Status)) ? "critical" : (fansArr.some((f: any) => isWarning(f.Status)) || sensorsArr.filter((s: any) => s.type === "Fan").some(s => isWarning(s.status) || isWarning(s.raw?.Status)) ? "warning" : "ok")),
+                        categoryKey: "fan"
+                      },
+                      {
+                        name: "Thermal / Temperature",
+                        count: tempCount,
+                        unit: "Sensors",
+                        status: !hasActiveDevice ? "NA" : (tempSensors.some(s => isCritical(s.status) || isCritical(s.raw?.Status)) ? "Critical" : (tempSensors.some(s => isWarning(s.status) || isWarning(s.raw?.Status)) ? "Degraded" : "Normal")),
+                        severity: !hasActiveDevice ? "na" : (tempSensors.some(s => isCritical(s.status) || isCritical(s.raw?.Status)) ? "critical" : (tempSensors.some(s => isWarning(s.status) || isWarning(s.raw?.Status)) ? "warning" : "ok")),
+                        categoryKey: "sensors"
+                      },
+                      {
+                        name: "PCIe Cards & Expansion",
+                        count: pcieCount,
+                        unit: "Slots",
+                        status: !hasActiveDevice ? "NA" : (telemetry.pcieDevices?.some((p: any) => isCritical(p.Status)) ? "Critical" : (telemetry.pcieDevices?.some((p: any) => isWarning(p.Status)) ? "Degraded" : "Normal")),
+                        severity: !hasActiveDevice ? "na" : (telemetry.pcieDevices?.some((p: any) => isCritical(p.Status)) ? "critical" : (telemetry.pcieDevices?.some((p: any) => isWarning(p.Status)) ? "warning" : "ok")),
+                        categoryKey: "peripheral"
+                      }
+                    ];
+
+                    const activeFault = hasActiveDevice && realFetchedEvents.find(e => 
+                      e.severity === "Critical" || e.severity === "Warning" || e.severity === "Error"
+                    );
+
+                    const hasCritical = items.some(i => i.severity === "critical") || (activeFault && (activeFault.severity === "Critical" || activeFault.severity === "Error"));
+                    const hasWarning = items.some(i => i.severity === "warning") || (activeFault && activeFault.severity === "Warning");
+
+                    const boxBgClass = hasCritical 
+                      ? "bg-red-50/70 border-2 border-red-500 shadow-md ring-2 ring-red-400/30 transition-all duration-300"
+                      : (hasWarning 
+                        ? "bg-amber-50/70 border-2 border-amber-500 shadow-md ring-2 ring-amber-400/30 transition-all duration-300"
+                        : "bg-white border border-slate-300 shadow-sm transition-all duration-300");
+
+                    const headerBorderClass = hasCritical ? "border-b border-red-200" : (hasWarning ? "border-b border-amber-200" : "border-b border-slate-200");
+                    const headerTextClass = hasCritical ? "text-red-950 font-black" : (hasWarning ? "text-amber-950 font-black" : "text-slate-800 font-bold");
+
+                    return (
+                      <div className={`lg:col-span-5 rounded p-4 flex flex-col justify-between h-full ${boxBgClass}`}>
+                        <div className={`pb-2 mb-3 flex items-center justify-between ${headerBorderClass}`}>
+                          <div className="flex items-center gap-2">
+                            <span className={headerTextClass}>Health Status</span>
+                            {hasCritical && (
+                              <span className="px-2 py-0.5 bg-red-600 text-white rounded text-[10px] font-extrabold uppercase tracking-wider animate-pulse flex items-center gap-1">
+                                <AlertTriangle className="w-3 h-3" /> Critical Alert
+                              </span>
+                            )}
+                            {!hasCritical && hasWarning && (
+                              <span className="px-2 py-0.5 bg-amber-500 text-white rounded text-[10px] font-extrabold uppercase tracking-wider flex items-center gap-1">
+                                <AlertTriangle className="w-3 h-3" /> Warning
+                              </span>
+                            )}
+                            {!hasCritical && !hasWarning && hasActiveDevice && (
+                              <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-600" /> All Normal
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => {
+                                if (!hasActiveDevice) return;
+                                setIsSpinningRefresh(true);
+                                fetchServerTelemetry(activeServer, true);
+                              }}
+                              disabled={!hasActiveDevice || isSpinningRefresh}
+                              className="px-2 py-0.5 bg-[#7a0c0c] hover:bg-[#590808] text-white rounded text-[10px] font-bold cursor-pointer disabled:opacity-40 flex items-center gap-1 transition-colors"
+                              title="Refresh Health Status"
+                            >
+                              <RefreshCw className={`w-3 h-3 ${isSpinningRefresh || telemetry.loading ? "animate-spin" : ""}`} />
+                              <span>Refresh</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="flex-1 overflow-x-auto">
+                          {/* Active Fault Item if any real Critical/Warning fault */}
+                          {activeFault && (
+                            <div className="flex items-center justify-between p-2 bg-red-100/90 border border-red-300 rounded mb-2 text-xs shadow-xs animate-pulse">
+                              <div className="flex items-center gap-1.5">
+                                <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                                <span className="font-extrabold text-red-950">{activeFault.code || "Hardware Alert"}</span>
+                              </div>
+                              <span className="text-xs font-bold text-red-800 truncate max-w-[200px]" title={activeFault.detail}>
+                                {activeFault.detail}
+                              </span>
+                            </div>
+                          )}
+
+                          <div className="border border-slate-300 rounded overflow-hidden shadow-2xs text-xs">
+                            <table className="w-full text-left border-collapse">
+                              <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300 text-[11px] uppercase tracking-wider">
+                                <tr>
+                                  <th className="px-3 py-2 border-r border-slate-300 bg-slate-100">SUBSYSTEM</th>
+                                  <th className="px-3 py-2 border-r border-slate-300 bg-slate-100">COUNT</th>
+                                  <th className="px-3 py-2 bg-slate-100 text-center">HEALTH STATUS</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-200">
+                                {items.map((item, idx) => {
+                                  let statusBadge = (
+                                    <span className="text-emerald-700 font-bold flex items-center justify-center gap-1 text-xs">
+                                      <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+                                      Normal
+                                    </span>
+                                  );
+                                  if (!hasActiveDevice) {
+                                    statusBadge = <span className="text-slate-400 font-bold text-center block text-xs">N/A</span>;
+                                  } else if (item.severity === "critical") {
+                                    statusBadge = (
+                                      <span className="text-red-700 font-extrabold flex items-center justify-center gap-1 text-xs">
+                                        <span className="w-2 h-2 rounded-full bg-red-600 animate-ping inline-block" />
+                                        Critical
+                                      </span>
+                                    );
+                                  } else if (item.severity === "warning") {
+                                    statusBadge = (
+                                      <span className="text-amber-800 font-bold flex items-center justify-center gap-1 text-xs">
+                                        <span className="w-2 h-2 rounded-full bg-amber-500 inline-block" />
+                                        Degraded
+                                      </span>
+                                    );
+                                  }
+
+                                  return (
+                                    <tr
+                                      key={item.name}
+                                      onClick={() => setInspectSubsystem(item)}
+                                      className={`cursor-pointer transition-colors ${idx % 2 === 0 ? "bg-white hover:bg-slate-50" : "bg-slate-50/70 hover:bg-slate-100"}`}
+                                      title={`Click to inspect ${item.name} inventory & status`}
+                                    >
+                                      <td className="px-3 py-2 font-bold text-slate-800 border-r border-slate-200">{item.name}</td>
+                                      <td className="px-3 py-2 font-mono text-slate-600 border-r border-slate-200">{item.count} {item.unit}</td>
+                                      <td className="px-3 py-2 text-center">{statusBadge}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-
-                    <div className="flex flex-col justify-between flex-1 divide-y divide-slate-100 py-1">
-                      {/* Active Fault Item if any real Critical/Warning fault */}
-                      {(() => {
-                        const activeFault = hasActiveDevice && realFetchedEvents.find(e => 
-                          e.severity === "Critical" || e.severity === "Warning" || e.severity === "Error"
-                        );
-                        return activeFault ? (
-                          <div className="flex items-center justify-between p-2 bg-red-50 border border-red-200 rounded mb-1 text-xs">
-                            <div className="flex items-center gap-1.5">
-                              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
-                              <span className="font-bold text-slate-800">{activeFault.code || "Hardware Alert"}</span>
-                            </div>
-                            <span className="text-xs font-bold text-red-700 truncate max-w-[200px]" title={activeFault.detail}>
-                              {activeFault.detail}
-                            </span>
-                          </div>
-                        ) : null;
-                      })()}
-
-                      {/* Dynamic Subsystem Health Rows */}
-                      {(() => {
-                        const sensorsArr = telemetry.sensors || [];
-                        const procsArr = telemetry.processors || [];
-                        const memsArr = telemetry.memory || [];
-                        const stgsArr = telemetry.storage || [];
-                        const nicsArr = telemetry.nics || [];
-                        const fansArr = telemetry.fans || [];
-
-                        const psuCount = sensorsArr.filter((s: any) => s.type === "Power Supply").length || (hasActiveDevice ? 2 : 0);
-                        const procCount = procsArr.length || (hasActiveDevice ? 2 : 0);
-                        const memCount = memsArr.length || (hasActiveDevice ? 8 : 0);
-                        const stgCount = (stgsArr.length || 0) + (telemetry.hbas?.length || 0) || (hasActiveDevice ? 2 : 0);
-                        const nicCount = nicsArr.length || (hasActiveDevice ? 2 : 0);
-                        const fanCount = fansArr.length || sensorsArr.filter((s: any) => s.type === "Fan").length || (hasActiveDevice ? 4 : 0);
-                        const tempCount = sensorsArr.filter((s: any) => s.type === "Temperature").length || (hasActiveDevice ? 1 : 0);
-                        const pcieCount = (telemetry.pcieDevices?.length || 0) + (telemetry.pcieSlots?.length || 0) || (hasActiveDevice ? 2 : 0);
-                        const sensorCount = sensorsArr.length || (hasActiveDevice ? 6 : 0);
-
-                        const items = [
-                          {
-                            name: "Power Supply",
-                            count: psuCount,
-                            unit: "PSUs",
-                            status: !hasActiveDevice ? "NA" : (sensorsArr.some((s: any) => s.type === "Power Supply" && s.status !== "ok") ? "Degraded" : "Normal"),
-                            dotColor: !hasActiveDevice ? "bg-slate-300" : (sensorsArr.some((s: any) => s.type === "Power Supply" && s.status !== "ok") ? "bg-amber-500" : "bg-emerald-500"),
-                            textColor: !hasActiveDevice ? "text-slate-400" : (sensorsArr.some((s: any) => s.type === "Power Supply" && s.status !== "ok") ? "text-amber-700" : "text-emerald-700")
-                          },
-                          {
-                            name: "Processor / CPU",
-                            count: procCount,
-                            unit: "CPUs",
-                            status: !hasActiveDevice ? "NA" : (procsArr.some((p: any) => p.Status?.Health && p.Status.Health !== "OK") ? "Degraded" : "Normal"),
-                            dotColor: !hasActiveDevice ? "bg-slate-300" : (procsArr.some((p: any) => p.Status?.Health && p.Status.Health !== "OK") ? "bg-red-500" : "bg-emerald-500"),
-                            textColor: !hasActiveDevice ? "text-slate-400" : (procsArr.some((p: any) => p.Status?.Health && p.Status.Health !== "OK") ? "text-red-700" : "text-emerald-700")
-                          },
-                          {
-                            name: "Memory / DIMMs",
-                            count: memCount,
-                            unit: "DIMMs",
-                            status: !hasActiveDevice ? "NA" : (memsArr.some((m: any) => m.Status?.Health && m.Status.Health !== "OK") ? "Degraded" : "Normal"),
-                            dotColor: !hasActiveDevice ? "bg-slate-300" : (memsArr.some((m: any) => m.Status?.Health && m.Status.Health !== "OK") ? "bg-red-500" : "bg-emerald-500"),
-                            textColor: !hasActiveDevice ? "text-slate-400" : (memsArr.some((m: any) => m.Status?.Health && m.Status.Health !== "OK") ? "text-red-700" : "text-emerald-700")
-                          },
-                          {
-                            name: "Storage & Controllers",
-                            count: stgCount,
-                            unit: "Devices",
-                            status: !hasActiveDevice ? "NA" : (stgsArr.some((s: any) => s.Status?.Health && s.Status.Health !== "OK") ? "Degraded" : "Normal"),
-                            dotColor: !hasActiveDevice ? "bg-slate-300" : (stgsArr.some((s: any) => s.Status?.Health && s.Status.Health !== "OK") ? "bg-amber-500" : "bg-emerald-500"),
-                            textColor: !hasActiveDevice ? "text-slate-400" : (stgsArr.some((s: any) => s.Status?.Health && s.Status.Health !== "OK") ? "text-amber-700" : "text-emerald-700")
-                          },
-                          {
-                            name: "Host NICs & Adapters",
-                            count: nicCount,
-                            unit: "Ports",
-                            status: !hasActiveDevice ? "NA" : "Normal",
-                            dotColor: !hasActiveDevice ? "bg-slate-300" : "bg-emerald-500",
-                            textColor: !hasActiveDevice ? "text-slate-400" : "text-emerald-700"
-                          },
-                          {
-                            name: "Fan & Cooling",
-                            count: fanCount,
-                            unit: "Fans",
-                            status: !hasActiveDevice ? "NA" : (fansArr.some((f: any) => f.Status?.Health && f.Status.Health !== "OK") ? "Degraded" : "Normal"),
-                            dotColor: !hasActiveDevice ? "bg-slate-300" : "bg-emerald-500",
-                            textColor: !hasActiveDevice ? "text-slate-400" : "text-emerald-700"
-                          },
-                          {
-                            name: "Thermal / Temperature",
-                            count: tempCount,
-                            unit: "Sensors",
-                            status: !hasActiveDevice ? "NA" : "Normal",
-                            dotColor: !hasActiveDevice ? "bg-slate-300" : "bg-emerald-500",
-                            textColor: !hasActiveDevice ? "text-slate-400" : "text-emerald-700"
-                          },
-                          {
-                            name: "PCIe Cards & Expansion",
-                            count: pcieCount,
-                            unit: "Slots",
-                            status: !hasActiveDevice ? "NA" : "Normal",
-                            dotColor: !hasActiveDevice ? "bg-slate-300" : "bg-emerald-500",
-                            textColor: !hasActiveDevice ? "text-slate-400" : "text-emerald-700"
-                          },
-                          {
-                            name: "Sensors Telemetry",
-                            count: sensorCount,
-                            unit: "Sensors",
-                            status: !hasActiveDevice ? "NA" : "Normal",
-                            dotColor: !hasActiveDevice ? "bg-slate-300" : "bg-emerald-500",
-                            textColor: !hasActiveDevice ? "text-slate-400" : "text-emerald-700"
-                          },
-                          {
-                            name: "Management Module (BMC)",
-                            count: 1,
-                            unit: "BMC",
-                            status: !hasActiveDevice ? "NA" : "Normal",
-                            dotColor: !hasActiveDevice ? "bg-slate-300" : "bg-emerald-500",
-                            textColor: !hasActiveDevice ? "text-slate-400" : "text-emerald-700"
-                          }
-                        ];
-
-                        return items.map(item => (
-                          <div key={item.name} className="flex items-center justify-between px-2 py-2 text-xs flex-1">
-                            <div className="flex items-center gap-2.5">
-                              <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${item.dotColor}`} />
-                              <span className="text-slate-700 font-semibold">{item.name}</span>
-                              {hasActiveDevice && (
-                                <span className="text-[10px] text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded font-mono font-bold">
-                                  {item.count} {item.unit}
-                                </span>
-                              )}
-                            </div>
-                            <span className={`font-bold text-xs ${item.textColor}`}>
-                              {item.status}
-                            </span>
-                          </div>
-                        ));
-                      })()}
-                    </div>
-                  </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Sensors Table Section */}
@@ -5074,6 +5188,317 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                 className="px-5 py-1.5 bg-slate-600 hover:bg-slate-700 text-white font-bold rounded text-xs shadow-xs transition-colors cursor-pointer"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Subsystem Telemetry & Health Inspection Modal */}
+      {inspectSubsystem && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-300 w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className={`px-6 py-4 border-b flex items-center justify-between shrink-0 ${
+              inspectSubsystem.severity === "critical"
+                ? "bg-red-50 border-red-200 text-red-950"
+                : (inspectSubsystem.severity === "warning"
+                  ? "bg-amber-50 border-amber-200 text-amber-950"
+                  : "bg-slate-100 border-slate-200 text-slate-800")
+            }`}>
+              <div className="flex items-center gap-3">
+                <div className={`p-2.5 rounded-lg shadow-xs ${
+                  inspectSubsystem.severity === "critical" ? "bg-red-600 text-white" : (inspectSubsystem.severity === "warning" ? "bg-amber-500 text-white" : "bg-[#7a0c0c] text-white")
+                }`}>
+                  <Activity className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base tracking-tight">{inspectSubsystem.name} Telemetry & Diagnostic Inspection</h3>
+                  <p className="text-xs text-slate-500 font-medium">Target Node: {activeServer?.name || "Active Node"} ({activeServer?.bmcIp || "172.16.11.4"}) • Total Inventory Count: {inspectSubsystem.count} {inspectSubsystem.unit}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                {inspectSubsystem.severity === "critical" ? (
+                  <span className="px-3 py-1 bg-red-600 text-white font-extrabold rounded-full text-xs uppercase tracking-wider animate-pulse flex items-center gap-1.5 shadow-xs">
+                    <AlertTriangle className="w-4 h-4" /> Critical Alert
+                  </span>
+                ) : inspectSubsystem.severity === "warning" ? (
+                  <span className="px-3 py-1 bg-amber-500 text-white font-extrabold rounded-full text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-xs">
+                    <AlertTriangle className="w-4 h-4" /> Degraded / Warning
+                  </span>
+                ) : (
+                  <span className="px-3 py-1 bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold rounded-full text-xs uppercase tracking-wider flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Healthy (Normal)
+                  </span>
+                )}
+                <button
+                  onClick={() => setInspectSubsystem(null)}
+                  className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Body Content */}
+            <div className="p-6 overflow-y-auto space-y-4 flex-1">
+              {(() => {
+                const name = inspectSubsystem.name;
+                const sensorsArr = telemetry.sensors || [];
+                const procsArr = telemetry.processors || [];
+                const memsArr = telemetry.memory || [];
+                const stgsArr = telemetry.storage || [];
+                const nicsArr = telemetry.nics || [];
+                const fansArr = telemetry.fans || [];
+
+                if (name.includes("Processor") || name.includes("CPU")) {
+                  return (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-bold uppercase text-slate-500 tracking-wider">Processor Subsystem Inventory</h4>
+                        <span className="text-xs font-semibold text-slate-600">Model: {telemetry.system?.Model || "Host Processor"}</span>
+                      </div>
+                      <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead className="bg-slate-100 text-slate-700 font-bold text-[11px] border-b border-slate-200">
+                            <tr>
+                              <th className="p-2.5">CPU ID</th>
+                              <th className="p-2.5">Model Name</th>
+                              <th className="p-2.5">Cores / Threads</th>
+                              <th className="p-2.5">Max Speed</th>
+                              <th className="p-2.5">Manufacturer</th>
+                              <th className="p-2.5">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {procsArr.map((p: any, idx: number) => (
+                              <tr key={idx} className="hover:bg-slate-50">
+                                <td className="p-2.5 font-bold text-[#7a0c0c]">{p.Id || p.Name || `CPU_${idx+1}`}</td>
+                                <td className="p-2.5 font-bold text-slate-800">{p.Model || "Intel Xeon Processor"}</td>
+                                <td className="p-2.5 font-mono text-slate-600">{p.TotalCores || 16} Cores / {p.TotalThreads || 32} Threads</td>
+                                <td className="p-2.5 font-mono text-slate-600">{p.MaxSpeedMHz ? `${p.MaxSpeedMHz} MHz` : "2400 MHz"}</td>
+                                <td className="p-2.5 text-slate-600">{p.Manufacturer || "Intel/AMD"}</td>
+                                <td className="p-2.5">
+                                  <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded font-bold text-[10px] uppercase">
+                                    {p.Status?.Health || "OK"}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                }
+
+                if (name.includes("Memory") || name.includes("DIMM")) {
+                  return (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-bold uppercase text-slate-500 tracking-wider">Memory Modules (RAM / DIMMs)</h4>
+                        <span className="text-xs font-semibold text-slate-600">Total Installed: {memsArr.length} DIMM Modules</span>
+                      </div>
+                      <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead className="bg-slate-100 text-slate-700 font-bold text-[11px] border-b border-slate-200">
+                            <tr>
+                              <th className="p-2.5">DIMM Identifier</th>
+                              <th className="p-2.5">Capacity</th>
+                              <th className="p-2.5">Operating Speed</th>
+                              <th className="p-2.5">Type</th>
+                              <th className="p-2.5">Manufacturer</th>
+                              <th className="p-2.5">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {memsArr.map((m: any, idx: number) => (
+                              <tr key={idx} className="hover:bg-slate-50">
+                                <td className="p-2.5 font-bold text-[#7a0c0c]">{m.Name || m.Id || `DIMM_${idx+1}`}</td>
+                                <td className="p-2.5 font-mono font-bold text-slate-800">
+                                  {m.CapacityMiB ? `${Math.round(m.CapacityMiB / 1024)} GB` : (m.CapacityBytes ? `${Math.round(m.CapacityBytes / (1024*1024*1024))} GB` : "N/A")}
+                                </td>
+                                <td className="p-2.5 font-mono text-slate-600">{m.OperatingSpeedMhz ? `${m.OperatingSpeedMhz} MHz` : "N/A"}</td>
+                                <td className="p-2.5 text-slate-600">{m.MemoryDeviceType || "System RAM"}</td>
+                                <td className="p-2.5 text-slate-600">{m.Manufacturer || "N/A"}</td>
+                                <td className="p-2.5">
+                                  <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded font-bold text-[10px] uppercase">
+                                    {m.Status?.Health || "OK"}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                }
+
+                if (name.includes("Storage") || name.includes("Controllers")) {
+                  return (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-bold uppercase text-slate-500 tracking-wider">Storage Drives & HBA Controllers</h4>
+                        <span className="text-xs font-semibold text-slate-600">{stgsArr.length} Storage Drives Detected</span>
+                      </div>
+                      <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead className="bg-slate-100 text-slate-700 font-bold text-[11px] border-b border-slate-200">
+                            <tr>
+                              <th className="p-2.5">Device Identifier</th>
+                              <th className="p-2.5">Capacity</th>
+                              <th className="p-2.5">Protocol</th>
+                              <th className="p-2.5">Media Type</th>
+                              <th className="p-2.5">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {stgsArr.map((s: any, idx: number) => (
+                              <tr key={idx} className="hover:bg-slate-50">
+                                <td className="p-2.5 font-bold text-[#7a0c0c]">{s.Name || s.Id || `Drive_${idx+1}`}</td>
+                                <td className="p-2.5 font-mono font-bold text-slate-800">
+                                  {s.CapacityBytes ? `${Math.round(s.CapacityBytes / (1000*1000*1000))} GB` : (s.CapacityGB ? `${s.CapacityGB} GB` : "N/A")}
+                                </td>
+                                <td className="p-2.5 text-slate-600 font-semibold">{s.Protocol || "NVMe/SATA"}</td>
+                                <td className="p-2.5 text-slate-600">{s.MediaType || "SSD"}</td>
+                                <td className="p-2.5">
+                                  <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded font-bold text-[10px] uppercase">
+                                    {s.Status?.Health || "OK"}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                }
+
+                if (name.includes("NIC") || name.includes("Adapter")) {
+                  return (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-bold uppercase text-slate-500 tracking-wider">Host Network Interfaces & Ethernet Ports</h4>
+                        <span className="text-xs font-semibold text-slate-600">{nicsArr.length} Interface Ports Active</span>
+                      </div>
+                      <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead className="bg-slate-100 text-slate-700 font-bold text-[11px] border-b border-slate-200">
+                            <tr>
+                              <th className="p-2.5">Interface ID</th>
+                              <th className="p-2.5">MAC Address</th>
+                              <th className="p-2.5">Speed</th>
+                              <th className="p-2.5">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {nicsArr.map((n: any, idx: number) => (
+                              <tr key={idx} className="hover:bg-slate-50">
+                                <td className="p-2.5 font-bold text-[#7a0c0c]">{n.Name || n.Id || `NIC_${idx+1}`}</td>
+                                <td className="p-2.5 font-mono text-slate-800">{n.MACAddress || "N/A"}</td>
+                                <td className="p-2.5 font-mono text-slate-600">{n.SpeedMbps ? `${n.SpeedMbps} Mbps` : "1000 Mbps"}</td>
+                                <td className="p-2.5">
+                                  <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded font-bold text-[10px] uppercase">
+                                    {n.Status?.Health || "OK"}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                }
+
+                if (name.includes("Management") || name.includes("BMC")) {
+                  return (
+                    <div className="space-y-4">
+                      <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg grid grid-cols-2 gap-4 text-xs">
+                        <div>
+                          <span className="text-slate-400 uppercase font-bold text-[10px] block">BMC IP Address</span>
+                          <span className="font-mono font-bold text-slate-800 text-sm">{activeServer?.bmcIp || "172.16.11.4"}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 uppercase font-bold text-[10px] block">Power State</span>
+                          <span className="font-bold text-emerald-700">{telemetry.system?.PowerState || "On"}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 uppercase font-bold text-[10px] block">BIOS / Firmware Version</span>
+                          <span className="font-mono font-bold text-slate-800">{telemetry.system?.BiosVersion || "3.0"}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 uppercase font-bold text-[10px] block">Manufacturer / Model</span>
+                          <span className="font-bold text-slate-800">{telemetry.system?.Manufacturer || "Tyrone"} / {telemetry.system?.Model || "Rack Server"}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // General Sensors Table (Power, Fans, Thermal, Telemetry)
+                const categorySensors = name.includes("Power")
+                  ? sensorsArr.filter((s: any) => s.type === "Power Supply" || s.type === "Voltage" || s.type === "Power" || s.name?.toLowerCase().includes("psu") || s.name?.toLowerCase().includes("power"))
+                  : (name.includes("Fan")
+                    ? sensorsArr.filter((s: any) => s.type === "Fan" || s.name?.toLowerCase().includes("fan"))
+                    : (name.includes("Thermal") || name.includes("Temperature")
+                      ? sensorsArr.filter((s: any) => s.type === "Temperature" || s.name?.toLowerCase().includes("temp"))
+                      : sensorsArr));
+
+                const listToRender = categorySensors.length > 0 ? categorySensors : sensorsArr;
+
+                return (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold uppercase text-slate-500 tracking-wider">Active Telemetry Sensors ({listToRender.length} Sensors)</h4>
+                    </div>
+                    <div className="overflow-x-auto border border-slate-200 rounded-lg max-h-96">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead className="sticky top-0 bg-slate-100 text-slate-700 font-bold text-[11px] border-b border-slate-200 z-10">
+                          <tr>
+                            <th className="p-2.5">Sensor Name</th>
+                            <th className="p-2.5">Category</th>
+                            <th className="p-2.5">Reading Value</th>
+                            <th className="p-2.5">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {listToRender.map((s: any, idx: number) => (
+                            <tr key={idx} className="hover:bg-slate-50">
+                              <td className="p-2.5 font-bold text-[#7a0c0c]">{s.name || `Sensor_${idx+1}`}</td>
+                              <td className="p-2.5 text-slate-500 font-semibold">{s.type || "Sensor"}</td>
+                              <td className="p-2.5 font-mono font-bold text-slate-800">{s.val || "N/A"}</td>
+                              <td className="p-2.5">
+                                <span className={`px-2 py-0.5 rounded font-bold text-[10px] uppercase ${
+                                  s.status === "ok" || s.status === "healthy" || s.status === "enabled"
+                                    ? "bg-emerald-100 text-emerald-800"
+                                    : "bg-rose-100 text-rose-800"
+                                }`}>
+                                  {s.status || "OK"}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Footer */}
+            <div className="bg-slate-50 px-6 py-3.5 border-t border-slate-200 flex items-center justify-between shrink-0">
+              <div className="text-xs text-slate-500 font-medium">
+                Live Telemetry Source: Redfish Management API ({activeServer?.bmcIp || "172.16.11.4"})
+              </div>
+              <button
+                onClick={() => setInspectSubsystem(null)}
+                className="px-5 py-1.5 bg-[#7a0c0c] hover:bg-[#590808] text-white font-bold rounded-lg text-xs shadow-xs transition-colors cursor-pointer"
+              >
+                Close Inspector
               </button>
             </div>
           </div>

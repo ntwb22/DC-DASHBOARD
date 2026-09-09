@@ -2,7 +2,12 @@ import { ConnectionConfig, RedfishSystem, RedfishEventLogEntry, FleetAlert, Flee
 
 import axios from "axios";
 
-export const validateBmcCredentials = async (ip: string, user: string, pass: string): Promise<void> => {
+export const validateBmcCredentials = async (
+  ip: string, 
+  user: string, 
+  pass: string, 
+  category: "SM" | "AS" = "SM"
+): Promise<void> => {
   const cleanIp = ip.trim();
   if (!cleanIp || cleanIp.toLowerCase() === "demo" || cleanIp === "DEMO_MODE") {
     return;
@@ -55,7 +60,12 @@ export const validateBmcCredentials = async (ip: string, user: string, pass: str
   }
 };
 
-export const fetchServerDetailsForAddition = async (ip: string, user: string, pass: string) => {
+export const fetchServerDetailsForAddition = async (
+  ip: string, 
+  user: string, 
+  pass: string, 
+  category: "SM" | "AS" = "SM"
+) => {
   const cleanIp = ip.trim();
   if (!cleanIp || cleanIp.toLowerCase() === "demo" || cleanIp === "DEMO_MODE") {
     return null;
@@ -64,11 +74,16 @@ export const fetchServerDetailsForAddition = async (ip: string, user: string, pa
   const p = pass.trim();
   const targetUrl = cleanIp.startsWith("http") ? cleanIp : `https://${cleanIp}`;
 
+  const primaryChassisUri = category === "AS" ? "/redfish/v1/Chassis/Self" : "/redfish/v1/Chassis/1";
+  const secondaryChassisUri = category === "AS" ? "/redfish/v1/Chassis/1" : "/redfish/v1/Chassis/Self";
+
   try {
     const service = new RedfishService({
       url: targetUrl,
       username: u,
-      password: p
+      password: p,
+      category,
+      chassisUri: primaryChassisUri
     });
 
     const sysUri = await service.resolveSystemId();
@@ -77,7 +92,11 @@ export const fetchServerDetailsForAddition = async (ip: string, user: string, pa
     let serial = sysDetails?.SerialNumber || sysDetails?.SKU || sysDetails?.Id;
     if (!serial || serial === "N/A" || serial === "0000000000" || serial === "NA") {
       try {
-        const chassis = await service.proxyRequest("/redfish/v1/Chassis/1").catch(() => service.proxyRequest("/redfish/v1/Chassis/Self")).catch(() => service.proxyRequest("/redfish/v1/Chassis/System.Embedded.1"));
+        const chassis = await service.proxyRequest(primaryChassisUri)
+          .catch(() => service.proxyRequest(primaryChassisUri.toLowerCase()))
+          .catch(() => service.proxyRequest(secondaryChassisUri))
+          .catch(() => service.proxyRequest(secondaryChassisUri.toLowerCase()))
+          .catch(() => service.proxyRequest("/redfish/v1/Chassis/System.Embedded.1"));
         if (chassis?.SerialNumber && chassis.SerialNumber !== "N/A" && chassis.SerialNumber !== "0000000000") {
           serial = chassis.SerialNumber;
         } else if (chassis?.SKU) {
@@ -105,11 +124,89 @@ export const fetchServerDetailsForAddition = async (ip: string, user: string, pa
 export class RedfishService {
   public config: ConnectionConfig;
   private static getCache = new Map<string, Promise<any>>();
+  private static sessionCache = new Map<string, { token: string; createdAt: number }>();
   private static resolvedSystemIdCache = new Map<string, string>();
+  private static resolvedChassisIdCache = new Map<string, string>();
+  private static resolvedManagerIdCache = new Map<string, string>();
+
+  constructor(config?: Partial<ConnectionConfig>) {
+    const safeConfig = config || {};
+    this.config = {
+      url: safeConfig.url || "https://127.0.0.1",
+      username: (safeConfig.username || "").trim(),
+      password: (safeConfig.password || "").trim(),
+      category: safeConfig.category,
+      chassisUri: safeConfig.chassisUri
+    };
+  }
 
   static clearCache() {
     RedfishService.getCache.clear();
+    RedfishService.sessionCache.clear();
     RedfishService.resolvedSystemIdCache.clear();
+    RedfishService.resolvedChassisIdCache.clear();
+    RedfishService.resolvedManagerIdCache.clear();
+  }
+
+  /**
+   * Implement Session Token Caching
+   * Authenticates via POST /redfish/v1/SessionService/Sessions, caches X-Auth-Token,
+   * and reuses it for subsequent API requests to protect BMC microprocessors.
+   */
+  async createSession(): Promise<string | null> {
+    if (!this.config.url || !this.config.username || !this.config.password) {
+      return null;
+    }
+    const cacheKey = `${this.config.url}::${this.config.username}`;
+    const cached = RedfishService.sessionCache.get(cacheKey);
+    const now = Date.now();
+
+    if (cached) {
+      if (cached.token === "BASIC_AUTH_ONLY") {
+        // Target BMC session table limit reached or unsupported; use Basic Auth directly for 5 minutes without spamming BMC
+        if (now - cached.createdAt < 300000) {
+          return null;
+        }
+      } else if (now - cached.createdAt < 1500000) {
+        // Reuse valid session token for 25 minutes
+        return cached.token;
+      }
+    }
+
+    try {
+      let baseUrl = this.config.url.replace(/\/+$/, "");
+      if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+        baseUrl = `https://${baseUrl}`;
+      }
+      const sessionUrl = `${baseUrl}/redfish/v1/SessionService/Sessions`;
+
+      const response = await axios.post("/api/redfish/proxy", {
+        url: sessionUrl,
+        method: "POST",
+        data: {
+          UserName: this.config.username,
+          Password: this.config.password
+        },
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        }
+      }, { timeout: 8000 });
+
+      const resData = response.data || {};
+      const headers = response.headers || {};
+      const token = headers["x-auth-token"] || headers["X-Auth-Token"] || resData.Token || resData.SessionId || resData.XAuthToken;
+
+      if (token && typeof token === "string") {
+        RedfishService.sessionCache.set(cacheKey, { token, createdAt: now });
+        return token;
+      }
+    } catch (e: any) {
+      // Cache BASIC_AUTH_ONLY marker so subsequent telemetry requests use Basic Auth directly without spamming SessionLimitExceeded
+      RedfishService.sessionCache.set(cacheKey, { token: "BASIC_AUTH_ONLY", createdAt: now });
+      console.warn(`[Redfish Session] Target BMC session limit reached for ${this.config.url}. Using Basic Auth fallback mode.`);
+    }
+    return null;
   }
 
   async resolveSystemId(preferredId: string = ""): Promise<string> {
@@ -150,6 +247,7 @@ export class RedfishService {
     // 2. Test candidate URIs (/redfish/v1/Systems/Self first, then /redfish/v1/Systems/1)
     const candidateUris = [
       preferredId && preferredId.startsWith("/") ? preferredId : "",
+      "/redfish/v1/Systems/System_0",
       "/redfish/v1/Systems/Self",
       "/redfish/v1/Systems/1",
       "/redfish/v1/Systems/System.Embedded.1"
@@ -169,13 +267,7 @@ export class RedfishService {
   }
 
 
-  constructor(config: ConnectionConfig) {
-    this.config = {
-      ...config,
-      username: (config.username || "").trim(),
-      password: (config.password || "").trim()
-    };
-  }
+
 
   async performResetAction(resetType: "On" | "ForceOff" | "GracefulShutdown" | "GracefulRestart" | "ForceRestart" | "PowerCycle" = "GracefulShutdown") {
     try {
@@ -451,101 +543,109 @@ export class RedfishService {
       }));
     }
 
-    // In real mode, we crawl each server via Redfish
-    const results = await Promise.all(fleet.map(async (node) => {
-      try {
-        const ip = node.bmcIp || node.ip;
-        if (!ip || ip.toLowerCase() === "demo" || ip.toLowerCase() === "demo-server.local" || ip === "DEMO_MODE") {
-          return null; // Skip invalid/demo targets in real mode
+    // In real mode, crawl fleet servers using chunked concurrency control (batchSize = 10) to avoid network gateway flooding
+    const results: any[] = [];
+    const batchSize = 10;
+
+    for (let i = 0; i < fleet.length; i += batchSize) {
+      const batch = fleet.slice(i, i + batchSize);
+      const batchResults = await Promise.all(batch.map(async (node) => {
+        try {
+          const ip = node.bmcIp || node.ip;
+          if (!ip || ip.toLowerCase() === "demo" || ip.toLowerCase() === "demo-server.local" || ip === "DEMO_MODE") {
+            return null; // Skip invalid/demo targets in real mode
+          }
+
+          const nodeService = new RedfishService({
+            url: ip,
+            username: node.bmcUsername || node.username || "admin",
+            password: node.bmcPassword || node.password || ""
+          });
+
+          // Single expanded system query to fetch system details & direct expansions in one trip
+          const sysId = await nodeService.resolveSystemId();
+          const sysExpanded = await nodeService.proxyRequest(`${sysId}?$expand=*($levels=1)`).catch(() => null);
+          const details = sysExpanded || await nodeService.getSystemDetails(sysId);
+          const health = details.Status?.Health || "OK";
+
+          let processors: any[] = [];
+          let memoryGiB = 0;
+          let storageCount = 0;
+
+          if (details) {
+            const procCount = details.Processors?.count || (Array.isArray(details.Processors?.Members) ? details.Processors.Members.length : 0);
+            processors = [
+              {
+                Model: details.Model || details.ProcessorSummary?.Model || "Processor",
+                Cores: procCount,
+                Count: procCount ? 1 : 0
+              }
+            ];
+            memoryGiB = details.Memory?.totalGiB || details.MemorySummary?.TotalSystemMemoryGiB || 0;
+            storageCount = details.Storage?.count || (Array.isArray(details.Storage?.Members) ? details.Storage.Members.length : 0);
+          }
+
+          return {
+            serverId: node.id,
+            serverName: node.name || ip,
+            ip: ip,
+            url: node.url || ip,
+            username: node.bmcUsername || node.username,
+            password: node.bmcPassword || node.password,
+            processors: processors.length > 0 ? processors : [],
+            memory: {
+              TotalGiB: memoryGiB || 0,
+              ModulesCount: memoryGiB ? 1 : 0
+            },
+            storage: {
+              Controllers: storageCount ? 1 : 0,
+              Drives: storageCount || 0,
+              CapacityTB: 0
+            },
+            network: {
+              Adapters: 1,
+              Interfaces: [
+                { Name: "MGMT", Status: "LinkUp", Speed: "1 Gbps" }
+              ]
+            },
+            health: health === "OK" ? "OK" : (health === "Warning" ? "Warning" : "Critical"),
+            lastSeen: new Date().toISOString()
+          };
+        } catch (e) {
+          // Return fallback profile representing the failed connection
+          return {
+            serverId: node.id,
+            serverName: node.name || node.bmcIp || node.ip,
+            ip: node.bmcIp || node.ip,
+            url: node.url || node.bmcIp || node.ip || "",
+            username: node.bmcUsername || node.username,
+            password: node.bmcPassword || node.password,
+            processors: [
+              { Model: node.specs?.cpu || "N/A", Cores: node.specs?.cores || 0, Count: 1 }
+            ],
+            memory: {
+              TotalGiB: parseInt(node.specs?.memory || "0"),
+              ModulesCount: 0
+            },
+            storage: {
+              Controllers: 0,
+              Drives: parseInt(node.specs?.storage || "0"),
+              CapacityTB: 0
+            },
+            network: {
+              Adapters: 0,
+              Interfaces: [
+                { Name: "MGMT", Status: "LinkDown", Speed: "1 Gbps" }
+              ]
+            },
+            health: "Critical",
+            lastSeen: new Date().toISOString(),
+            error: "Failed to connect"
+          };
         }
-
-        const nodeService = new RedfishService({
-          url: ip,
-          username: node.bmcUsername || node.username || "admin",
-          password: node.bmcPassword || node.password || ""
-        });
-
-        const systems = await nodeService.getSystems();
-        let processors: any[] = [];
-        let memoryGiB = 0;
-        let storageCount = 0;
-        let health = "OK";
-
-        if (systems && systems.length > 0) {
-          const sysId = systems[0]["@odata.id"];
-          const details = await nodeService.getSystemDetails(sysId);
-          health = details.Status?.Health || "OK";
-
-          processors = [
-            {
-              Model: details.Processors?.status?.State ? "Intel Xeon" : "N/A",
-              Cores: details.Processors?.count || 0,
-              Count: details.Processors?.count ? 1 : 0
-            }
-          ];
-          memoryGiB = details.Memory?.totalGiB || 0;
-          storageCount = details.Storage?.count || 0;
-        }
-
-        return {
-          serverId: node.id,
-          serverName: node.name || ip,
-          ip: ip,
-          url: node.url || ip,
-          username: node.bmcUsername || node.username,
-          password: node.bmcPassword || node.password,
-          processors: processors.length > 0 ? processors : [],
-          memory: {
-            TotalGiB: memoryGiB || 0,
-            ModulesCount: memoryGiB ? 1 : 0
-          },
-          storage: {
-            Controllers: storageCount ? 1 : 0,
-            Drives: storageCount || 0,
-            CapacityTB: 0
-          },
-          network: {
-            Adapters: 1,
-            Interfaces: [
-              { Name: "MGMT", Status: "LinkUp", Speed: "1 Gbps" }
-            ]
-          },
-          health: health === "OK" ? "OK" : (health === "Warning" ? "Warning" : "Critical"),
-          lastSeen: new Date().toISOString()
-        };
-      } catch (e) {
-        // Return fallback profile representing the failed connection
-        return {
-          serverId: node.id,
-          serverName: node.name || node.bmcIp || node.ip,
-          ip: node.bmcIp || node.ip,
-          url: node.url || node.bmcIp || node.ip || "",
-          username: node.bmcUsername || node.username,
-          password: node.bmcPassword || node.password,
-          processors: [
-            { Model: node.specs?.cpu || "N/A", Cores: node.specs?.cores || 0, Count: 1 }
-          ],
-          memory: {
-            TotalGiB: parseInt(node.specs?.memory || "0"),
-            ModulesCount: 0
-          },
-          storage: {
-            Controllers: 0,
-            Drives: parseInt(node.specs?.storage || "0"),
-            CapacityTB: 0
-          },
-          network: {
-            Adapters: 0,
-            Interfaces: [
-              { Name: "MGMT", Status: "LinkDown", Speed: "1 Gbps" }
-            ]
-          },
-          health: "Critical",
-          lastSeen: new Date().toISOString(),
-          error: "Failed to connect"
-        };
-      }
-    }));
+      }));
+      results.push(...batchResults);
+    }
 
     return results.filter(Boolean);
   }
@@ -699,16 +799,40 @@ export class RedfishService {
   // --- Telemetry Summary Method ---
   async fetchTelemetrySummary() {
     try {
-      const [details, procs, mems, stgs, hbas, nics, pcie, chassisList] = await Promise.all([
-        this.getSystemDetails("1").catch(() => null),
-        this.getProcessors("1").catch(() => []),
-        this.getMemory("1").catch(() => []),
-        this.getStorageDetails("1").catch(() => []),
-        this.getHBAs("1").catch(() => []),
-        this.getEthernetInterfaces("1").catch(() => []),
-        this.getPCIeDevices().catch(() => []),
-        this.getChassis().catch(() => [])
+      const resolvedSysId = await this.resolveSystemId();
+      const chassisId = await this.resolveChassisId().catch(() => "/redfish/v1/Chassis/1");
+
+      // Optimization: Fetch system and chassis details using Redfish $expand to collapse 8 separate HTTP requests into 2
+      const [sysExpandedRes, chassisExpandedRes] = await Promise.all([
+        this.proxyRequest(`${resolvedSysId}?$expand=*($levels=1)`).catch(() => null),
+        this.proxyRequest(`${chassisId}?$expand=*($levels=1)`).catch(() => null)
       ]);
+
+      const details = sysExpandedRes ? await this.getSystemDetails(resolvedSysId).catch(() => sysExpandedRes) : await this.getSystemDetails(resolvedSysId).catch(() => null);
+
+      // Extract inline expanded components or fall back to legacy getters if BMC doesn't support $expand
+      const procs = (sysExpandedRes?.Processors?.Members && Array.isArray(sysExpandedRes.Processors.Members) && sysExpandedRes.Processors.Members.length > 0)
+        ? sysExpandedRes.Processors.Members
+        : await this.getProcessors(resolvedSysId).catch(() => []);
+
+      const mems = (sysExpandedRes?.Memory?.Members && Array.isArray(sysExpandedRes.Memory.Members) && sysExpandedRes.Memory.Members.length > 0)
+        ? sysExpandedRes.Memory.Members
+        : await this.getMemory(resolvedSysId).catch(() => []);
+
+      const stgs = (sysExpandedRes?.Storage?.Members && Array.isArray(sysExpandedRes.Storage.Members) && sysExpandedRes.Storage.Members.length > 0)
+        ? sysExpandedRes.Storage.Members
+        : await this.getStorageDetails(resolvedSysId).catch(() => []);
+
+      const nics = (sysExpandedRes?.EthernetInterfaces?.Members && Array.isArray(sysExpandedRes.EthernetInterfaces.Members) && sysExpandedRes.EthernetInterfaces.Members.length > 0)
+        ? sysExpandedRes.EthernetInterfaces.Members
+        : await this.getEthernetInterfaces(resolvedSysId).catch(() => []);
+
+      const pcie = (sysExpandedRes?.PCIeDevices?.Members && Array.isArray(sysExpandedRes.PCIeDevices.Members) && sysExpandedRes.PCIeDevices.Members.length > 0)
+        ? sysExpandedRes.PCIeDevices.Members
+        : await this.getPCIeDevices(resolvedSysId).catch(() => []);
+
+      const hbas = await this.getHBAs(resolvedSysId).catch(() => []);
+      const chassisList = [chassisExpandedRes || { "@odata.id": chassisId }];
 
       // Calculate Total Memory GiB/TiB
       let totalMemGiB = 0;
@@ -717,9 +841,6 @@ export class RedfishService {
       }
       if (totalMemGiB === 0 && details?.Memory?.totalGiB) {
         totalMemGiB = details.Memory.totalGiB;
-      }
-      if (totalMemGiB === 0) {
-        totalMemGiB = 512; // Realistic 512 GiB = 0.50 TiB default
       }
 
       // Calculate Total Storage GB
@@ -781,40 +902,31 @@ export class RedfishService {
         });
       }
 
-      // If storage found was 0, check default high-density SSD
-      const totalStorageGB = totalStorageBytes > 0
-        ? totalStorageBytes / (1000 * 1000 * 1000)
-        : 960.0;
+      const totalStorageGB = totalStorageBytes > 0 ? totalStorageBytes / (1000 * 1000 * 1000) : 0.0;
 
-      // Thermal & Power
-      let maxTempC = 45.0;
-      let fanCount = 4;
-      let powerConsumedWatts = 264;
-      let powerCapacityWatts = 1200;
+      // Thermal & Power (Extracted from $expand or fallback)
+      let maxTempC = 0.0;
+      let fanCount = 0;
+      let powerConsumedWatts = 0;
+      let powerCapacityWatts = 0;
 
-      if (Array.isArray(chassisList) && chassisList.length > 0 && chassisList[0]["@odata.id"]) {
-        try {
-          const thermal = await this.getThermal(chassisList[0]["@odata.id"]).catch(() => null);
-          if (thermal && Array.isArray(thermal.Temperatures) && thermal.Temperatures.length > 0) {
-            const temps = thermal.Temperatures.map((t: any) => t.ReadingCelsius || 0).filter((t: number) => t > 0);
-            if (temps.length > 0) {
-              maxTempC = Math.max(...temps);
-            }
-          }
-          if (thermal && Array.isArray(thermal.Fans)) {
-            fanCount = thermal.Fans.length;
-          }
-        } catch (_) { }
+      const thermal = chassisExpandedRes?.Thermal || await this.getThermal(chassisId).catch(() => null);
+      if (thermal && Array.isArray(thermal.Temperatures) && thermal.Temperatures.length > 0) {
+        const temps = thermal.Temperatures.map((t: any) => t.ReadingCelsius || 0).filter((t: number) => t > 0);
+        if (temps.length > 0) {
+          maxTempC = Math.max(...temps);
+        }
+      }
+      if (thermal && Array.isArray(thermal.Fans)) {
+        fanCount = thermal.Fans.length;
+      }
 
-        try {
-          const power = await this.getPowerTelemetry().catch(() => null);
-          if (power?.PowerControl?.[0]?.PowerConsumedWatts) {
-            powerConsumedWatts = power.PowerControl[0].PowerConsumedWatts;
-          }
-          if (power?.PowerControl?.[0]?.PowerCapacityWatts) {
-            powerCapacityWatts = power.PowerControl[0].PowerCapacityWatts;
-          }
-        } catch (_) { }
+      const power = chassisExpandedRes?.Power || await this.getPowerTelemetry(chassisId).catch(() => null);
+      if (power?.PowerControl?.[0]?.PowerConsumedWatts) {
+        powerConsumedWatts = power.PowerControl[0].PowerConsumedWatts;
+      }
+      if (power?.PowerControl?.[0]?.PowerCapacityWatts) {
+        powerCapacityWatts = power.PowerControl[0].PowerCapacityWatts;
       }
 
       // GPUs
@@ -823,8 +935,13 @@ export class RedfishService {
         return desc.includes("nvidia") || desc.includes("vga") || desc.includes("gpu") || desc.includes("accelerator");
       });
 
-      const procCount = (procs && procs.length > 0) ? procs.length : (details?.Processors?.count || 1);
-      const procModel = (procs && procs[0]?.Model) || "Intel Xeon Gold 6330";
+      const procCount = (procs && procs.length > 0) ? procs.length : (details?.Processors?.count || 0);
+      const procModel = (procs && procs[0]?.Model) || "N/A";
+
+      const chassisGpuCount = (chassisList || []).filter((c: any) => {
+        const id = String(c["@odata.id"] || c.Id || "").toUpperCase();
+        return id.includes("GPU_") || id.includes("HGX_GPU");
+      }).length;
 
       return {
         system: details,
@@ -837,7 +954,7 @@ export class RedfishService {
           totalTiB: Number((totalMemGiB / 1024).toFixed(2))
         },
         storageSummary: {
-          driveCount: Math.max(driveCount, 1),
+          driveCount: driveCount,
           totalCapacityGB: Number(totalStorageGB.toFixed(2)),
           totalCapacityTB: Number((totalStorageGB / 1000).toFixed(2))
         },
@@ -851,11 +968,11 @@ export class RedfishService {
           powerCapacityWatts
         },
         networkSummary: {
-          nicCount: (nics && nics.length > 0) ? nics.length : 2,
+          nicCount: (nics && nics.length > 0) ? nics.length : 0,
           linkUpCount: (nics || []).filter((n: any) => n.LinkStatus === "LinkUp").length
         },
         gpuSummary: {
-          gpuCount: gpuList.length,
+          gpuCount: gpuList.length > 0 ? gpuList.length : (chassisGpuCount > 0 ? chassisGpuCount : 0),
           gpus: gpuList
         }
       };
@@ -920,7 +1037,20 @@ export class RedfishService {
       const cleanPath = path.replace(/^\/+/, "");
       fullUrl = `${baseUrl}/${cleanPath}`;
     }
-    const authHeader = `Basic ${btoa(`${this.config.username}:${this.config.password}`)}`;
+
+    const headers: Record<string, string> = {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "OData-Version": "4.0"
+    };
+
+    // Rule 2: Session Token Caching -> Use X-Auth-Token if created, else Basic Auth fallback
+    const token = await this.createSession().catch(() => null);
+    if (token) {
+      headers["X-Auth-Token"] = token;
+    } else {
+      headers["Authorization"] = `Basic ${btoa(`${this.config.username}:${this.config.password}`)}`;
+    }
 
     try {
       const timeoutMs = method.toUpperCase() === "GET" ? 25000 : 350000;
@@ -928,12 +1058,7 @@ export class RedfishService {
         url: fullUrl,
         method,
         data,
-        headers: {
-          "Authorization": authHeader,
-          "Accept": "application/json",
-          "Content-Type": "application/json",
-          "OData-Version": "4.0"
-        },
+        headers,
       }, { timeout: timeoutMs });
 
       const responseData = response.data;
@@ -1249,16 +1374,20 @@ export class RedfishService {
       memCapacity = data.MemorySummary?.TotalSystemMemoryGiB || 0;
     }
 
-    let serial = data.SerialNumber || data.SKU || data.AssetTag;
+    let serial = (data.SerialNumber && typeof data.SerialNumber === "string") ? data.SerialNumber.trim() : (data.SKU || data.AssetTag);
     if (!serial || serial === "0000000000" || serial === "N/A" || serial === "NA") {
       try {
-        const chassis = await this.proxyRequest("/redfish/v1/Chassis/1")
-          .catch(() => this.proxyRequest("/redfish/v1/Chassis/Self"))
-          .catch(() => this.proxyRequest("/redfish/v1/Chassis/System.Embedded.1"));
+        const chassisUri = data.Links?.Chassis?.[0]?.["@odata.id"];
+        const chassis = chassisUri 
+          ? await this.proxyRequest(chassisUri).catch(() => null)
+          : await this.proxyRequest("/redfish/v1/Chassis/BMC_0")
+            .catch(() => this.proxyRequest("/redfish/v1/Chassis/1"))
+            .catch(() => this.proxyRequest("/redfish/v1/Chassis/Self"))
+            .catch(() => this.proxyRequest("/redfish/v1/Chassis/System.Embedded.1"));
         if (chassis?.SerialNumber && chassis.SerialNumber !== "0000000000" && chassis.SerialNumber !== "N/A" && chassis.SerialNumber !== "NA") {
-          serial = chassis.SerialNumber;
+          serial = String(chassis.SerialNumber).trim();
         } else if (chassis?.SKU) {
-          serial = chassis.SKU;
+          serial = String(chassis.SKU).trim();
         }
       } catch (_) { }
     }
@@ -1268,6 +1397,10 @@ export class RedfishService {
       if (urlStr.includes("172.16.12.50")) serial = "A495115X4509525";
     }
 
+    const cleanMfr = (data.Manufacturer && typeof data.Manufacturer === "string") ? data.Manufacturer.trim() : data.Manufacturer;
+    const cleanModel = (data.Model && typeof data.Model === "string" && data.Model.trim() !== "")
+      ? data.Model.trim()
+      : (data.ProcessorSummary?.Model ? String(data.ProcessorSummary.Model).trim() : undefined);
 
     return {
       "@odata.id": data["@odata.id"],
@@ -1275,10 +1408,10 @@ export class RedfishService {
       Name: data.Name,
       SystemType: data.SystemType,
       AssetTag: data.AssetTag,
-      Manufacturer: data.Manufacturer,
-      Model: data.Model,
+      Manufacturer: cleanMfr,
+      Model: cleanModel,
       SKU: data.SKU,
-      SerialNumber: serial || data.SerialNumber,
+      SerialNumber: (typeof serial === "string") ? serial.trim() : serial,
       PartNumber: data.PartNumber,
       Description: data.Description,
       BiosVersion: data.BiosVersion || data.FirmwareVersion || (data.Bios ? data.Bios.Version : undefined),
@@ -1301,7 +1434,7 @@ export class RedfishService {
     };
   }
 
-  async getEventLogs(systemId: string): Promise<RedfishEventLogEntry[]> {
+  async getEventLogs(systemId: string = ""): Promise<RedfishEventLogEntry[]> {
     if (this.isDemoMode()) {
       return [];
     }
@@ -1350,54 +1483,108 @@ export class RedfishService {
 
   async getChassis() {
     const root = await this.getRoot().catch(() => ({}));
-    if (!root.Chassis || !root.Chassis["@odata.id"]) {
-      return [
-        { "@odata.id": "/redfish/v1/Chassis/1" },
-        { "@odata.id": "/redfish/v1/Chassis/Self" }
-      ];
+    if (root.Chassis && root.Chassis["@odata.id"]) {
+      const chassisCollection = await this.proxyRequest(root.Chassis["@odata.id"]).catch(() => null);
+      if (chassisCollection && Array.isArray(chassisCollection.Members) && chassisCollection.Members.length > 0) {
+        return chassisCollection.Members;
+      }
     }
-    const chassisCollection = await this.proxyRequest(root.Chassis["@odata.id"]).catch(() => null);
-    if (chassisCollection && Array.isArray(chassisCollection.Members) && chassisCollection.Members.length > 0) {
-      return chassisCollection.Members;
+    if (this.config.category === "AS" || this.config.chassisUri?.toLowerCase().includes("self")) {
+      return [
+        { "@odata.id": "/redfish/v1/Chassis/Self" },
+        { "@odata.id": "/redfish/v1/Chassis/self" },
+        { "@odata.id": "/redfish/v1/Chassis/1" },
+        { "@odata.id": "/redfish/v1/Chassis/BMC_0" },
+      ];
     }
     return [
       { "@odata.id": "/redfish/v1/Chassis/1" },
-      { "@odata.id": "/redfish/v1/Chassis/Self" }
+      { "@odata.id": "/redfish/v1/Chassis/BMC_0" },
+      { "@odata.id": "/redfish/v1/Chassis/Self" },
+      { "@odata.id": "/redfish/v1/Chassis/self" },
     ];
   }
 
+  async resolveChassisId(preferredId: string = ""): Promise<string> {
+    if (preferredId && preferredId.startsWith("/redfish/v1/Chassis/") && preferredId !== "/redfish/v1/Chassis") {
+      return preferredId;
+    }
+    if (this.config.chassisUri && this.config.chassisUri.startsWith("/redfish/v1/Chassis/")) {
+      return this.config.chassisUri;
+    }
+    if (this.config.category === "AS") {
+      return "/redfish/v1/Chassis/Self";
+    }
+    if (this.config.category === "SM") {
+      return "/redfish/v1/Chassis/1";
+    }
+    const cacheKey = `${this.config.url}::${this.config.category || "default"}`;
+    const cachedId = RedfishService.resolvedChassisIdCache.get(cacheKey);
+    if (cachedId) return cachedId;
+
+    try {
+      const chassisList = await this.getChassis().catch(() => []);
+      if (Array.isArray(chassisList) && chassisList.length > 0) {
+        const first = chassisList[0];
+        const uri = typeof first === "string" ? first : first?.["@odata.id"];
+        if (uri) {
+          RedfishService.resolvedChassisIdCache.set(cacheKey, uri);
+          return uri;
+        }
+      }
+    } catch (_) {}
+    return this.config.category === "AS" ? "/redfish/v1/Chassis/Self" : "/redfish/v1/Chassis/1";
+  }
+
+  async resolveManagerId(preferredId: string = ""): Promise<string> {
+    if (preferredId && preferredId.startsWith("/redfish/v1/Managers/") && preferredId !== "/redfish/v1/Managers") {
+      return preferredId;
+    }
+    const cacheKey = this.config.url;
+    const cachedId = RedfishService.resolvedManagerIdCache.get(cacheKey);
+    if (cachedId) return cachedId;
+
+    try {
+      const managers = await this.getManagers().catch(() => []);
+      if (Array.isArray(managers) && managers.length > 0) {
+        const first = managers[0];
+        const uri = typeof first === "string" ? first : first?.["@odata.id"];
+        if (uri) {
+          RedfishService.resolvedManagerIdCache.set(cacheKey, uri);
+          return uri;
+        }
+      }
+    } catch (_) {}
+    return "/redfish/v1/Managers/1";
+  }
+
   async getThermal(chassisId: string = "1") {
-    const isSelfCategory = String(chassisId).toLowerCase().includes("self") || String(chassisId).toLowerCase() === "as";
-    const primaryPath = isSelfCategory ? "/redfish/v1/Chassis/Self/Thermal" : "/redfish/v1/Chassis/1/Thermal";
-    const secondaryPath = isSelfCategory ? "/redfish/v1/Chassis/1/Thermal" : "/redfish/v1/Chassis/Self/Thermal";
+    const endpoints: string[] = [];
 
-    const endpoints = [
-      chassisId.startsWith("/redfish") ? (chassisId.endsWith("/Thermal") ? chassisId : `${chassisId.replace(/\/$/, "")}/Thermal`) : primaryPath,
-      primaryPath,
-      secondaryPath,
-      "/redfish/v1/Chassis/self/Thermal",
-      "/redfish/v1/Chassis/1/Thermal",
-      "/redfish/v1/Chassis/Self/Thermal",
-      "/redfish/v1/Chassis/System.Embedded.1/Thermal"
-    ];
+    // Prioritize explicit chassisId if it's a full URI or specific ID
+    if (chassisId && chassisId.startsWith("/redfish")) {
+      endpoints.push(chassisId.endsWith("/Thermal") ? chassisId : `${chassisId.replace(/\/$/, "")}/Thermal`);
+    }
 
-    // Dynamic chassis discovery as per RedfishClient Python script
+    // Dynamic chassis discovery
     try {
       const chassisMembers = await this.getChassis().catch(() => []);
       for (const member of chassisMembers) {
         const uri = member["@odata.id"] || member;
         if (typeof uri === "string") {
-          const thermalUri = `${uri.replace(/\/$/, "")}/Thermal`;
-          if (isSelfCategory && uri.toLowerCase().includes("self")) {
-            endpoints.unshift(thermalUri);
-          } else if (!isSelfCategory && uri.includes("/1")) {
-            endpoints.unshift(thermalUri);
-          } else {
-            endpoints.push(thermalUri);
-          }
+          endpoints.push(`${uri.replace(/\/$/, "")}/Thermal`);
         }
       }
     } catch (_) {}
+
+    // Additional fallback paths
+    endpoints.push(
+      "/redfish/v1/Chassis/BMC_0/Thermal",
+      "/redfish/v1/Chassis/1/Thermal",
+      "/redfish/v1/Chassis/Self/Thermal",
+      "/redfish/v1/Chassis/self/Thermal",
+      "/redfish/v1/Chassis/System.Embedded.1/Thermal"
+    );
 
     for (const ep of Array.from(new Set(endpoints))) {
       try {
@@ -1581,25 +1768,87 @@ export class RedfishService {
   async getProcessors(systemId: string = "") {
     try {
       const resolvedId = await this.resolveSystemId(systemId);
-      const collectionUri = `${resolvedId}/Processors`;
+      const system = await this.proxyRequest(resolvedId).catch(() => null);
 
-      const collection = await this.proxyRequest(collectionUri).catch(async () => {
-        const system = await this.proxyRequest(resolvedId).catch(() => null);
-        return system?.Processors?.["@odata.id"] ? await this.proxyRequest(system.Processors["@odata.id"]) : null;
-      });
+      const candidateUris = [
+        system?.Processors?.["@odata.id"],
+        `${resolvedId}/Processors`,
+        `/redfish/v1/Systems/1/Processors`,
+        `/redfish/v1/Systems/System_0/Processors`,
+        `/redfish/v1/Systems/Self/Processors`
+      ].filter(Boolean);
 
-      if (collection && Array.isArray(collection.Members)) {
-        const members = await Promise.all(
-          collection.Members.map(async (m: any) => {
-            try {
-              return await this.proxyRequest(m["@odata.id"]);
-            } catch {
-              return null;
-            }
-          })
-        );
-        const validMembers = members.filter(Boolean);
-        if (validMembers.length > 0) return validMembers;
+      for (const collectionUri of Array.from(new Set(candidateUris))) {
+        try {
+          const collection = await this.proxyRequest(collectionUri as string);
+          if (collection && Array.isArray(collection.Members) && collection.Members.length > 0) {
+            const members = await Promise.all(
+              collection.Members.map(async (m: any) => {
+                try {
+                  const uri = typeof m === "string" ? m : (m["@odata.id"] || m.href);
+                  const pObj = uri ? await this.proxyRequest(uri) : m;
+                  if (pObj) {
+                    let pModel = pObj.Model;
+                    if (!pModel || pModel === "N/A" || typeof pModel === "number" || /^\d+$/.test(String(pModel).trim())) {
+                      pModel = system?.ProcessorSummary?.Model || (pObj.Name && !/^\d+$/.test(String(pObj.Name).trim()) && !String(pObj.Name).includes("DevType") ? pObj.Name : null) || system?.Model || "Intel Xeon Processor";
+                    }
+
+                    const pMfr = (pObj.Manufacturer && pObj.Manufacturer !== "Supermicro" && pObj.Manufacturer !== "Tyrone" && pObj.Manufacturer !== "N/A")
+                      ? pObj.Manufacturer
+                      : (String(pModel || system?.ProcessorSummary?.Model || "").toUpperCase().includes("AMD") ? "AMD" : "Intel");
+
+                    return {
+                      ...pObj,
+                      Model: pModel,
+                      Manufacturer: pMfr,
+                      InstructionSet: pObj.InstructionSet || pObj.ProcessorArchitecture || "x86-64",
+                      MaxSpeedMHz: pObj.MaxSpeedMHz || system?.ProcessorSummary?.SpeedMHz || 2400,
+                      ProcessorType: pObj.ProcessorType || "CPU",
+                      SerialNumber: pObj.SerialNumber || "N/A",
+                      TotalCores: pObj.TotalCores || pObj.Cores || (system?.ProcessorSummary?.CoreCount ? Math.round(system.ProcessorSummary.CoreCount / collection.Members.length) : 16),
+                      TotalThreads: pObj.TotalThreads || pObj.Threads || (system?.ProcessorSummary?.LogicalProcessorCount ? Math.round(system.ProcessorSummary.LogicalProcessorCount / collection.Members.length) : 32)
+                    };
+                  }
+                  return null;
+                } catch {
+                  return null;
+                }
+              })
+            );
+            const validMembers = members.filter(Boolean);
+            if (validMembers.length > 0) return validMembers;
+          }
+        } catch (_) {}
+      }
+
+      if (system) {
+        const procSummary = system.ProcessorSummary || {};
+        const count = procSummary.Count || system.Processors?.count || system.Processors?.["@odata.count"] || 1;
+        const model = procSummary.Model || system.ProcessorModel || system.CPUModel || (system.Model && system.Model !== "SYS-621H-TN12R" ? system.Model : "Intel Xeon Processor");
+        const cores = procSummary.CoreCount ? Math.round(procSummary.CoreCount / count) : (procSummary.LogicalProcessorCount ? Math.round(procSummary.LogicalProcessorCount / (count * 2)) : 16);
+        const threads = procSummary.LogicalProcessorCount ? Math.round(procSummary.LogicalProcessorCount / count) : (cores ? cores * 2 : 32);
+
+        const summaryProcs: any[] = [];
+        for (let i = 0; i < (count || 1); i++) {
+          const sMfr = (procSummary.Manufacturer && procSummary.Manufacturer !== "Supermicro" && procSummary.Manufacturer !== "Tyrone" && procSummary.Manufacturer !== "N/A")
+            ? procSummary.Manufacturer
+            : (String(model).toUpperCase().includes("AMD") ? "AMD" : "Intel");
+
+          summaryProcs.push({
+            Id: `CPU_${i + 1}`,
+            Name: `CPU ${i + 1}`,
+            Model: model,
+            Manufacturer: sMfr,
+            InstructionSet: "x86-64",
+            MaxSpeedMHz: procSummary.SpeedMHz || 2400,
+            ProcessorType: "CPU",
+            SerialNumber: "N/A",
+            TotalCores: cores,
+            TotalThreads: threads,
+            Status: procSummary.Status || system.Processors?.Status || { Health: "OK", State: "Enabled" }
+          });
+        }
+        return summaryProcs;
       }
       return [];
     } catch (_) {
@@ -1610,18 +1859,17 @@ export class RedfishService {
   async getMemory(systemId: string = "") {
     try {
       const resolvedId = await this.resolveSystemId(systemId);
-      const collectionUri = `${resolvedId}/Memory`;
+      const system = await this.proxyRequest(resolvedId).catch(() => null);
+      const collectionUri = system?.Memory?.["@odata.id"] || `${resolvedId}/Memory`;
 
-      const collection = await this.proxyRequest(collectionUri).catch(async () => {
-        const system = await this.proxyRequest(resolvedId).catch(() => null);
-        return system?.Memory?.["@odata.id"] ? await this.proxyRequest(system.Memory["@odata.id"]) : null;
-      });
+      const collection = await this.proxyRequest(collectionUri).catch(() => null);
 
       if (collection && Array.isArray(collection.Members)) {
         const members = await Promise.all(
           collection.Members.map(async (m: any) => {
             try {
-              return await this.proxyRequest(m["@odata.id"]);
+              const uri = typeof m === "string" ? m : m["@odata.id"];
+              return uri ? await this.proxyRequest(uri) : null;
             } catch {
               return null;
             }
@@ -1629,6 +1877,24 @@ export class RedfishService {
         );
         const validMembers = members.filter(Boolean);
         if (validMembers.length > 0) return validMembers;
+      }
+
+      if (system) {
+        const memSummary = system.MemorySummary || system.Memory?.Summary || {};
+        const totalGiB = system.Memory?.totalGiB || memSummary.TotalSystemMemoryGiB || (memSummary.TotalSystemMemoryMiB ? memSummary.TotalSystemMemoryMiB / 1024 : 0);
+        if (totalGiB > 0 || system.MemorySummary || system.Memory) {
+          return [{
+            Id: "SystemMemory",
+            Name: "Total System Memory",
+            CapacityMiB: totalGiB ? totalGiB * 1024 : undefined,
+            CapacityBytes: totalGiB ? totalGiB * 1024 * 1024 * 1024 : undefined,
+            MemoryType: "System RAM",
+            MemoryDeviceType: "DDR/HBM",
+            Manufacturer: system.Manufacturer || "Host Node",
+            OperatingSpeedMhz: memSummary.MemorySpeedMhz || undefined,
+            Status: system.MemorySummary?.Status || system.Memory?.Status || { Health: "OK", State: "Enabled" }
+          }];
+        }
       }
       return [];
     } catch (_) {
@@ -1639,36 +1905,44 @@ export class RedfishService {
   async getStorageDetails(systemId: string = "") {
     try {
       const resolvedId = await this.resolveSystemId(systemId);
-      const collectionUri = `${resolvedId}/Storage`;
+      const system = await this.proxyRequest(resolvedId).catch(() => null);
+      const targetUris = [
+        system?.Storage?.["@odata.id"],
+        system?.SimpleStorage?.["@odata.id"],
+        `${resolvedId}/Storage`,
+        `${resolvedId}/SimpleStorage`
+      ].filter(Boolean);
 
-      const collection = await this.proxyRequest(collectionUri).catch(async () => {
-        const system = await this.proxyRequest(resolvedId).catch(() => null);
-        return system?.Storage?.["@odata.id"] ? await this.proxyRequest(system.Storage["@odata.id"]) : null;
-      });
-
-      if (collection && Array.isArray(collection.Members)) {
-        const members = await Promise.all(
-          collection.Members.map(async (m: any) => {
-            try {
-              const stgObj = await this.proxyRequest(m["@odata.id"]);
-              if (stgObj && Array.isArray(stgObj.Drives) && stgObj.Drives.length > 0) {
-                const driveDetails = await Promise.all(
-                  stgObj.Drives.map(async (d: any) => {
-                    try {
-                      return d["@odata.id"] ? await this.proxyRequest(d["@odata.id"]) : d;
-                    } catch (_) { return d; }
-                  })
-                );
-                stgObj.DriveDetails = driveDetails.filter(Boolean);
-              }
-              return stgObj;
-            } catch {
-              return null;
-            }
-          })
-        );
-        const validMembers = members.filter(Boolean);
-        if (validMembers.length > 0) return validMembers;
+      for (const collectionUri of Array.from(new Set(targetUris))) {
+        try {
+          const collection = await this.proxyRequest(collectionUri as string);
+          if (collection && Array.isArray(collection.Members) && collection.Members.length > 0) {
+            const members = await Promise.all(
+              collection.Members.map(async (m: any) => {
+                try {
+                  const mUri = typeof m === "string" ? m : m["@odata.id"];
+                  const stgObj = mUri ? await this.proxyRequest(mUri) : null;
+                  if (stgObj && Array.isArray(stgObj.Drives) && stgObj.Drives.length > 0) {
+                    const driveDetails = await Promise.all(
+                      stgObj.Drives.map(async (d: any) => {
+                        try {
+                          const dUri = typeof d === "string" ? d : d["@odata.id"];
+                          return dUri ? await this.proxyRequest(dUri) : d;
+                        } catch (_) { return d; }
+                      })
+                    );
+                    stgObj.DriveDetails = driveDetails.filter(Boolean);
+                  }
+                  return stgObj;
+                } catch {
+                  return null;
+                }
+              })
+            );
+            const validMembers = members.filter(Boolean);
+            if (validMembers.length > 0) return validMembers;
+          }
+        } catch (_) {}
       }
       return [];
     } catch (_) {
@@ -1679,25 +1953,36 @@ export class RedfishService {
   async getEthernetInterfaces(systemId: string = "") {
     try {
       const resolvedId = await this.resolveSystemId(systemId);
-      const collectionUri = `${resolvedId}/EthernetInterfaces`;
+      const system = await this.proxyRequest(resolvedId).catch(() => null);
 
-      const collection = await this.proxyRequest(collectionUri).catch(async () => {
-        const system = await this.proxyRequest(resolvedId).catch(() => null);
-        return system?.EthernetInterfaces?.["@odata.id"] ? await this.proxyRequest(system.EthernetInterfaces["@odata.id"]) : null;
-      });
+      const targetUris = [
+        `${resolvedId}/EthernetInterfaces`,
+        system?.EthernetInterfaces?.["@odata.id"],
+        `${resolvedId}/NetworkInterfaces`,
+        system?.NetworkInterfaces?.["@odata.id"]
+      ].filter(Boolean);
 
-      if (collection && Array.isArray(collection.Members)) {
-        const members = await Promise.all(
-          collection.Members.map(async (m: any) => {
-            try {
-              return await this.proxyRequest(m["@odata.id"]);
-            } catch {
-              return null;
-            }
-          })
-        );
-        const validMembers = members.filter(Boolean);
-        if (validMembers.length > 0) return validMembers;
+      try {
+        const mgrId = await this.resolveManagerId().catch(() => "");
+        if (mgrId) targetUris.push(`${mgrId}/EthernetInterfaces`);
+      } catch (_) {}
+
+      for (const collectionUri of Array.from(new Set(targetUris))) {
+        try {
+          const collection = await this.proxyRequest(collectionUri as string);
+          if (collection && Array.isArray(collection.Members) && collection.Members.length > 0) {
+            const members = await Promise.all(
+              collection.Members.map(async (m: any) => {
+                try {
+                  const mUri = typeof m === "string" ? m : m["@odata.id"];
+                  return mUri ? await this.proxyRequest(mUri) : null;
+                } catch { return null; }
+              })
+            );
+            const validMembers = members.filter(Boolean);
+            if (validMembers.length > 0) return validMembers;
+          }
+        } catch (_) {}
       }
       return [];
     } catch (_) {
@@ -1828,21 +2113,30 @@ export class RedfishService {
     return res;
   }
 
-  async getBiosSettings() {
+  async getBiosSettings(systemId?: string) {
     try {
-      return await this.proxyRequest("/redfish/v1/Systems/1/Bios");
+      const resolvedId = await this.resolveSystemId(systemId || "");
+      return await this.proxyRequest(`${resolvedId}/Bios`).catch(async () => {
+        const sys = await this.proxyRequest(resolvedId).catch(() => null);
+        if (sys?.Bios?.["@odata.id"]) return await this.proxyRequest(sys.Bios["@odata.id"]);
+        return null;
+      });
     } catch (e) {
       console.warn("Failed to get BIOS settings:", e);
       return null;
     }
   }
 
-  async setBiosSettings(attributes: Record<string, any>) {
-    return await this.proxyRequest("/redfish/v1/Systems/1/Bios/Settings", "PATCH", { Attributes: attributes });
+  async setBiosSettings(attributes: Record<string, any>, systemId?: string) {
+    const resolvedId = await this.resolveSystemId(systemId || "");
+    const biosRes = await this.proxyRequest(`${resolvedId}/Bios`).catch(() => null);
+    const settingsTarget = biosRes?.["@Redfish.Settings"]?.SettingsObject?.["@odata.id"] || `${resolvedId}/Bios/Settings` || `${resolvedId}/Bios`;
+    return await this.proxyRequest(settingsTarget, "PATCH", { Attributes: attributes });
   }
 
-  async setBootOrder(target: string, enabled: string = "Once", mode: string = "UEFI") {
-    return await this.proxyRequest("/redfish/v1/Systems/1", "PATCH", {
+  async setBootOrder(target: string, enabled: string = "Once", mode: string = "UEFI", systemId?: string) {
+    const resolvedId = await this.resolveSystemId(systemId || "");
+    return await this.proxyRequest(resolvedId, "PATCH", {
       Boot: {
         BootSourceOverrideTarget: target,
         BootSourceOverrideEnabled: enabled,
@@ -1853,64 +2147,38 @@ export class RedfishService {
 
   async getNetworkProtocol() {
     try {
-      const managersCol = await this.proxyRequest("/redfish/v1/Managers");
-      const managerUri = managersCol.Members[0]["@odata.id"].replace(/\/$/, "");
-      return await this.proxyRequest(`${managerUri}/NetworkProtocol`);
+      const mgrUri = await this.resolveManagerId();
+      return await this.proxyRequest(`${mgrUri}/NetworkProtocol`);
     } catch (e) {
-      console.warn("Failed to get Manager NetworkProtocol dynamically, trying fallback:", e);
-      try {
-        return await this.proxyRequest("/redfish/v1/Managers/1/NetworkProtocol");
-      } catch (fallbackErr) {
-        console.warn("Fallback to /redfish/v1/Managers/1/NetworkProtocol failed:", fallbackErr);
-        return null;
-      }
+      console.warn("Failed to get Manager NetworkProtocol dynamically:", e);
+      return null;
     }
   }
 
   async setNetworkProtocol(protocolConfig: Record<string, any>) {
-    let managerUri = "/redfish/v1/Managers/1";
-    try {
-      const managersCol = await this.proxyRequest("/redfish/v1/Managers");
-      managerUri = managersCol.Members[0]["@odata.id"].replace(/\/$/, "");
-    } catch (e) {
-      console.warn("Failed to discover manager dynamically for setNetworkProtocol:", e);
-    }
+    const managerUri = await this.resolveManagerId().catch(() => "/redfish/v1/Managers/1");
     return await this.proxyRequest(`${managerUri}/NetworkProtocol`, "PATCH", protocolConfig);
   }
 
-  async getPowerTelemetry(chassisId: string = "1") {
-    const isSelfCategory = String(chassisId).toLowerCase().includes("self") || String(chassisId).toLowerCase() === "as";
-    const primaryPath = isSelfCategory ? "/redfish/v1/Chassis/Self/Power" : "/redfish/v1/Chassis/1/Power";
-    const secondaryPath = isSelfCategory ? "/redfish/v1/Chassis/1/Power" : "/redfish/v1/Chassis/Self/Power";
+  async getPowerTelemetry(chassisId?: string) {
+    const endpoints: string[] = [];
 
-    const endpoints = [
-      chassisId.startsWith("/redfish") ? (chassisId.endsWith("/Power") ? chassisId : `${chassisId.replace(/\/$/, "")}/Power`) : primaryPath,
-      primaryPath,
-      secondaryPath,
-      "/redfish/v1/Chassis/self/Power",
-      "/redfish/v1/Chassis/1/Power",
-      "/redfish/v1/Chassis/Self/Power",
-      "/redfish/v1/Chassis/System.Embedded.1/Power"
-    ];
+    const targetChassis = (chassisId && chassisId !== "1") ? chassisId : await this.resolveChassisId();
+    if (targetChassis) {
+      endpoints.push(targetChassis.endsWith("/Power") ? targetChassis : `${targetChassis.replace(/\/$/, "")}/Power`);
+    }
 
     try {
       const chassisMembers = await this.getChassis().catch(() => []);
       for (const member of chassisMembers) {
-        const uri = member["@odata.id"] || member;
+        const uri = typeof member === "string" ? member : member["@odata.id"];
         if (typeof uri === "string") {
-          const powerUri = `${uri.replace(/\/$/, "")}/Power`;
-          if (isSelfCategory && uri.toLowerCase().includes("self")) {
-            endpoints.unshift(powerUri);
-          } else if (!isSelfCategory && uri.includes("/1")) {
-            endpoints.unshift(powerUri);
-          } else {
-            endpoints.push(powerUri);
-          }
+          endpoints.push(`${uri.replace(/\/$/, "")}/Power`);
         }
       }
     } catch (_) {}
 
-    for (const ep of Array.from(new Set(endpoints))) {
+    for (const ep of Array.from(new Set(endpoints.filter(Boolean)))) {
       try {
         const res = await this.proxyRequest(ep);
         if (res && (res.PowerControl || res.Voltages || res.PowerSupplies)) {
@@ -1934,97 +2202,83 @@ export class RedfishService {
     });
   }
 
-  async getSystemEventLogs() {
-    try {
-      const res = await this.proxyRequest("/redfish/v1/Systems/1/LogServices/EventLog/Entries");
-      return res.Members || [];
-    } catch (e: any) {
-      try {
-        const res = await this.proxyRequest("/redfish/v1/Systems/1/LogServices/SEL/Entries");
-        return res.Members || [];
-      } catch (err: any) {
-        try {
-          const res = await this.proxyRequest("/redfish/v1/Systems/1/LogServices/Log1/Entries");
-          return res.Members || [];
-        } catch (err2: any) {
-          try {
-            const res = await this.proxyRequest("/redfish/v1/Managers/1/LogServices/Log1/Entries");
-            return res.Members || [];
-          } catch (err3: any) {
-            try {
-              const res = await this.proxyRequest("/redfish/v1/Managers/1/LogServices/SEL/Entries");
-              return res.Members || [];
-            } catch (err4: any) {
-              console.warn("Could not fetch Redfish event logs from Systems or Managers collections:", err4);
-              return [];
-            }
-          }
-        }
-      }
-    }
+  async getSystemEventLogs(systemId?: string) {
+    return this.getEventLogs(systemId || "");
   }
 
-  async clearSystemEventLogs() {
+  async clearSystemEventLogs(systemId?: string) {
     try {
-      return await this.proxyRequest("/redfish/v1/Systems/1/LogServices/EventLog/Actions/LogService.ClearLog", "POST", {});
-    } catch (e) {
-      try {
-        return await this.proxyRequest("/redfish/v1/Systems/1/LogServices/SEL/Actions/LogService.ClearLog", "POST", {});
-      } catch (err) {
+      const sysId = await this.resolveSystemId(systemId || "");
+      const mgrId = await this.resolveManagerId().catch(() => "/redfish/v1/Managers/1");
+
+      const actionTargets = [
+        `${sysId}/LogServices/EventLog/Actions/LogService.ClearLog`,
+        `${sysId}/LogServices/SEL/Actions/LogService.ClearLog`,
+        `${sysId}/LogServices/Log1/Actions/LogService.ClearLog`,
+        `${mgrId}/LogServices/Log1/Actions/LogService.ClearLog`,
+        `${mgrId}/LogServices/SEL/Actions/LogService.ClearLog`
+      ];
+
+      for (const target of actionTargets) {
         try {
-          return await this.proxyRequest("/redfish/v1/Systems/1/LogServices/Log1/Actions/LogService.ClearLog", "POST", {});
-        } catch (err2) {
-          try {
-            return await this.proxyRequest("/redfish/v1/Managers/1/LogServices/Log1/Actions/LogService.ClearLog", "POST", {});
-          } catch (err3) {
-            try {
-              return await this.proxyRequest("/redfish/v1/Managers/1/LogServices/SEL/Actions/LogService.ClearLog", "POST", {});
-            } catch (err4) {
-              return { success: false };
-            }
-          }
-        }
+          return await this.proxyRequest(target, "POST", {});
+        } catch (_) {}
       }
+      return { success: false };
+    } catch (_) {
+      return { success: false };
     }
   }
 
   async getPCIeDevices(systemId: string = "") {
     try {
-      const sysId = await this.resolveSystemId(systemId).catch(() => "/redfish/v1/Systems/1");
-      const res = await this.proxyRequest(`${sysId}/PCIeDevices`).catch(() =>
-        this.proxyRequest("/redfish/v1/Chassis/1/PCIeDevices")
-      ).catch(() => null);
+      const sysId = await this.resolveSystemId(systemId);
+      const system = await this.proxyRequest(sysId).catch(() => null);
+      const chassisId = await this.resolveChassisId().catch(() => "");
+      const chassis = chassisId ? await this.proxyRequest(chassisId).catch(() => null) : null;
 
-      if (res && Array.isArray(res.Members)) {
-        return await Promise.all(
-          res.Members.map(async (m: any) => {
-            try {
-              const devUri = m["@odata.id"] || m;
-              const dev = await this.proxyRequest(devUri);
-              if (dev) {
-                if (dev.PCIeFunctions && dev.PCIeFunctions["@odata.id"]) {
-                  const funcsCol = await this.proxyRequest(dev.PCIeFunctions["@odata.id"]).catch(() => null);
-                  if (funcsCol && Array.isArray(funcsCol.Members)) {
-                    dev.PCIeFunctionDetails = await Promise.all(
-                      funcsCol.Members.map(async (f: any) => {
-                        try { return await this.proxyRequest(f["@odata.id"] || f); } catch { return null; }
-                      })
-                    ).then(l => l.filter(Boolean));
+      const targetUris = [
+        system?.PCIeDevices?.["@odata.id"],
+        `${sysId}/PCIeDevices`,
+        chassis?.PCIeDevices?.["@odata.id"],
+        chassisId ? `${chassisId}/PCIeDevices` : ""
+      ].filter(Boolean);
+
+      for (const uri of Array.from(new Set(targetUris))) {
+        try {
+          const res = await this.proxyRequest(uri as string);
+          if (res && Array.isArray(res.Members) && res.Members.length > 0) {
+            return await Promise.all(
+              res.Members.map(async (m: any) => {
+                try {
+                  const devUri = typeof m === "string" ? m : m["@odata.id"];
+                  const dev = devUri ? await this.proxyRequest(devUri) : null;
+                  if (dev) {
+                    if (dev.PCIeFunctions && dev.PCIeFunctions["@odata.id"]) {
+                      const funcsCol = await this.proxyRequest(dev.PCIeFunctions["@odata.id"]).catch(() => null);
+                      if (funcsCol && Array.isArray(funcsCol.Members)) {
+                        dev.PCIeFunctionDetails = await Promise.all(
+                          funcsCol.Members.map(async (f: any) => {
+                            try { return await this.proxyRequest(f["@odata.id"] || f); } catch { return null; }
+                          })
+                        ).then(l => l.filter(Boolean));
+                      }
+                    } else if (dev.Links && Array.isArray(dev.Links.PCIeFunctions)) {
+                      dev.PCIeFunctionDetails = await Promise.all(
+                        dev.Links.PCIeFunctions.map(async (f: any) => {
+                          try { return await this.proxyRequest(f["@odata.id"] || f); } catch { return null; }
+                        })
+                      ).then(l => l.filter(Boolean));
+                    }
                   }
-                } else if (dev.Links && Array.isArray(dev.Links.PCIeFunctions)) {
-                  dev.PCIeFunctionDetails = await Promise.all(
-                    dev.Links.PCIeFunctions.map(async (f: any) => {
-                      try { return await this.proxyRequest(f["@odata.id"] || f); } catch { return null; }
-                    })
-                  ).then(l => l.filter(Boolean));
+                  return dev;
+                } catch {
+                  return null;
                 }
-              }
-              return dev;
-            } catch {
-              return null;
-            }
-          })
-        ).then(list => list.filter(Boolean));
+              })
+            ).then(list => list.filter(Boolean));
+          }
+        } catch (_) {}
       }
       return [];
     } catch (_) {
@@ -2071,11 +2325,13 @@ export class RedfishService {
     return null;
   }
 
-  async getPCIeSlots(chassisId: string = "1") {
+  async getPCIeSlots(chassisId?: string) {
     try {
-      const chassisUri = chassisId.startsWith("/redfish") ? chassisId : `/redfish/v1/Chassis/${chassisId}`;
+      const targetChassis = (chassisId && chassisId !== "1") ? chassisId : await this.resolveChassisId();
+      const chassisUri = targetChassis.startsWith("/redfish") ? targetChassis : `/redfish/v1/Chassis/${targetChassis}`;
       const chassis = await this.proxyRequest(chassisUri).catch(() => null);
-      const slotsUri = chassis?.PCIeSlots?.["@odata.id"] || `${chassisUri}/PCIeSlots` || "/redfish/v1/Chassis/1/PCIeSlots";
+      if (!chassis) return [];
+      const slotsUri = chassis?.PCIeSlots?.["@odata.id"] || `${chassisUri}/PCIeSlots`;
       const res = await this.proxyRequest(slotsUri).catch(() => null);
       if (res) {
         if (Array.isArray(res.Slots)) return res.Slots;
@@ -2094,30 +2350,22 @@ export class RedfishService {
     }
   }
 
-  async getSensors(chassisId: string = "1") {
+  async getSensors(chassisId?: string) {
     const sensorList: any[] = [];
     const seenNames = new Set<string>();
 
-    const targetEp = chassisId.startsWith("/redfish")
-      ? (chassisId.endsWith("/Sensors") ? chassisId : `${chassisId.replace(/\/$/, "")}/Sensors`)
-      : `/redfish/v1/Chassis/${chassisId}/Sensors`;
+    const targetChassis = (chassisId && chassisId !== "1") ? chassisId : await this.resolveChassisId();
+    const chassisUri = targetChassis.startsWith("/redfish") ? targetChassis : `/redfish/v1/Chassis/${targetChassis}`;
+    const targetEp = chassisUri.endsWith("/Sensors") ? chassisUri : `${chassisUri.replace(/\/$/, "")}/Sensors`;
 
-    // 1. Cascading search across Redfish Sensors collection endpoints
-    const sensorEndpoints = [
-      "/redfish/v1/Chassis/1/Sensors",
-      "/redfish/v1/Chassis/Self/Sensors",
-      targetEp,
-      "/redfish/v1/Chassis/System.Embedded.1/Sensors",
-      "/redfish/v1/Sensors"
-    ];
-
+    const sensorEndpoints: string[] = [];
     try {
-      const chassisUri = chassisId.startsWith("/redfish") ? chassisId : `/redfish/v1/Chassis/${chassisId}`;
       const chassis = await this.proxyRequest(chassisUri).catch(() => null);
       if (chassis?.Sensors?.["@odata.id"]) {
-        sensorEndpoints.unshift(chassis.Sensors["@odata.id"]);
+        sensorEndpoints.push(chassis.Sensors["@odata.id"]);
       }
     } catch (_) {}
+    sensorEndpoints.push(targetEp);
 
     const uniqueEndpoints = Array.from(new Set(sensorEndpoints.filter(Boolean)));
 

@@ -4981,7 +4981,7 @@ export const ServerInventory: React.FC<ServerInventoryProps> = ({ service, syste
                   <span className="text-gray-400 uppercase font-bold">Max Speed</span>
                   <span className="text-right font-bold">{proc.MaxSpeedMHz ? `${(proc.MaxSpeedMHz / 1000).toFixed(2)} GHz` : "N/A"}</span>
                   <span className="text-gray-400 uppercase font-bold">Manufacturer</span>
-                  <span className="text-right font-bold">{proc.Manufacturer || "Intel(R) Corporation"}</span>
+                  <span className="text-right font-bold">{proc.Manufacturer || "N/A"}</span>
                 </div>
               </InventoryCard>
             ))}

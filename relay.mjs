@@ -78,16 +78,16 @@ function startBridge() {
 
         if (message.type === 'discovery') {
           const { requestId, payload } = message;
-          console.log('[' + new Date().toLocaleTimeString() + '] Scanning: ' + payload.subnet + '.x');
+          const subnet = payload?.subnet || '172.16.12';
+          console.log('[' + new Date().toLocaleTimeString() + '] Relay starting subnet scan (' + subnet + '.1 - .254)...');
 
           const found = [];
           const ips = [];
           for (let i = 1; i <= 254; i++) {
-            ips.push(payload.subnet + '.' + i);
+            ips.push(subnet + '.' + i);
           }
 
-          // Concurrency limit of 30 parallel scans to avoid socket exhaustion
-          const concurrencyLimit = 30;
+          const concurrencyLimit = 50;
 
           const scanIP = async (ip) => {
             for (const proto of ['https', 'http']) {
@@ -96,15 +96,28 @@ function startBridge() {
                 const res = await axios.get(url, {
                   httpsAgent: sharedHttpsAgent,
                   httpAgent: sharedHttpAgent,
-                  timeout: 1500 // shorter timeout for fast skipping
+                  timeout: 2500,
+                  headers: { Accept: 'application/json' }
                 });
-                if (res.data && (res.data.Systems || res.data.Chassis)) {
-                  console.log('   + Detected Server: ' + ip);
-                  found.push({ ip, url: proto + '://' + ip, name: 'Tyrone Server (' + ip + ')' });
+                if (res.data) {
+                  const data = res.data;
+                  const vendor = data.Product || data.Vendor || data.Manufacturer || 'Generic Redfish Device';
+                  console.log('   + [NEW SERVER DETECTED] Redfish Target found at ' + ip + ' (' + vendor + ')');
+                  found.push({
+                    id: ip,
+                    ip,
+                    address: ip,
+                    url: proto + '://' + ip,
+                    name: 'Tyrone Server (' + ip + ')',
+                    vendor,
+                    product: data.Product || vendor,
+                    model: data.Model || data.Product || 'Redfish BMC',
+                    status: 'Online'
+                  });
                   break; // found, skip the other protocol
                 }
               } catch (e) {
-                // ignore
+                // Quietly catch timeouts and non-Redfish endpoints
               }
             }
           };

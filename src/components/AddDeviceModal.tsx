@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { X, Plus, Server, ArrowLeft, RefreshCw } from "lucide-react";
+import { X, Plus, Server, ArrowLeft, RefreshCw, Eye, EyeOff } from "lucide-react";
 import { validateBmcCredentials, fetchServerDetailsForAddition } from "../services/redfishService";
 
 export interface AddDeviceModalProps {
@@ -26,6 +26,7 @@ export function AddDeviceModal({
   const [protocol, setProtocol] = useState<"IPMI" | "SSH" | "WMI" | "HTTPS" | "SSH BMC">("IPMI");
   const [ipmiUsername, setIpmiUsername] = useState("admin");
   const [ipmiPassword, setIpmiPassword] = useState("netweb@123");
+  const [showIpmiPassword, setShowIpmiPassword] = useState(false);
   const [ipmiKey, setIpmiKey] = useState("");
   const [operatingSystem, setOperatingSystem] = useState("Linux");
 
@@ -63,8 +64,8 @@ export function AddDeviceModal({
     setIsSubmitting(true);
     let fetchedInfo: any = null;
     try {
-      await validateBmcCredentials(deviceIp, userStr, passStr);
-      fetchedInfo = await fetchServerDetailsForAddition(deviceIp, userStr, passStr);
+      await validateBmcCredentials(deviceIp, userStr, passStr, category);
+      fetchedInfo = await fetchServerDetailsForAddition(deviceIp, userStr, passStr, category);
     } catch (err: any) {
       setIsSubmitting(false);
       setFormError(err.message || "Authentication Failed: Incorrect BMC Username or Password.");
@@ -83,7 +84,7 @@ export function AddDeviceModal({
       bmcUsername: userStr,
       bmcPassword: passStr,
       category,
-      chassisUri: category === "AS" ? "/redfish/v1/Chassis/self" : "/redfish/v1/Chassis/1",
+      chassisUri: category === "AS" ? "/redfish/v1/Chassis/Self" : "/redfish/v1/Chassis/1",
       model: modelName,
       manufacturer: manufacturerName,
       serialNumber: generatedSerial,
@@ -431,13 +432,23 @@ export function AddDeviceModal({
                   placeholder="Username (e.g. admin)"
                   className="w-full px-3 py-2 border border-slate-300 rounded text-xs font-medium focus:outline-none focus:border-[#680505]"
                 />
-                <input
-                  type="password"
-                  value={ipmiPassword}
-                  onChange={e => setIpmiPassword(e.target.value)}
-                  placeholder="Password"
-                  className="w-full px-3 py-2 border border-slate-300 rounded text-xs font-medium focus:outline-none focus:border-[#680505]"
-                />
+                <div className="relative flex items-center">
+                  <input
+                    type={showIpmiPassword ? "text" : "password"}
+                    value={ipmiPassword}
+                    onChange={e => setIpmiPassword(e.target.value)}
+                    placeholder="Password"
+                    className="w-full px-3 py-2 pr-9 border border-slate-300 rounded text-xs font-medium focus:outline-none focus:border-[#680505]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowIpmiPassword(!showIpmiPassword)}
+                    className="absolute right-2 text-slate-400 hover:text-slate-600 focus:outline-none cursor-pointer"
+                    title={showIpmiPassword ? "Hide password" : "Show password"}
+                  >
+                    {showIpmiPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
             </div>
 

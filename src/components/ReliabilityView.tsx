@@ -120,36 +120,7 @@ export function ReliabilityView({ servers = [], serverStatuses = {}, onSelectSer
 
   const [realSsdDrives, setRealSsdDrives] = useState<Array<{ server: string; serial: string; capacity: string; wear: string; temp: string; health: string }>>([]);
   const [realSensorThresholds, setRealSensorThresholds] = useState<Array<{ name: string; reading: string; lowerWarn: string; lowerCrit: string; upperWarn: string; upperCrit: string; status: string }>>([]);
-  const [realAnomalies, setRealAnomalies] = useState<Array<{ server: string; metric: string; severity: string; score: string; timestamp: string }>>([
-    {
-      server: "172.16.12.50 (172.16.12.50)",
-      metric: "CPU 1 Thermal Junction Delta (+8.4°C Drift)",
-      severity: "Warning",
-      score: "0.78",
-      timestamp: new Date(Date.now() - 14 * 60000).toLocaleString()
-    },
-    {
-      server: "172.16.12.55 (172.16.12.55)",
-      metric: "Fan 3 Tachometer RPM Fluctuation (±420 RPM)",
-      severity: "Warning",
-      score: "0.82",
-      timestamp: new Date(Date.now() - 42 * 60000).toLocaleString()
-    },
-    {
-      server: "172.16.12.10 (172.16.12.10)",
-      metric: "Memory DIMM B2 Correctable ECC Spike (+14/hr)",
-      severity: "Critical",
-      score: "0.91",
-      timestamp: new Date(Date.now() - 95 * 60000).toLocaleString()
-    },
-    {
-      server: "172.16.12.100 (172.16.12.100)",
-      metric: "NVMe Drive 1 Wear & Temperature Anomaly",
-      severity: "Warning",
-      score: "0.74",
-      timestamp: new Date(Date.now() - 180 * 60000).toLocaleString()
-    }
-  ]);
+  const [realAnomalies, setRealAnomalies] = useState<Array<{ server: string; metric: string; severity: string; score: string; timestamp: string }>>([]);
   const [realFailures, setRealFailures] = useState<Array<{ server: string; subsystem: string; indicator: string; window: string; action: string }>>([]);
   const [loadingTelemetry, setLoadingTelemetry] = useState<boolean>(false);
 
@@ -200,8 +171,9 @@ export function ReliabilityView({ servers = [], serverStatuses = {}, onSelectSer
             serialMap[s.id] = s.serialNumber || "N/A";
           }
 
+          const sysId = await redfish.resolveSystemId().catch(() => "");
           // Fetch Storage / Drives
-          const stgs = await redfish.getStorageDetails("1").catch(() => []);
+          const stgs = await redfish.getStorageDetails(sysId).catch(() => []);
           if (Array.isArray(stgs)) {
             stgs.forEach((stg: any, sIdx: number) => {
               const drives = Array.isArray(stg.Drives) ? stg.Drives : [stg];
@@ -260,7 +232,7 @@ export function ReliabilityView({ servers = [], serverStatuses = {}, onSelectSer
           }
 
           // Fetch Event Logs for Anomalies & Failure Indicators
-          const eventLogs = await redfish.getEventLogs("1").catch(() => []);
+          const eventLogs = await redfish.getEventLogs(sysId).catch(() => []);
           if (Array.isArray(eventLogs) && eventLogs.length > 0) {
             eventLogs.forEach((log: any) => {
               if (log.Severity === "Warning" || log.Severity === "Critical") {
@@ -288,41 +260,6 @@ export function ReliabilityView({ servers = [], serverStatuses = {}, onSelectSer
       }));
 
       if (isMounted) {
-        if (anomalyList.length === 0) {
-          activeFleet.forEach((s, idx) => {
-            const ip = s.bmcIp || s.name || "172.16.12.50";
-            anomalyList.push(
-              {
-                server: `${ip} (${s.name || "Tyrone Server"})`,
-                metric: "CPU 1 Thermal Junction Delta (+8.4°C Drift)",
-                severity: "Warning",
-                score: "0.78",
-                timestamp: new Date(Date.now() - (idx * 20 + 14) * 60000).toLocaleString()
-              },
-              {
-                server: `${ip} (${s.name || "Tyrone Server"})`,
-                metric: "Fan 3 Tachometer RPM Fluctuation (±420 RPM)",
-                severity: "Warning",
-                score: "0.82",
-                timestamp: new Date(Date.now() - (idx * 20 + 42) * 60000).toLocaleString()
-              },
-              {
-                server: `${ip} (${s.name || "Tyrone Server"})`,
-                metric: "Memory DIMM B2 Correctable ECC Spike (+14/hr)",
-                severity: "Critical",
-                score: "0.91",
-                timestamp: new Date(Date.now() - (idx * 20 + 95) * 60000).toLocaleString()
-              },
-              {
-                server: `${ip} (${s.name || "Tyrone Server"})`,
-                metric: "NVMe Drive 1 Wear & Temperature Anomaly",
-                severity: "Warning",
-                score: "0.74",
-                timestamp: new Date(Date.now() - (idx * 20 + 180) * 60000).toLocaleString()
-              }
-            );
-          });
-        }
 
         setFetchedSerials(serialMap);
         setRealSsdDrives(ssdList);
@@ -437,7 +374,6 @@ export function ReliabilityView({ servers = [], serverStatuses = {}, onSelectSer
       <div className="flex items-center gap-1 border-b border-slate-400 mb-2.5 overflow-x-auto pt-1 pb-0 shrink-0">
         {[
           { id: "unhealthy", label: "Unhealthy Devices" },
-          { id: "anomaly", label: "Anomaly Detection" },
           { id: "diagnostic", label: "Diagnostic Tools" }
         ].map(tab => {
           const isActive = activeSubTab === tab.id;
@@ -549,77 +485,7 @@ export function ReliabilityView({ servers = [], serverStatuses = {}, onSelectSer
         </div>
       )}
 
-      {/* Anomaly Detection Sub-Tab */}
-      {activeSubTab === "anomaly" && (
-        <div className="bg-white border border-slate-300 rounded shadow-xs overflow-hidden flex flex-col flex-1">
-          <div className="bg-[#7a0c0c] text-white px-4 py-2.5 flex items-center justify-between font-bold">
-            <div className="flex items-center gap-2">
-              <Activity className="w-4 h-4" />
-              <span>Anomaly Detection Records</span>
-            </div>
-            <span className="text-[11px] font-mono text-white/80">AI/ML Telemetry Watchdog</span>
-          </div>
-          <div className="p-4 overflow-y-auto flex-1 space-y-3">
-            <div className="border border-slate-300 rounded overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300 text-xs">
-                  <tr>
-                    <th className="p-2.5 border-r border-slate-300">Server</th>
-                    <th className="p-2.5 border-r border-slate-300">Metric Type</th>
-                    <th className="p-2.5 border-r border-slate-300">Severity</th>
-                    <th className="p-2.5 border-r border-slate-300">Anomaly Score</th>
-                    <th className="p-2.5">Detected Timestamp</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200 text-xs">
-                  {(realAnomalies.length > 0 ? realAnomalies : [
-                    {
-                      server: "172.16.12.50 (172.16.12.50)",
-                      metric: "CPU 1 Thermal Junction Delta (+8.4°C Drift)",
-                      severity: "Warning",
-                      score: "0.78",
-                      timestamp: new Date(Date.now() - 14 * 60000).toLocaleString()
-                    },
-                    {
-                      server: "172.16.12.55 (172.16.12.55)",
-                      metric: "Fan 3 Tachometer RPM Fluctuation (±420 RPM)",
-                      severity: "Warning",
-                      score: "0.82",
-                      timestamp: new Date(Date.now() - 42 * 60000).toLocaleString()
-                    },
-                    {
-                      server: "172.16.12.10 (172.16.12.10)",
-                      metric: "Memory DIMM B2 Correctable ECC Spike (+14/hr)",
-                      severity: "Critical",
-                      score: "0.91",
-                      timestamp: new Date(Date.now() - 95 * 60000).toLocaleString()
-                    },
-                    {
-                      server: "172.16.12.100 (172.16.12.100)",
-                      metric: "NVMe Drive 1 Wear & Temperature Anomaly",
-                      severity: "Warning",
-                      score: "0.74",
-                      timestamp: new Date(Date.now() - 180 * 60000).toLocaleString()
-                    }
-                  ]).map((anom, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50">
-                      <td className="p-2.5 border-r border-slate-200 font-bold text-red-700">{anom.server}</td>
-                      <td className="p-2.5 border-r border-slate-200 font-medium text-slate-800">{anom.metric}</td>
-                      <td className="p-2.5 border-r border-slate-200 font-bold">
-                        <span className={`px-2 py-0.5 rounded text-[10px] ${anom.severity === "Critical" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}>
-                          {anom.severity}
-                        </span>
-                      </td>
-                      <td className="p-2.5 border-r border-slate-200 font-mono font-bold text-slate-800">{anom.score}</td>
-                      <td className="p-2.5 font-mono text-slate-600 text-[11px]">{anom.timestamp}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
+
 
 
 
