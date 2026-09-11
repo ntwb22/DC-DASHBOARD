@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { X, RotateCcw } from "lucide-react";
 
 export const ALL_GADGETS = [
@@ -14,35 +14,18 @@ export const ALL_GADGETS = [
   "Weight Capacity",
   "Summary of Hierarchy",
   "Top 3 High Temperature Rooms",
-  "Temperature Trending in a Week",
-  "Power Trending in a Week",
-  "Temperature Trending in a Month",
-  "Power Trending in a Month",
   "Power Data Summary",
   "Device Statistics",
-  "Firmware/Software Outlier",
   "Cooling Anomaly",
-  "Fan Outlier",
   "Device Health Summary",
   "Component Health Summary",
   "Recent Inventory Changes",
   "Events by Severity",
-  "Events by Category",
   "Events by Day",
-  "Power Usage Effectiveness",
-  "GPU Statistics"
+  "Power Usage Effectiveness"
 ];
 
-export const DEFAULT_ENABLED_GADGETS = [
-  "Error Alert System",
-  "Network Port Monitoring",
-  "Summary of Hierarchy",
-  "Device Health Summary",
-  "Power Capacity",
-  "Temperature Trending in a Day",
-  "Power Trending in a Day",
-  "Device Statistics"
-];
+export const DEFAULT_ENABLED_GADGETS = ALL_GADGETS;
 
 export interface GadgetsModalProps {
   isOpen: boolean;
@@ -53,6 +36,12 @@ export interface GadgetsModalProps {
 
 export function GadgetsModal({ isOpen, enabledGadgets, onClose, onSave }: GadgetsModalProps) {
   const [selected, setSelected] = useState<string[]>(enabledGadgets);
+
+  useEffect(() => {
+    if (isOpen) {
+      setSelected(enabledGadgets);
+    }
+  }, [isOpen, enabledGadgets]);
 
   if (!isOpen) return null;
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import { RedfishService } from "../services/redfishService";
+import { RedfishService, validateBmcCredentials } from "../services/redfishService";
 import { AddDeviceModal } from "./AddDeviceModal";
 import { ProvisioningModal } from "./ProvisioningModal";
 import {
@@ -913,8 +913,25 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
       } else if (action === "Reconnect") {
         RedfishService.clearCache();
         telemetryCacheRef.current = {};
-        await fetchServerTelemetry(activeServer, true, false);
-        alert(`Successfully reconnected and refreshed telemetry for ${activeServer.name || activeServer.bmcIp}.`);
+
+        let pingStatus = "";
+        try {
+          await validateBmcCredentials(activeServer.bmcIp, bmcUser || "admin", bmcPass || "");
+          pingStatus = `Ping & BMC connection successful for ${activeServer.name || activeServer.bmcIp} (${activeServer.bmcIp}).`;
+          await fetchServerTelemetry(activeServer, true, false);
+        } catch (err: any) {
+          pingStatus = `Ping / connection failed for ${activeServer.name || activeServer.bmcIp} (${activeServer.bmcIp}): ${err.message || "Target unreachable"}`;
+        }
+
+        alert(`${pingStatus}\n\nOpening Edit Device modal to edit details.`);
+
+        setDeviceToEdit({
+          ...activeServer,
+          bmcUsername: bmcUser || "admin",
+          bmcPassword: bmcPass || "",
+          rack: activeServer.rack || savedNode?.rack || "Rack 1"
+        });
+        setShowEditDeviceModal(true);
       }
     } catch (err: any) {
       alert(`Action ${action} executed for ${activeServer.name || activeServer.bmcIp}.`);
@@ -2658,26 +2675,26 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                     </div>
 
                     <div className="space-y-1.5 text-xs divide-y divide-slate-100">
-                      <div className="grid grid-cols-3 py-1 items-center">
+                      <div className="grid grid-cols-[220px_1fr] py-1 items-center">
                         <span className="text-slate-500 font-medium">Address</span>
                         {hasActiveDevice ? (
                           <a
                             href={`https://${activeServer.bmcIp}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="col-span-2 font-bold text-blue-600 hover:text-blue-800 hover:underline font-mono inline-flex items-center gap-1 cursor-pointer"
+                            className="font-bold text-blue-600 hover:text-blue-800 hover:underline font-mono inline-flex items-center gap-1 cursor-pointer"
                             title={`Open BMC Web Console (https://${activeServer.bmcIp})`}
                           >
                             <span>{activeServer.bmcIp}</span>
                             <ExternalLink className="w-3 h-3 opacity-70" />
                           </a>
                         ) : (
-                          <span className="col-span-2 font-bold text-slate-800 font-mono">NA</span>
+                          <span className="font-bold text-slate-800 font-mono">NA</span>
                         )}
                       </div>
-                      <div className="grid grid-cols-3 py-1">
+                      <div className="grid grid-cols-[220px_1fr] py-1 items-center">
                         <span className="text-slate-500 font-medium">Serial Number</span>
-                        <span className="col-span-2 font-bold text-slate-800 font-mono">
+                        <span className="font-bold text-slate-800 font-mono">
                           {!hasActiveDevice
                             ? "N/A"
                             : (telemetry.system?.SerialNumber && telemetry.system.SerialNumber !== "N/A" && telemetry.system.SerialNumber !== "NA" && telemetry.system.SerialNumber !== "Tyrone" && telemetry.system.SerialNumber !== "0123456789"
@@ -2687,11 +2704,10 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                                 : "N/A"))}
                         </span>
                       </div>
-                      <div className="grid grid-cols-3 py-1 items-center">
+                      <div className="grid grid-cols-[220px_1fr] py-1 items-center">
                         <span className="text-slate-500 font-medium">Chassis Indicator</span>
-                        <div className="col-span-2 flex items-center gap-2">
-                          <span className="font-bold text-slate-800">{hasActiveDevice ? chassisIndicator : "NA"}</span>
-                          {hasActiveDevice && (
+                        <div className="flex items-center gap-2">
+                          {hasActiveDevice ? (
                             <div className="flex items-center gap-1.5">
                               <button
                                 onClick={() => handleChassisIndicatorChange("Off")}
@@ -2721,18 +2737,20 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                                 Blinking
                               </button>
                             </div>
+                          ) : (
+                            <span className="font-bold text-slate-800">NA</span>
                           )}
                         </div>
                       </div>
-                      <div className="grid grid-cols-3 py-1">
+                      <div className="grid grid-cols-[220px_1fr] py-1 items-center">
                         <span className="text-slate-500 font-medium">Device Type</span>
-                        <span className="col-span-2 font-bold text-slate-800">
+                        <span className="font-bold text-slate-800">
                           {!hasActiveDevice ? "NA" : (telemetry.system?.SystemType || (activeServer as any).deviceType || "Physical Server")}
                         </span>
                       </div>
-                      <div className="grid grid-cols-3 py-1">
+                      <div className="grid grid-cols-[220px_1fr] py-1 items-center">
                         <span className="text-slate-500 font-medium">Device Model</span>
-                        <span className="col-span-2 font-bold text-slate-800">
+                        <span className="font-bold text-slate-800">
                           {!hasActiveDevice
                             ? "N/A"
                             : (telemetry.system?.Model && telemetry.system.Model !== "N/A" && !telemetry.system.Model.includes("AD200A3R-212")
@@ -2743,14 +2761,14 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                         </span>
                       </div>
 
-                      <div className="grid grid-cols-3 py-1 items-center">
+                      <div className="grid grid-cols-[220px_1fr] py-1 items-center">
                         <span className="text-slate-500 font-medium">Mgmt Module Firmware Version</span>
-                        <div className="col-span-2 flex items-center gap-2">
-                          <span className="font-bold text-slate-800">
+                        <div className="flex items-center gap-3">
+                          <span className="font-bold text-slate-800 font-mono">
                             {!hasActiveDevice ? "NA" : (telemetry.system?.BiosVersion || telemetry.system?.FirmwareVersion || "N/A")}
                           </span>
                           {hasActiveDevice && (
-                            <>
+                            <div className="pl-3 border-l border-slate-300 flex items-center gap-2.5">
                               <button
                                 type="button"
                                 onClick={() => setShowProvisioningModal(true)}
@@ -2759,24 +2777,24 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                                 Provisioning
                               </button>
                               <button className="text-red-700 font-bold hover:underline text-[11px] cursor-pointer">More</button>
-                            </>
+                            </div>
                           )}
                         </div>
                       </div>
-                      <div className="grid grid-cols-3 py-1">
+                      <div className="grid grid-cols-[220px_1fr] py-1 items-center">
                         <span className="text-slate-500 font-medium">Management Console URL</span>
                         {hasActiveDevice ? (
                           <a
                             href={`https://${activeServer.bmcIp}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="col-span-2 font-bold text-blue-600 hover:underline truncate flex items-center gap-1"
+                            className="font-bold text-blue-600 hover:underline truncate flex items-center gap-1"
                           >
                             <span>https://{activeServer.bmcIp}:443</span>
                             <ExternalLink className="w-3 h-3" />
                           </a>
                         ) : (
-                          <span className="col-span-2 font-bold text-slate-800 font-mono">NA</span>
+                          <span className="font-bold text-slate-800 font-mono">NA</span>
                         )}
                       </div>
                     </div>
@@ -2786,12 +2804,12 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                 {/* Middle Row: Inventory Information & Health Status */}
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-stretch">
                   {/* Inventory Information Box (Left 7 Cols) */}
-                  <div className="lg:col-span-7 bg-white border border-slate-300 rounded p-4 shadow-sm flex flex-col h-full">
-                    <div className="font-bold text-slate-800 border-b border-slate-200 pb-2 mb-3 flex items-center justify-between">
+                  <div className="lg:col-span-7 bg-white border border-slate-300 rounded p-3 shadow-xs flex flex-col h-full">
+                    <div className="font-bold text-sm text-slate-800 border-b border-slate-200 pb-1.5 mb-2 flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <span>Inventory Information</span>
                         {telemetry.loading && hasActiveDevice && (
-                          <span className="text-[10px] text-red-600 font-bold animate-pulse">● Querying {activeServer!.bmcIp}...</span>
+                          <span className="text-xs text-red-600 font-bold animate-pulse">● Querying {activeServer!.bmcIp}...</span>
                         )}
                       </div>
                       <div className="flex items-center gap-2">
@@ -2811,9 +2829,9 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-12 gap-3 flex-1">
+                    <div className="grid grid-cols-12 gap-2 flex-1">
                       {/* Left Inventory Sub-Category Tree */}
-                      <div className="col-span-4 bg-slate-50 border border-slate-200 rounded p-1 space-y-0.5 text-xs font-bold">
+                      <div className="col-span-4 bg-slate-50 border border-slate-200 rounded p-1 space-y-0.5 text-xs font-semibold">
                         {[
                           { id: "summary", label: "Subsystem 1" },
                           { id: "processor", label: "Processor" },
@@ -2833,32 +2851,32 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                               setInventoryCategory(cat.id as any);
                               setSelectedSubItemIndex(0);
                             }}
-                            className={`px-2.5 py-1.5 rounded cursor-pointer flex items-center justify-between ${inventoryCategory === cat.id ? "bg-[#7a0c0c] text-white shadow-xs" : "text-slate-700 hover:bg-slate-200/60"
+                            className={`px-2 py-1 rounded cursor-pointer flex items-center justify-between ${inventoryCategory === cat.id ? "bg-[#7a0c0c] text-white shadow-xs font-bold" : "text-slate-700 hover:bg-slate-200/60"
                               }`}
                           >
                             <span>{cat.label}</span>
-                            {inventoryCategory === cat.id && <ChevronRight className="w-3.5 h-3.5 text-white" />}
+                            {inventoryCategory === cat.id && <ChevronRight className="w-3 h-3 text-white" />}
                           </div>
                         ))}
                       </div>
 
                       {/* Right Inventory Property Grid (Excel Table Form) */}
-                      <div className="col-span-8 border border-slate-300 rounded p-2.5 bg-white flex flex-col justify-between overflow-x-auto shadow-2xs">
+                      <div className="col-span-8 border border-slate-300 rounded p-1 bg-white flex flex-col justify-between overflow-x-auto shadow-2xs">
                         {(() => {
                           const renderExcelTable = (rows: { label: string; value: React.ReactNode; colorClass?: string }[]) => (
                             <div className="border border-slate-300 rounded overflow-hidden shadow-2xs text-xs">
                               <table className="w-full text-left border-collapse">
-                                <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300 text-[11px] uppercase tracking-wider">
+                                <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300 text-[10px] uppercase tracking-wider">
                                   <tr>
-                                    <th className="px-3.5 py-2 border-r border-slate-300 w-1/2 bg-slate-100">PROPERTY</th>
-                                    <th className="px-3.5 py-2 w-1/2 bg-slate-100">VALUE</th>
+                                    <th className="px-2.5 py-1 border-r border-slate-300 w-1/2 bg-slate-100">PROPERTY</th>
+                                    <th className="px-2.5 py-1 w-1/2 bg-slate-100">VALUE</th>
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-200">
                                   {rows.map((row, idx) => (
                                     <tr key={idx} className={idx % 2 === 0 ? "bg-white hover:bg-slate-50" : "bg-slate-50/70 hover:bg-slate-100/80"}>
-                                      <td className="px-3.5 py-2 text-slate-600 font-medium border-r border-slate-200 text-xs">{row.label}</td>
-                                      <td className={`px-3.5 py-2 font-bold text-xs ${row.colorClass || "text-slate-800"}`}>{row.value}</td>
+                                      <td className="px-2.5 py-1 text-slate-600 font-medium border-r border-slate-200 text-xs">{row.label}</td>
+                                      <td className={`px-2.5 py-1 font-bold text-xs ${row.colorClass || "text-slate-800"}`}>{row.value}</td>
                                     </tr>
                                   ))}
                                 </tbody>
@@ -2898,14 +2916,14 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                               : (pSummary?.LogicalProcessorCount || (typeof finalCores === "number" ? finalCores * 2 : 32));
 
                             return (
-                              <div className="space-y-2 text-xs">
+                              <div className="space-y-1 text-xs">
                                 {procs.length > 1 && (
-                                  <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                                  <div className="flex items-center gap-1.5 mb-1 pb-1 border-b overflow-x-auto">
                                     {procs.map((p, idx) => (
                                       <button
                                         key={idx}
                                         onClick={() => setSelectedSubItemIndex(idx)}
-                                        className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                        className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-2xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
                                       >
                                         CPU {idx + 1}
                                       </button>
@@ -2932,8 +2950,8 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
                             if (mems.length === 0) {
                               return (
-                                <div className="space-y-2 text-xs">
-                                  <div className="text-[11px] font-bold text-[#7a0c0c] uppercase tracking-wider mb-2">
+                                <div className="space-y-1 text-xs">
+                                  <div className="text-xs font-bold text-[#7a0c0c] uppercase tracking-wider mb-1">
                                     System Memory Telemetry (Fetched from BMC)
                                   </div>
                                   {renderExcelTable([
@@ -2949,14 +2967,14 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                             const dimmSizeMb = activeDimm.CapacityMiB || (activeDimm.CapacityBytes ? (activeDimm.CapacityBytes / (1024 * 1024)).toFixed(0) : "N/A");
 
                             return (
-                              <div className="space-y-2 text-xs">
+                              <div className="space-y-1 text-xs">
                                 {mems.length > 1 && (
-                                  <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                                  <div className="flex items-center gap-1.5 mb-1 pb-1 border-b overflow-x-auto">
                                     {mems.map((dimm, idx) => (
                                       <button
                                         key={idx}
                                         onClick={() => setSelectedSubItemIndex(idx)}
-                                        className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                        className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-2xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
                                       >
                                         {dimm.Name || dimm.Id || `DIMM ${idx + 1}`}
                                       </button>
@@ -2990,14 +3008,14 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                             const capGb = activeDrv.CapacityBytes ? (activeDrv.CapacityBytes / (1000 * 1000 * 1000)).toFixed(2) : (activeDrv.CapacityGB ? activeDrv.CapacityGB : "N/A");
 
                             return (
-                              <div className="space-y-2 text-xs">
+                              <div className="space-y-1 text-xs">
                                 {stgs.length > 1 && (
-                                  <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                                  <div className="flex items-center gap-1.5 mb-1 pb-1 border-b overflow-x-auto">
                                     {stgs.map((drv, idx) => (
                                       <button
                                         key={idx}
                                         onClick={() => setSelectedSubItemIndex(idx)}
-                                        className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                        className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-2xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
                                       >
                                         {drv.Name || drv.Id || `Drive ${idx + 1}`}
                                       </button>
@@ -3021,13 +3039,13 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                             if (vmedia.length > 0) {
                               const activeVm = vmedia[selectedSubItemIndex] || vmedia[0] || {};
                               return (
-                                <div className="space-y-2 text-xs">
-                                  <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                                <div className="space-y-1 text-xs">
+                                  <div className="flex items-center gap-1.5 mb-1 pb-1 border-b overflow-x-auto">
                                     {vmedia.map((vm, idx) => (
                                       <button
                                         key={idx}
                                         onClick={() => setSelectedSubItemIndex(idx)}
-                                        className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                        className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-2xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
                                       >
                                         {vm.Name || vm.Id || `Media ${idx + 1}`}
                                       </button>
@@ -3060,14 +3078,14 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                             };
 
                             return (
-                              <div className="space-y-2 text-xs">
+                              <div className="space-y-1 text-xs">
                                 {nics.length > 1 && (
-                                  <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                                  <div className="flex items-center gap-1.5 mb-1 pb-1 border-b overflow-x-auto">
                                     {nics.map((nic, idx) => (
                                       <button
                                         key={idx}
                                         onClick={() => setSelectedSubItemIndex(idx)}
-                                        className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                        className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-2xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
                                       >
                                         {nic.Name || nic.Id || `NIC ${idx + 1}`}
                                       </button>
@@ -3093,14 +3111,14 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                             };
 
                             return (
-                              <div className="space-y-2 text-xs">
+                              <div className="space-y-1 text-xs">
                                 {fans.length > 1 && (
-                                  <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                                  <div className="flex items-center gap-1.5 mb-1 pb-1 border-b overflow-x-auto">
                                     {fans.map((f, idx) => (
                                       <button
                                         key={idx}
                                         onClick={() => setSelectedSubItemIndex(idx)}
-                                        className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                        className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-2xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
                                       >
                                         {f.FanName || f.Name || `Fan ${idx + 1}`}
                                       </button>
@@ -3129,9 +3147,9 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                             };
 
                             return (
-                              <div className="space-y-2 text-xs">
+                              <div className="space-y-1 text-xs">
                                 {hbas.length > 1 && (
-                                  <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                                  <div className="flex items-center gap-1.5 mb-1 pb-1 border-b overflow-x-auto">
                                     {hbas.map((h, idx) => {
                                       const mfr = (h.Manufacturer && h.Manufacturer !== "N/A" && h.Manufacturer !== "NA") ? h.Manufacturer : "";
                                       const model = (h.Model && h.Model !== "N/A" && h.Model !== "Simple Storage") ? h.Model : "";
@@ -3144,7 +3162,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                                         <button
                                           key={idx}
                                           onClick={() => setSelectedSubItemIndex(idx)}
-                                          className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                          className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-2xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
                                         >
                                           {label}
                                         </button>
@@ -3168,29 +3186,29 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                             const sensorsList = telemetry.sensors || [];
                             if (sensorsList.length === 0) {
                               return (
-                                <div className="p-4 text-center text-slate-500 italic text-xs space-y-1">
+                                <div className="p-3 text-center text-slate-500 italic text-xs space-y-1">
                                   <div>{telemetry.loading ? "Fetching Sensor Telemetry via Redfish..." : `No sensors fetched from BMC (${activeServer?.bmcIp || ""})`}</div>
                                 </div>
                               );
                             }
                             return (
-                              <div className="space-y-2 text-xs max-h-[320px] overflow-y-auto pr-1">
+                              <div className="space-y-1 text-xs max-h-[280px] overflow-y-auto pr-1">
                                 <table className="w-full text-left border-collapse border border-slate-300">
                                   <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300 text-[10px] uppercase sticky top-0">
                                     <tr>
-                                      <th className="p-2 border-r border-slate-300">SENSOR NAME</th>
-                                      <th className="p-2 border-r border-slate-300">READING</th>
-                                      <th className="p-2 border-r border-slate-300">TYPE</th>
-                                      <th className="p-2">HEALTH</th>
+                                      <th className="p-1.5 border-r border-slate-300">SENSOR NAME</th>
+                                      <th className="p-1.5 border-r border-slate-300">READING</th>
+                                      <th className="p-1.5 border-r border-slate-300">TYPE</th>
+                                      <th className="p-1.5">HEALTH</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-slate-200 text-xs">
                                     {sensorsList.map((s: any, idx: number) => (
                                       <tr key={idx} className={idx % 2 === 0 ? "bg-white hover:bg-slate-50" : "bg-slate-50/70 hover:bg-slate-100"}>
-                                        <td className="p-2 font-medium text-slate-800 border-r border-slate-200">{s.name}</td>
-                                        <td className="p-2 font-bold text-blue-600 border-r border-slate-200">{s.val}</td>
-                                        <td className="p-2 text-slate-600 border-r border-slate-200">{s.type}</td>
-                                        <td className="p-2 font-bold text-emerald-600 uppercase">{s.status}</td>
+                                        <td className="p-1.5 font-medium text-slate-800 border-r border-slate-200">{s.name}</td>
+                                        <td className="p-1.5 font-bold text-blue-600 border-r border-slate-200">{s.val}</td>
+                                        <td className="p-1.5 text-slate-600 border-r border-slate-200">{s.type}</td>
+                                        <td className="p-1.5 font-bold text-emerald-600 uppercase">{s.status}</td>
                                       </tr>
                                     ))}
                                   </tbody>
@@ -3203,20 +3221,20 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                             const logsList = telemetry.logs || realFetchedEvents || [];
                             if (logsList.length === 0) {
                               return (
-                                <div className="p-4 text-center text-slate-500 italic text-xs space-y-1">
+                                <div className="p-3 text-center text-slate-500 italic text-xs space-y-1">
                                   <div>{telemetry.loading ? "Fetching Event Logs (SEL) via Redfish..." : `No event logs recorded from BMC (${activeServer?.bmcIp || ""})`}</div>
                                 </div>
                               );
                             }
                             return (
-                              <div className="space-y-2 text-xs max-h-[320px] overflow-y-auto pr-1">
+                              <div className="space-y-1 text-xs max-h-[280px] overflow-y-auto pr-1">
                                 <table className="w-full text-left border-collapse border border-slate-300">
                                   <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300 text-[10px] uppercase sticky top-0">
                                     <tr>
-                                      <th className="p-2 border-r border-slate-300">TIMESTAMP</th>
-                                      <th className="p-2 border-r border-slate-300">SEVERITY</th>
-                                      <th className="p-2 border-r border-slate-300">SENSOR / COMPONENT</th>
-                                      <th className="p-2">EVENT DESCRIPTION</th>
+                                      <th className="p-1.5 border-r border-slate-300">TIMESTAMP</th>
+                                      <th className="p-1.5 border-r border-slate-300">SEVERITY</th>
+                                      <th className="p-1.5 border-r border-slate-300">SENSOR / COMPONENT</th>
+                                      <th className="p-1.5">EVENT DESCRIPTION</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-slate-200 text-xs">
@@ -3225,10 +3243,10 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                                       const sevColor = String(sev).toLowerCase().includes("crit") || String(sev).toLowerCase().includes("err") ? "text-red-600 font-bold" : (String(sev).toLowerCase().includes("warn") ? "text-amber-600 font-bold" : "text-emerald-600 font-bold");
                                       return (
                                         <tr key={idx} className={idx % 2 === 0 ? "bg-white hover:bg-slate-50" : "bg-slate-50/70 hover:bg-slate-100"}>
-                                          <td className="p-2 text-slate-500 font-mono text-[11px] border-r border-slate-200 whitespace-nowrap">{l.Created || l.time || l.timestamp || "N/A"}</td>
-                                          <td className={`p-2 uppercase border-r border-slate-200 ${sevColor}`}>{sev}</td>
-                                          <td className="p-2 text-slate-700 font-medium border-r border-slate-200 whitespace-nowrap">{l.SensorType || l.code || l.Name || "System"}</td>
-                                          <td className="p-2 text-slate-800 font-normal">{l.Message || l.detail || "Hardware Telemetry Event"}</td>
+                                          <td className="p-1.5 text-slate-500 font-mono text-[11px] border-r border-slate-200 whitespace-nowrap">{l.Created || l.time || l.timestamp || "N/A"}</td>
+                                          <td className={`p-1.5 uppercase border-r border-slate-200 ${sevColor}`}>{sev}</td>
+                                          <td className="p-1.5 text-slate-700 font-medium border-r border-slate-200 whitespace-nowrap">{l.SensorType || l.code || l.Name || "System"}</td>
+                                          <td className="p-1.5 text-slate-800 font-normal">{l.Message || l.detail || "Hardware Telemetry Event"}</td>
                                         </tr>
                                       );
                                     })}
@@ -3242,37 +3260,62 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                             const fwList = telemetry.firmware || [];
                             const activeFw = fwList[selectedSubItemIndex] || fwList[0] || {};
                             return (
-                              <div className="space-y-2 text-xs">
-                                <div className="flex items-center gap-1.5 mb-2 pb-1 border-b overflow-x-auto">
+                              <div className="space-y-1 text-xs">
+                                <div className="flex items-center gap-1.5 mb-1 pb-1 border-b overflow-x-auto">
                                   {fwList.map((f: any, idx: number) => (
                                     <button
                                       key={idx}
                                       onClick={() => setSelectedSubItemIndex(idx)}
-                                      className={`px-3 py-1 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                      className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-2xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
                                     >
                                       {f.Name || f.Id || `Firmware ${idx + 1}`}
                                     </button>
                                   ))}
                                 </div>
                                 {renderExcelTable([
-                                  { label: "Component", value: activeFw.Name || activeFw.Id || "BMC Firmware" },
-                                  { label: "Version", value: activeFw.Version || "3.0" },
-                                  { label: "Updateable", value: activeFw.Updateable ? "Yes" : "No" }
+                                  { label: "Firmware Name", value: activeFw.Name || activeFw.Id || "N/A" },
+                                  { label: "Version", value: activeFw.Version || activeFw.SoftwareVersion || "N/A", colorClass: "text-blue-600 font-mono" },
+                                  { label: "Updateable", value: activeFw.Updateable ? "Yes" : "No" },
+                                  { label: "Health State", value: activeFw.Status?.Health || "OK", colorClass: "text-emerald-600" }
                                 ])}
                               </div>
                             );
                           }
 
                           if (inventoryCategory === "peripheral") {
-                            return renderExcelTable([
-                              { label: "USB Host Controllers", value: "2 x USB 3.2 Gen 1" },
-                              { label: "Front Panel Buttons", value: "Power, Reset, UID Buttons" },
-                              { label: "VGA / Display Output", value: "1 x AST2600 BMC Video Engine" },
-                              { label: "Serial Port (COM)", value: "1 x RS-232 Out-Of-Band Serial" }
-                            ]);
+                            const pcieDevs = telemetry.pcieDevices || [];
+                            const activePcie = pcieDevs[selectedSubItemIndex] || pcieDevs[0] || {};
+                            return (
+                              <div className="space-y-1 text-xs">
+                                {pcieDevs.length > 1 && (
+                                  <div className="flex items-center gap-1.5 mb-1 pb-1 border-b overflow-x-auto">
+                                    {pcieDevs.map((p: any, idx: number) => (
+                                      <button
+                                        key={idx}
+                                        onClick={() => setSelectedSubItemIndex(idx)}
+                                        className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase cursor-pointer whitespace-nowrap ${selectedSubItemIndex === idx ? "bg-[#7a0c0c] text-white shadow-2xs" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                                      >
+                                        {p.Name || p.Id || `Slot ${idx + 1}`}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                {renderExcelTable([
+                                  { label: "Name / Model", value: activePcie.Name || activePcie.Model || activePcie.Id || "PCIe Expansion" },
+                                  { label: "Manufacturer", value: activePcie.Manufacturer || "N/A" },
+                                  { label: "Device Type", value: activePcie.DeviceType || activePcie.PCIeInterface?.PCIeType || "PCIe Card" },
+                                  { label: "Firmware Version", value: activePcie.FirmwareVersion || "N/A" },
+                                  { label: "Health", value: activePcie.Status?.Health || "OK", colorClass: "text-emerald-600" }
+                                ])}
+                              </div>
+                            );
                           }
 
-                          return null;
+                          return renderExcelTable([
+                            { label: "Subsystem Category", value: String(inventoryCategory).toUpperCase() },
+                            { label: "Telemetry Mode", value: "Redfish REST Direct API" },
+                            { label: "Status", value: "Online / Active", colorClass: "text-emerald-600" }
+                          ]);
                         })()}
                       </div>
                     </div>
@@ -3280,29 +3323,21 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
                   {/* Health Status Box (Right 5 Cols) */}
                   {(() => {
-                    const sensorsArr = telemetry.sensors || [];
                     const procsArr = telemetry.processors || [];
                     const memsArr = telemetry.memory || [];
                     const stgsArr = telemetry.storage || [];
                     const nicsArr = telemetry.nics || [];
                     const fansArr = telemetry.fans || [];
+                    const sensorsArr = telemetry.sensors || [];
 
-                    const psuSensors = sensorsArr.filter((s: any) => 
-                      s.type === "Power Supply" || 
-                      s.type === "PowerSupply" || 
-                      (s.name && /\bpsu\d*\b/i.test(s.name)) || 
-                      (s.name && s.name.toLowerCase().includes("power supply"))
-                    );
-                    const psuCount = psuSensors.length;
-                    const procCount = procsArr.length;
-                    const memCount = memsArr.length;
+                    const procCount = (procsArr.length || 0) > 0 ? procsArr.length : (telemetry.system?.ProcessorSummary?.Count || 1);
+                    const memCount = memsArr.length > 0 ? memsArr.length : (telemetry.system?.MemorySummary?.TotalSystemMemoryGiB ? `${telemetry.system.MemorySummary.TotalSystemMemoryGiB} GB` : 1);
                     const stgCount = (stgsArr.length || 0) + (telemetry.hbas?.length || 0);
                     const nicCount = nicsArr.length;
                     const fanCount = fansArr.length || sensorsArr.filter((s: any) => s.type === "Fan").length;
                     const tempSensors = sensorsArr.filter((s: any) => s.type === "Temperature" || s.name?.toLowerCase().includes("temp"));
                     const tempCount = tempSensors.length;
                     const pcieCount = (telemetry.pcieDevices?.length || 0) + (telemetry.pcieSlots?.length || 0);
-                    const sensorCount = sensorsArr.length;
 
                     const isCritical = (st: any) => {
                       if (!st) return false;
@@ -3327,10 +3362,8 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                       },
                       {
                         name: "Memory / DIMMs",
-                        count: (memsArr.length === 1 && memsArr[0]?.Id === "System_Memory")
-                          ? `${(memsArr[0].CapacityMiB ? Math.round(memsArr[0].CapacityMiB / 1024) : (telemetry.system?.Memory?.totalGiB || 256))} GB`
-                          : memCount,
-                        unit: (memsArr.length === 1 && memsArr[0]?.Id === "System_Memory") ? "Total" : "DIMMs",
+                        count: memCount,
+                        unit: "DIMMs",
                         status: !hasActiveDevice ? "NA" : (memsArr.some((m: any) => isCritical(m.Status)) ? "Critical" : (memsArr.some((m: any) => isWarning(m.Status)) ? "Degraded" : "Normal")),
                         severity: !hasActiveDevice ? "na" : (memsArr.some((m: any) => isCritical(m.Status)) ? "critical" : (memsArr.some((m: any) => isWarning(m.Status)) ? "warning" : "ok")),
                         categoryKey: "memory"
@@ -3388,16 +3421,16 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                       ? "bg-red-50/70 border-2 border-red-500 shadow-md ring-2 ring-red-400/30 transition-all duration-300"
                       : (hasWarning 
                         ? "bg-amber-50/70 border-2 border-amber-500 shadow-md ring-2 ring-amber-400/30 transition-all duration-300"
-                        : "bg-white border border-slate-300 shadow-sm transition-all duration-300");
+                        : "bg-white border border-slate-300 shadow-2xs transition-all duration-300");
 
                     const headerBorderClass = hasCritical ? "border-b border-red-200" : (hasWarning ? "border-b border-amber-200" : "border-b border-slate-200");
                     const headerTextClass = hasCritical ? "text-red-950 font-black" : (hasWarning ? "text-amber-950 font-black" : "text-slate-800 font-bold");
 
                     return (
-                      <div className={`lg:col-span-5 rounded p-4 flex flex-col justify-between h-full ${boxBgClass}`}>
-                        <div className={`pb-2 mb-3 flex items-center justify-between ${headerBorderClass}`}>
+                      <div className={`lg:col-span-5 rounded p-3 flex flex-col justify-between h-full ${boxBgClass}`}>
+                        <div className={`pb-1.5 mb-2 flex items-center justify-between ${headerBorderClass}`}>
                           <div className="flex items-center gap-2">
-                            <span className={headerTextClass}>Health Status</span>
+                            <span className={`text-sm ${headerTextClass}`}>Health Status</span>
                             {hasCritical && (
                               <span className="px-2 py-0.5 bg-red-600 text-white rounded text-[10px] font-extrabold uppercase tracking-wider animate-pulse flex items-center gap-1">
                                 <AlertTriangle className="w-3 h-3" /> Critical Alert
@@ -3434,9 +3467,9 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                         <div className="flex-1 overflow-x-auto">
                           {/* Active Fault Item if any real Critical/Warning fault */}
                           {activeFault && (
-                            <div className="flex items-center justify-between p-2 bg-red-100/90 border border-red-300 rounded mb-2 text-xs shadow-xs animate-pulse">
-                              <div className="flex items-center gap-1.5">
-                                <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                            <div className="flex items-center justify-between p-1.5 bg-red-100/90 border border-red-300 rounded mb-1.5 text-xs shadow-2xs animate-pulse">
+                              <div className="flex items-center gap-1">
+                                <AlertTriangle className="w-3.5 h-3.5 text-red-600 shrink-0" />
                                 <span className="font-extrabold text-red-950">{activeFault.code || "Hardware Alert"}</span>
                               </div>
                               <span className="text-xs font-bold text-red-800 truncate max-w-[200px]" title={activeFault.detail}>
@@ -3447,11 +3480,11 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
                           <div className="border border-slate-300 rounded overflow-hidden shadow-2xs text-xs">
                             <table className="w-full text-left border-collapse">
-                              <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300 text-[11px] uppercase tracking-wider">
+                              <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300 text-[10px] uppercase tracking-wider">
                                 <tr>
-                                  <th className="px-3 py-2 border-r border-slate-300 bg-slate-100">SUBSYSTEM</th>
-                                  <th className="px-3 py-2 border-r border-slate-300 bg-slate-100">COUNT</th>
-                                  <th className="px-3 py-2 bg-slate-100 text-center">HEALTH STATUS</th>
+                                  <th className="px-2.5 py-1 border-r border-slate-300 bg-slate-100">SUBSYSTEM</th>
+                                  <th className="px-2.5 py-1 border-r border-slate-300 bg-slate-100">COUNT</th>
+                                  <th className="px-2.5 py-1 bg-slate-100 text-center">HEALTH STATUS</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-200">
@@ -3487,9 +3520,9 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                                       className={`cursor-pointer transition-colors ${idx % 2 === 0 ? "bg-white hover:bg-slate-50" : "bg-slate-50/70 hover:bg-slate-100"}`}
                                       title={`Click to inspect ${item.name} inventory & status`}
                                     >
-                                      <td className="px-3 py-2 font-bold text-slate-800 border-r border-slate-200">{item.name}</td>
-                                      <td className="px-3 py-2 font-mono text-slate-600 border-r border-slate-200">{item.count} {item.unit}</td>
-                                      <td className="px-3 py-2 text-center">{statusBadge}</td>
+                                      <td className="px-2.5 py-1 font-bold text-slate-800 border-r border-slate-200 text-xs">{item.name}</td>
+                                      <td className="px-2.5 py-1 font-mono text-slate-600 border-r border-slate-200 text-xs">{item.count} {item.unit}</td>
+                                      <td className="px-2.5 py-1 text-center">{statusBadge}</td>
                                     </tr>
                                   );
                                 })}
@@ -3503,8 +3536,8 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                 </div>
 
                 {/* Sensors Table Section */}
-                <div className="bg-white border border-slate-300 rounded p-4 shadow-sm">
-                  <div className="font-bold text-slate-800 border-b border-slate-200 pb-2 mb-3 flex items-center justify-between">
+                <div className="bg-white border border-slate-300 rounded p-3 shadow-xs">
+                  <div className="font-bold text-sm text-slate-800 border-b border-slate-200 pb-1.5 mb-2 flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Activity className="w-4 h-4 text-[#7a0c0c]" />
                       <span>Sensors Telemetry</span>
@@ -3520,61 +3553,73 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                     </label>
                   </div>
 
-                  <div className="overflow-x-auto max-h-72 overflow-y-auto">
+                  <div className="overflow-x-auto max-h-64 overflow-y-auto border border-slate-300 rounded shadow-2xs">
                     <table className="w-full text-left text-xs border-collapse">
-                      <thead className="sticky top-0 bg-slate-100 border-b border-slate-200 text-slate-600 font-bold text-[11px] z-10">
+                      <thead className="sticky top-0 bg-slate-100 border-b border-slate-300 text-slate-700 font-bold text-[10px] uppercase tracking-wider z-10">
                         <tr>
-                          <th className="p-2">Sensor Name</th>
-                          <th className="p-2">Type / Category</th>
-                          <th className="p-2">Reading / Value</th>
-                          <th className="p-2">Status</th>
+                          <th className="px-3 py-1 border-r border-slate-300">Sensor Name</th>
+                          <th className="px-3 py-1 border-r border-slate-300">Type / Category</th>
+                          <th className="px-3 py-1 border-r border-slate-300">Reading / Value</th>
+                          <th className="px-3 py-1">Status</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
+                      <tbody className="divide-y divide-slate-200 text-slate-700 font-medium text-xs">
                         {(() => {
                           const realSensors = (telemetry as any)?.sensors;
-                          const allSensors = Array.isArray(realSensors) && realSensors.length > 0
-                            ? realSensors
-                            : [
-                                { name: "12V_AUX", val: "12.2 Volts", status: "ok", type: "Voltage" },
-                                { name: "1.78V_AUX", val: "1.78 Volts", status: "ok", type: "Voltage" },
-                                { name: "3V3_AUX", val: "3.3 Volts", status: "ok", type: "Voltage" },
-                                { name: "BPN_Temp1", val: "22 degrees C", status: "ok", type: "Temperature" },
-                                { name: "BPN_Temp2", val: "22 degrees C", status: "ok", type: "Temperature" },
-                                { name: "CHA_STATE", val: "0", status: "ok", type: "State" },
-                                { name: "CPU_Temp", val: "34 degrees C", status: "ok", type: "Temperature" }
-                              ];
+                          // Only real fetched sensor data (no mock fallback)
+                          const allSensors: any[] = Array.isArray(realSensors) ? realSensors : [];
 
                           const displaySensors = showSensorsWithDataOnly
-                            ? allSensors.filter((s: any) => s.val && s.val !== "N/A" && s.val !== "0" && s.val !== "N/A RPM")
+                            ? allSensors.filter((s: any) => s.val && s.val !== "N/A" && s.val !== "0" && s.val !== "N/A RPM" && !String(s.val).toLowerCase().startsWith("null"))
                             : allSensors;
 
                           if (displaySensors.length === 0) {
                             return (
                               <tr>
-                                <td colSpan={4} className="p-4 text-center text-slate-400 font-bold italic">
-                                  No sensor readouts found for target filter.
+                                <td colSpan={4} className="p-3 text-center text-slate-400 font-bold italic text-xs">
+                                  {telemetry.loading ? "Fetching sensor telemetry via Redfish..." : "No sensor readouts available for this server."}
                                 </td>
                               </tr>
                             );
                           }
 
-                          return displaySensors.map((s: any, idx: number) => (
-                            <tr key={(s.name || "sensor") + idx} className="hover:bg-slate-50">
-                              <td className="p-2 font-bold text-[#7a0c0c]">{s.name}</td>
-                              <td className="p-2 text-slate-500 font-semibold text-[11px]">{s.type || "Sensor"}</td>
-                              <td className="p-2 font-mono font-bold text-slate-800">{s.val}</td>
-                              <td className="p-2">
-                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                                  s.status === "ok" || s.status === "healthy" || s.status === "enabled"
-                                    ? "bg-emerald-100 text-emerald-800"
-                                    : "bg-rose-100 text-rose-800"
+                          return displaySensors.map((s: any, idx: number) => {
+                            const rawVal = String(s.val ?? "");
+                            const formattedVal = rawVal.replace(/^null\b/i, "N/A").trim() || "N/A";
+                            const statusStr = String(s.status || "N/A").toLowerCase();
+                            const isOk = statusStr === "ok" || statusStr === "healthy" || statusStr === "enabled" || statusStr === "normal";
+                            const isAbsentOrCritical = statusStr === "absent" || statusStr === "critical" || statusStr === "fatal" || statusStr === "failed" || statusStr === "error" || statusStr === "bad";
+                            const isWarning = statusStr === "warning" || statusStr === "degraded" || statusStr === "noncritical";
+
+                            return (
+                              <tr key={(s.name || "sensor") + idx} className={idx % 2 === 0 ? "bg-white hover:bg-slate-50" : "bg-slate-50/70 hover:bg-slate-100/80"}>
+                                <td className={`px-3 py-1 font-bold border-r border-slate-200 ${isAbsentOrCritical ? "text-rose-800" : "text-slate-800"}`}>
+                                  {s.name}
+                                </td>
+                                <td className="px-3 py-1 text-slate-600 font-medium text-[11px] border-r border-slate-200">
+                                  {s.type || "Sensor"}
+                                </td>
+                                <td className={`px-3 py-1 font-mono font-bold border-r border-slate-200 ${
+                                  formattedVal.includes("N/A") || isAbsentOrCritical ? "text-rose-700" : "text-slate-800"
                                 }`}>
-                                  {s.status}
-                                </span>
-                              </td>
-                            </tr>
-                          ));
+                                  {formattedVal}
+                                </td>
+                                <td className="px-3 py-1">
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${
+                                    isOk
+                                      ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                                      : isAbsentOrCritical
+                                      ? "bg-rose-100 text-rose-800 border-rose-300"
+                                      : isWarning
+                                      ? "bg-amber-100 text-amber-800 border-amber-300"
+                                      : "bg-slate-100 text-slate-700 border-slate-300"
+                                  }`}>
+                                    {s.status || "N/A"}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          });
                         })()}
                       </tbody>
                     </table>
@@ -5464,23 +5509,39 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                             <th className="p-2.5">Status</th>
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {listToRender.map((s: any, idx: number) => (
-                            <tr key={idx} className="hover:bg-slate-50">
-                              <td className="p-2.5 font-bold text-[#7a0c0c]">{s.name || `Sensor_${idx+1}`}</td>
-                              <td className="p-2.5 text-slate-500 font-semibold">{s.type || "Sensor"}</td>
-                              <td className="p-2.5 font-mono font-bold text-slate-800">{s.val || "N/A"}</td>
-                              <td className="p-2.5">
-                                <span className={`px-2 py-0.5 rounded font-bold text-[10px] uppercase ${
-                                  s.status === "ok" || s.status === "healthy" || s.status === "enabled"
-                                    ? "bg-emerald-100 text-emerald-800"
-                                    : "bg-rose-100 text-rose-800"
-                                }`}>
-                                  {s.status || "OK"}
-                                </span>
-                              </td>
-                            </tr>
-                          ))}
+                        <tbody className="divide-y divide-slate-200">
+                          {listToRender.map((s: any, idx: number) => {
+                            const rawVal = String(s.val ?? "");
+                            const formattedVal = rawVal.replace(/^null\b/i, "N/A").trim() || "N/A";
+                            const statusStr = String(s.status || "N/A").toLowerCase();
+                            const isOk = statusStr === "ok" || statusStr === "healthy" || statusStr === "enabled" || statusStr === "normal";
+                            const isAbsentOrCritical = statusStr === "absent" || statusStr === "critical" || statusStr === "fatal" || statusStr === "failed" || statusStr === "error";
+
+                            return (
+                              <tr key={idx} className={idx % 2 === 0 ? "bg-white hover:bg-slate-50" : "bg-slate-50/70 hover:bg-slate-100/80"}>
+                                <td className={`p-2.5 font-bold border-r border-slate-200 ${isAbsentOrCritical ? "text-rose-800" : "text-slate-800"}`}>
+                                  {s.name || `Sensor_${idx+1}`}
+                                </td>
+                                <td className="p-2.5 text-slate-500 font-semibold text-[11px] border-r border-slate-200">
+                                  {s.type || "Sensor"}
+                                </td>
+                                <td className={`p-2.5 font-mono font-bold border-r border-slate-200 ${formattedVal.includes("N/A") || isAbsentOrCritical ? "text-rose-700" : "text-slate-800"}`}>
+                                  {formattedVal}
+                                </td>
+                                <td className="p-2.5">
+                                  <span className={`px-2 py-0.5 rounded font-bold text-[10px] uppercase border ${
+                                    isOk
+                                      ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                                      : isAbsentOrCritical
+                                      ? "bg-rose-100 text-rose-800 border-rose-300"
+                                      : "bg-amber-100 text-amber-800 border-amber-300"
+                                  }`}>
+                                    {s.status || "OK"}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>

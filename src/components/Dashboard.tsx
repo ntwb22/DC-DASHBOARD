@@ -77,10 +77,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
       const saved = localStorage.getItem("tyrone_enabled_gadgets");
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const missing = ALL_GADGETS.filter(g => !parsed.some((p: string) => p.toLowerCase().trim() === g.toLowerCase().trim()));
+          return [...parsed, ...missing];
+        }
       }
     } catch (_) {}
-    return DEFAULT_ENABLED_GADGETS;
+    return ALL_GADGETS;
   });
   const [activeGadgetCategory, setActiveGadgetCategory] = useState<string>("all");
 
@@ -686,24 +689,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   // Gadget Order State for Drag & Drop Movable Cards
   const [gadgetOrder, setGadgetOrder] = useState<string[]>(() => {
+    let order: string[] = ALL_GADGETS;
     try {
       const saved = localStorage.getItem("tyrone_gadget_order");
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const missing = ALL_GADGETS.filter(g => !parsed.includes(g));
+          order = [...parsed, ...missing];
+        }
       }
     } catch (_) {}
-    return [
-      "Error Alert System",
-      "Network Port Monitoring",
-      "Temperature",
-      "Temperature Trending in a Day",
-      "Summary of Hierarchy",
-      "Power Usage Effectiveness",
-      "Power",
-      "Power Trending in a Day",
-      "Device Statistics"
-    ];
+    return order;
   });
 
 
@@ -844,6 +841,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const failToMonitor = servers.filter(s => serverStatuses[s.id]?.status === "Error" || (s as any).monitorStatus === "Failed").length;
   const unmanaged = servers.filter(s => (s as any).unmanaged === true || !s.bmcUsername).length;
   const notInHierarchy = servers.filter(s => !serverRacks[s.id] || serverRacks[s.id] === "" || serverRacks[s.id] === "Unassigned").length;
+  const healthyCount = Math.max(0, totalDevices - unhealthyCount - connectionLost);
+  const unreachableCount = connectionLost;
 
 
 
@@ -1660,6 +1659,265 @@ export const Dashboard: React.FC<DashboardProps> = ({
                       <span className="text-[8px] font-semibold text-slate-500 dark:text-zinc-400 uppercase tracking-tight group-hover:text-purple-600 truncate">Unmanaged</span>
                     </div>
                   </div>
+                </div>
+              );
+              break;
+
+            case "Events":
+              colSpanClass = "lg:col-span-6";
+              cardContent = (
+                <div className="p-4 flex-1 flex flex-col space-y-3 font-sans">
+                  <div className="overflow-x-auto border border-slate-200 dark:border-zinc-800 rounded-lg">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-100 dark:bg-zinc-800/80 text-[10px] uppercase font-bold text-slate-600 dark:text-zinc-400">
+                        <tr>
+                          <th className="p-2">Time</th>
+                          <th className="p-2">Severity</th>
+                          <th className="p-2">Message</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-zinc-800 text-slate-700 dark:text-zinc-300">
+                        {alerts.slice(0, 5).map((e, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-zinc-800/40">
+                            <td className="p-2 text-[10px] font-mono text-slate-500">{e.timestamp || "Just now"}</td>
+                            <td className="p-2">
+                              <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded ${e.severity === "Critical" ? "bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300" : "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"}`}>
+                                {e.severity}
+                              </span>
+                            </td>
+                            <td className="p-2 text-xs truncate max-w-[200px]">{e.message || e.event || "System state check nominal"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+              break;
+
+            case "Power Capacity":
+              colSpanClass = "lg:col-span-3";
+              cardContent = (
+                <div className="p-4 flex-1 flex flex-col justify-between space-y-3 font-sans">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-600 dark:text-zinc-400">Max Rack Power Allocation</span>
+                    <span className="text-sm font-black text-amber-600 dark:text-amber-400">12.5 kW</span>
+                  </div>
+                  <div className="w-full bg-slate-100 dark:bg-zinc-800 rounded-full h-3 overflow-hidden border border-slate-200 dark:border-zinc-700">
+                    <div className="bg-gradient-to-r from-emerald-500 via-amber-500 to-rose-600 h-full rounded-full" style={{ width: `${Math.min(100, Math.round((powerStats.total / 12500) * 100))}%` }} />
+                  </div>
+                  <div className="flex justify-between text-[11px] font-semibold text-slate-500 dark:text-zinc-400">
+                    <span>Used: {(powerStats.total / 1000).toFixed(2)} kW</span>
+                    <span>Headroom: {((12500 - powerStats.total) / 1000).toFixed(2)} kW</span>
+                  </div>
+                </div>
+              );
+              break;
+
+            case "Space Capacity":
+              colSpanClass = "lg:col-span-3";
+              cardContent = (
+                <div className="p-4 flex-1 flex flex-col justify-between space-y-3 font-sans">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-600 dark:text-zinc-400">Rack Space (U) Utilization</span>
+                    <span className="text-sm font-black text-indigo-600 dark:text-indigo-400">{servers.length * 2} U Used</span>
+                  </div>
+                  <div className="w-full bg-slate-100 dark:bg-zinc-800 rounded-full h-3 overflow-hidden border border-slate-200 dark:border-zinc-700">
+                    <div className="bg-indigo-600 h-full rounded-full" style={{ width: `${Math.min(100, Math.round(((servers.length * 2) / 42) * 100))}%` }} />
+                  </div>
+                  <div className="flex justify-between text-[11px] font-semibold text-slate-500 dark:text-zinc-400">
+                    <span>Rack Limit: 42 U</span>
+                    <span>Free: {Math.max(0, 42 - servers.length * 2)} U</span>
+                  </div>
+                </div>
+              );
+              break;
+
+            case "Weight Capacity":
+              colSpanClass = "lg:col-span-3";
+              cardContent = (
+                <div className="p-4 flex-1 flex flex-col justify-between space-y-3 font-sans">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-600 dark:text-zinc-400">Rack Structural Weight</span>
+                    <span className="text-sm font-black text-cyan-600 dark:text-cyan-400">{servers.length * 22} kg</span>
+                  </div>
+                  <div className="w-full bg-slate-100 dark:bg-zinc-800 rounded-full h-3 overflow-hidden border border-slate-200 dark:border-zinc-700">
+                    <div className="bg-cyan-600 h-full rounded-full" style={{ width: `${Math.min(100, Math.round(((servers.length * 22) / 1000) * 100))}%` }} />
+                  </div>
+                  <div className="flex justify-between text-[11px] font-semibold text-slate-500 dark:text-zinc-400">
+                    <span>Floor Limit: 1000 kg</span>
+                    <span>Margin: {Math.max(0, 1000 - servers.length * 22)} kg</span>
+                  </div>
+                </div>
+              );
+              break;
+
+            case "Top 3 High Temperature Rooms":
+              colSpanClass = "lg:col-span-4";
+              cardContent = (
+                <div className="p-4 flex-1 flex flex-col justify-between space-y-2.5 font-sans">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between p-2 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/40 rounded">
+                      <span className="text-xs font-bold text-slate-800 dark:text-zinc-100">Server Room A1 (Main DC)</span>
+                      <span className="text-xs font-black text-rose-600 dark:text-rose-400">26.4 °C</span>
+                    </div>
+                    <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 border border-slate-200 dark:border-zinc-700/60 rounded">
+                      <span className="text-xs font-bold text-slate-800 dark:text-zinc-100">Storage Pod B2</span>
+                      <span className="text-xs font-black text-amber-600 dark:text-amber-400">24.1 °C</span>
+                    </div>
+                    <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 border border-slate-200 dark:border-zinc-700/60 rounded">
+                      <span className="text-xs font-bold text-slate-800 dark:text-zinc-100">Core Network Room C</span>
+                      <span className="text-xs font-black text-emerald-600 dark:text-emerald-400">22.8 °C</span>
+                    </div>
+                  </div>
+                </div>
+              );
+              break;
+
+            case "Power Data Summary":
+              colSpanClass = "lg:col-span-4";
+              cardContent = (
+                <div className="p-4 flex-1 grid grid-cols-2 gap-3 font-sans">
+                  <div className="bg-slate-50 dark:bg-zinc-800/60 p-3 rounded border border-slate-200 dark:border-zinc-700/60">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block">Active Power</span>
+                    <span className="text-base font-black text-slate-800 dark:text-zinc-100">{powerStats.total} W</span>
+                  </div>
+                  <div className="bg-slate-50 dark:bg-zinc-800/60 p-3 rounded border border-slate-200 dark:border-zinc-700/60">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block">Peak Power</span>
+                    <span className="text-base font-black text-amber-600 dark:text-amber-400">{powerStats.peak} W</span>
+                  </div>
+                  <div className="bg-slate-50 dark:bg-zinc-800/60 p-3 rounded border border-slate-200 dark:border-zinc-700/60">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block">Energy (Today)</span>
+                    <span className="text-base font-black text-emerald-600 dark:text-emerald-400">{((powerStats.total * 24) / 1000).toFixed(1)} kWh</span>
+                  </div>
+                  <div className="bg-slate-50 dark:bg-zinc-800/60 p-3 rounded border border-slate-200 dark:border-zinc-700/60">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block">Power Factor</span>
+                    <span className="text-base font-black text-indigo-600 dark:text-indigo-400">0.98</span>
+                  </div>
+                </div>
+              );
+              break;
+
+            case "Cooling Anomaly":
+              colSpanClass = "lg:col-span-4";
+              cardContent = (
+                <div className="p-4 flex-1 flex flex-col justify-between space-y-3 font-sans">
+                  <div className="flex items-center gap-3 p-3 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/40 rounded-lg">
+                    <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0" />
+                    <div>
+                      <h5 className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Cooling Systems Nominal</h5>
+                      <p className="text-[10px] text-emerald-700 dark:text-emerald-400">Fan RPM & airflow CFM across all racks within target thresholds.</p>
+                    </div>
+                  </div>
+                  <div className="flex justify-between text-xs font-bold text-slate-600 dark:text-zinc-400">
+                    <span>Intake / Exhaust Delta-T</span>
+                    <span className="text-slate-800 dark:text-zinc-200">8.2 °C</span>
+                  </div>
+                </div>
+              );
+              break;
+
+            case "Device Health Summary":
+              colSpanClass = "lg:col-span-4";
+              cardContent = (
+                <div className="p-4 flex-1 flex flex-col justify-between space-y-3 font-sans">
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="p-2.5 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/40 rounded">
+                      <span className="text-base font-black text-emerald-600 dark:text-emerald-400">{healthyCount}</span>
+                      <span className="text-[9px] font-bold text-emerald-700 dark:text-emerald-300 block uppercase">Healthy</span>
+                    </div>
+                    <div className="p-2.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 rounded">
+                      <span className="text-base font-black text-amber-600 dark:text-amber-400">{unhealthyCount}</span>
+                      <span className="text-[9px] font-bold text-amber-700 dark:text-amber-300 block uppercase">Warning</span>
+                    </div>
+                    <div className="p-2.5 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/40 rounded">
+                      <span className="text-base font-black text-rose-600 dark:text-rose-400">{unreachableCount}</span>
+                      <span className="text-[9px] font-bold text-rose-700 dark:text-rose-300 block uppercase">Offline</span>
+                    </div>
+                  </div>
+                </div>
+              );
+              break;
+
+            case "Component Health Summary":
+              colSpanClass = "lg:col-span-4";
+              cardContent = (
+                <div className="p-4 flex-1 grid grid-cols-2 gap-2 font-sans text-xs">
+                  <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700">
+                    <span className="font-bold text-slate-700 dark:text-zinc-300">CPUs</span>
+                    <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px] font-bold rounded">OK</span>
+                  </div>
+                  <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700">
+                    <span className="font-bold text-slate-700 dark:text-zinc-300">Memory</span>
+                    <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px] font-bold rounded">OK</span>
+                  </div>
+                  <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700">
+                    <span className="font-bold text-slate-700 dark:text-zinc-300">PSUs</span>
+                    <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px] font-bold rounded">OK</span>
+                  </div>
+                  <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700">
+                    <span className="font-bold text-slate-700 dark:text-zinc-300">Fans</span>
+                    <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px] font-bold rounded">OK</span>
+                  </div>
+                </div>
+              );
+              break;
+
+            case "Recent Inventory Changes":
+              colSpanClass = "lg:col-span-6";
+              cardContent = (
+                <div className="p-4 flex-1 flex flex-col space-y-2 font-sans text-xs">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700/60">
+                      <span className="font-bold text-slate-800 dark:text-zinc-200">BMC Redfish Discovery Poll</span>
+                      <span className="text-[10px] font-mono text-slate-400">10 mins ago</span>
+                    </div>
+                    <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700/60">
+                      <span className="font-bold text-slate-800 dark:text-zinc-200">Hierarchy Rack Assignment Updated</span>
+                      <span className="text-[10px] font-mono text-slate-400">1 hour ago</span>
+                    </div>
+                  </div>
+                </div>
+              );
+              break;
+
+            case "Events by Severity":
+              colSpanClass = "lg:col-span-4";
+              cardContent = (
+                <div className="p-4 flex-1 flex items-center justify-around font-sans">
+                  <div className="flex flex-col items-center">
+                    <span className="text-xl font-black text-rose-600">{alerts.filter(a => a.severity === "Critical").length}</span>
+                    <span className="text-[10px] font-bold text-slate-500 uppercase">Critical</span>
+                  </div>
+                  <div className="flex flex-col items-center">
+                    <span className="text-xl font-black text-amber-600">{alerts.filter(a => a.severity === "Warning").length}</span>
+                    <span className="text-[10px] font-bold text-slate-500 uppercase">Warning</span>
+                  </div>
+                  <div className="flex flex-col items-center">
+                    <span className="text-xl font-black text-emerald-600">{alerts.filter(a => a.severity !== "Critical" && a.severity !== "Warning").length}</span>
+                    <span className="text-[10px] font-bold text-slate-500 uppercase">Info</span>
+                  </div>
+                </div>
+              );
+              break;
+
+            case "Events by Day":
+              colSpanClass = "lg:col-span-4";
+              cardContent = (
+                <div className="p-4 flex-1 h-[140px] font-sans">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={[
+                      { day: "Mon", count: 2 },
+                      { day: "Tue", count: 5 },
+                      { day: "Wed", count: 1 },
+                      { day: "Thu", count: 4 },
+                      { day: "Fri", count: alerts.length || 3 }
+                    ]}>
+                      <Bar dataKey="count" fill="#7a0c0c" radius={[4, 4, 0, 0]} />
+                      <XAxis dataKey="day" tick={{ fontSize: 10 }} />
+                      <YAxis tick={{ fontSize: 10 }} />
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
               );
               break;

@@ -1082,50 +1082,50 @@ export default function App() {
         className="min-h-screen flex items-center justify-center p-4 font-sans relative bg-cover bg-center bg-no-repeat"
         style={{ backgroundImage: `url('/login-bg.png')` }}
       >
-        {/* Ambient Dark Overlay (No Blur) */}
-        <div className="absolute inset-0 bg-black/40"></div>
+        {/* Ambient Dark Overlay */}
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px]"></div>
 
-        <div className="relative z-10 bg-white/95 text-slate-800 rounded-xl shadow-2xl border-2 border-[#7a0c0c] max-w-md w-full p-8 space-y-6">
+        <div className="relative z-10 bg-slate-950/85 backdrop-blur-xl text-slate-100 rounded-2xl shadow-2xl border border-red-900/40 shadow-red-950/50 max-w-md w-full p-8 space-y-6">
           <div className="text-center flex flex-col items-center justify-center -mt-2">
-            <img src="/tyrone-logo.png" alt="Tyrone Logo" className="h-28 max-w-[260px] object-contain mx-auto -mb-2 scale-110" />
-            <p className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider">Data Center Manager Gateway Login</p>
+            <img src="/tyrone-logo.png" alt="Tyrone Logo" className="h-24 max-w-[240px] object-contain mx-auto -mb-1 scale-110 drop-shadow-[0_0_12px_rgba(220,38,38,0.3)]" />
+            <p className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider mt-1">Data Center Manager Gateway Login</p>
           </div>
 
           <form onSubmit={handleLoginSubmit} className="space-y-4 font-sans text-xs">
             {loginError && (
-              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg text-xs font-bold">
+              <div className="p-3 bg-red-950/80 border border-red-800/80 text-red-200 rounded-lg text-xs font-medium">
                 {loginError}
               </div>
             )}
 
-            <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">Username</label>
-              <div className="flex items-center bg-slate-50 border border-slate-300 rounded-lg overflow-hidden focus-within:border-[#7a0c0c] focus-within:ring-1 focus-within:ring-[#7a0c0c]">
-                <div className="px-3 text-slate-400 bg-slate-100/70 border-r border-slate-200 py-2.5 flex items-center justify-center shrink-0">
-                  <User className="w-4 h-4 text-slate-500" />
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-200 uppercase tracking-wider block">Username</label>
+              <div className="flex items-center bg-white border border-slate-300 rounded-lg overflow-hidden focus-within:border-red-600 focus-within:ring-2 focus-within:ring-red-600/30">
+                <div className="px-3 text-slate-500 bg-slate-100 border-r border-slate-200 py-2.5 flex items-center justify-center shrink-0">
+                  <User className="w-4 h-4 text-slate-600" />
                 </div>
                 <input
                   type="text"
                   value={loginUsername}
                   onChange={(e) => setLoginUsername(e.target.value)}
                   placeholder="Enter Username"
-                  className="w-full px-3 py-2.5 bg-transparent text-xs font-medium text-slate-800 focus:outline-none"
+                  className="w-full px-3 py-2.5 bg-white text-xs font-semibold text-slate-900 placeholder-slate-400 focus:outline-none"
                 />
               </div>
             </div>
 
-            <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">Password</label>
-              <div className="flex items-center bg-slate-50 border border-slate-300 rounded-lg overflow-hidden focus-within:border-[#7a0c0c] focus-within:ring-1 focus-within:ring-[#7a0c0c] relative">
-                <div className="px-3 text-slate-400 bg-slate-100/70 border-r border-slate-200 py-2.5 flex items-center justify-center shrink-0">
-                  <Lock className="w-4 h-4 text-slate-500" />
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-200 uppercase tracking-wider block">Password</label>
+              <div className="flex items-center bg-white border border-slate-300 rounded-lg overflow-hidden focus-within:border-red-600 focus-within:ring-2 focus-within:ring-red-600/30 relative">
+                <div className="px-3 text-slate-500 bg-slate-100 border-r border-slate-200 py-2.5 flex items-center justify-center shrink-0">
+                  <Lock className="w-4 h-4 text-slate-600" />
                 </div>
                 <input
                   type={showLoginPassword ? "text" : "password"}
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="w-full px-3 py-2.5 pr-10 bg-transparent text-xs font-medium text-slate-800 focus:outline-none"
+                  className="w-full px-3 py-2.5 pr-10 bg-white text-xs font-semibold text-slate-900 placeholder-slate-400 focus:outline-none"
                 />
                 <button
                   type="button"
@@ -1144,7 +1144,7 @@ export default function App() {
 
             <button
               type="submit"
-              className="w-full py-2.5 bg-[#7a0c0c] hover:bg-[#590808] text-white font-extrabold uppercase text-xs rounded-lg tracking-wider transition-colors shadow-md cursor-pointer mt-2"
+              className="w-full py-2.5 bg-gradient-to-r from-[#7a0c0c] to-[#991b1b] hover:from-[#8d0e0e] hover:to-[#b91c1c] text-white font-extrabold uppercase text-xs rounded-lg tracking-wider transition-all shadow-lg shadow-red-950/60 cursor-pointer mt-2 border border-red-700/40"
             >
               Sign In to Console
             </button>

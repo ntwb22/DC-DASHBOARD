@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
-html, body, #root {
+html,
+body,
+#root {
   margin: 0 !important;
   padding: 0 !important;
   width: 100vw !important;
@@ -18,21 +20,31 @@ html, body, #root {
 .text-xs {
   font-size: 14px !important;
 }
-.text-\[9px\], .text-\[10px\], .text-\[11px\], .text-\[7\.5px\], .text-\[8px\] {
+
+.text-\[9px\],
+.text-\[10px\],
+.text-\[11px\],
+.text-\[7\.5px\],
+.text-\[8px\] {
   font-size: 13.5px !important;
 }
+
 .text-sm {
   font-size: 15.5px !important;
 }
+
 .text-base {
   font-size: 17px !important;
 }
+
 .text-lg {
   font-size: 19px !important;
 }
+
 .text-xl {
   font-size: 22px !important;
 }
+
 .text-2xl {
   font-size: 26px !important;
 }
@@ -40,13 +52,13 @@ html, body, #root {
 @theme {
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  
+
   --color-primary: var(--theme-accent);
-  
+
   --color-primary: var(--theme-accent);
   --color-primary-dark: var(--theme-accent-hover);
   --color-primary-light: var(--theme-accent-light);
-  
+
   /* Map standard colors dynamically for dark mode support */
   --color-white: var(--white);
   --color-slate-50: var(--slate-50);
@@ -93,11 +105,11 @@ html, body, #root {
   --color-red-800: var(--theme-accent-hover);
   --color-red-900: var(--theme-accent-hover);
   --color-red-950: var(--theme-accent-hover);
-  
+
   --color-accent: var(--theme-accent);
   --color-accent-hover: var(--theme-accent-hover);
   --color-accent-light: var(--theme-accent-light);
-  
+
   --radius-xl: 1rem;
   --radius-2xl: 1.5rem;
 }
@@ -111,7 +123,7 @@ html, body, #root {
   --theme-accent: #d32f2f;
   --theme-accent-hover: #b71c1c;
   --theme-accent-light: #ffebee;
-  
+
   /* Theme Variables - Light Mode */
   --bg-body: #F8F9FA;
   --text-body: #1e293b;
@@ -119,7 +131,7 @@ html, body, #root {
   --bg-gradient-mid1: #f1f5f9;
   --bg-gradient-mid2: #e2e8f0;
   --bg-gradient-end: #f8fafc;
-  
+
   --white: #ffffff;
   --slate-50: #f8fafc;
   --slate-100: #f1f5f9;
@@ -140,7 +152,7 @@ html, body, #root {
   --slate-805: #0f172a;
   --slate-850: #0f172a;
   --slate-900: #0f172a;
-  
+
   --gray-50: #f9fafb;
   --gray-100: #f3f4f6;
   --gray-200: #e5e7eb;
@@ -151,7 +163,7 @@ html, body, #root {
   --gray-700: #374151;
   --gray-800: #1f2937;
   --gray-900: #111827;
-  
+
   --red-50: #fef2f2;
   --red-100: #fee2e2;
   --red-200: #fecaca;
@@ -167,40 +179,70 @@ html, body, #root {
   --red-950: #450a0a;
 }
 
-*, body, html, input, button, select, textarea {
+*,
+body,
+html,
+input,
+button,
+select,
+textarea {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
 }
 
-html.dark, .dark {
+html.dark,
+.dark {
   /* Theme Variables - Dark Mode (Premium Zinc/Charcoal palette) */
-  --bg-body: #09090b; /* Zinc 950 */
-  --text-body: #f4f4f5; /* Zinc 100 */
-  --bg-gradient-start: #09090b; /* Zinc 950 */
-  --bg-gradient-mid1: #18181b; /* Zinc 900 */
-  --bg-gradient-mid2: #0c0c0e; /* Zinc 950 deep */
+  --bg-body: #09090b;
+  /* Zinc 950 */
+  --text-body: #f4f4f5;
+  /* Zinc 100 */
+  --bg-gradient-start: #09090b;
+  /* Zinc 950 */
+  --bg-gradient-mid1: #18181b;
+  /* Zinc 900 */
+  --bg-gradient-mid2: #0c0c0e;
+  /* Zinc 950 deep */
   --bg-gradient-end: #09090b;
-  
-  --white: rgba(24, 24, 27, 0.90); /* Zinc 900 translucent */
-  --slate-50: #09090b; /* Zinc 950 */
-  --slate-100: rgba(24, 24, 27, 0.90); /* Zinc 900 translucent */
-  --slate-200: #27272a; /* Zinc 800 */
-  --slate-250: #3f3f46; /* Zinc 700 */
-  --slate-300: #a1a1aa; /* Zinc 400 */
-  --slate-350: #d4d4d8; /* Zinc 300 */
-  --slate-400: #d4d4d8; /* Zinc 300 */
-  --slate-450: #cbd5e1; /* Slate 300 */
-  --slate-455: #e2e8f0; /* Slate 200 */
-  --slate-500: #e4e4e7; /* Zinc 200 */
-  --slate-550: #cbd5e1; /* Slate 300 */
-  --slate-600: #f4f4f5; /* Zinc 100 */
-  --slate-655: #e2e8f0; /* Slate 200 */
-  --slate-700: #ffffff; /* White */
-  --slate-705: #f8fafc; /* Slate 50 */
-  --slate-800: #ffffff; /* White */
-  --slate-805: #f8fafc; /* Slate 50 */
+
+  --white: rgba(24, 24, 27, 0.90);
+  /* Zinc 900 translucent */
+  --slate-50: #09090b;
+  /* Zinc 950 */
+  --slate-100: rgba(24, 24, 27, 0.90);
+  /* Zinc 900 translucent */
+  --slate-200: #27272a;
+  /* Zinc 800 */
+  --slate-250: #3f3f46;
+  /* Zinc 700 */
+  --slate-300: #a1a1aa;
+  /* Zinc 400 */
+  --slate-350: #d4d4d8;
+  /* Zinc 300 */
+  --slate-400: #d4d4d8;
+  /* Zinc 300 */
+  --slate-450: #cbd5e1;
+  /* Slate 300 */
+  --slate-455: #e2e8f0;
+  /* Slate 200 */
+  --slate-500: #e4e4e7;
+  /* Zinc 200 */
+  --slate-550: #cbd5e1;
+  /* Slate 300 */
+  --slate-600: #f4f4f5;
+  /* Zinc 100 */
+  --slate-655: #e2e8f0;
+  /* Slate 200 */
+  --slate-700: #ffffff;
+  /* White */
+  --slate-705: #f8fafc;
+  /* Slate 50 */
+  --slate-800: #ffffff;
+  /* White */
+  --slate-805: #f8fafc;
+  /* Slate 50 */
   --slate-850: #ffffff;
   --slate-900: #ffffff;
-  
+
   --gray-50: #18181b;
   --gray-100: #18181b;
   --gray-200: #27272a;
@@ -211,7 +253,7 @@ html.dark, .dark {
   --gray-700: #ffffff;
   --gray-800: #ffffff;
   --gray-900: #ffffff;
-  
+
   --red-50: #450a0a;
   --red-100: #7f1d1d;
   --red-200: #991b1b;
@@ -240,15 +282,24 @@ body {
 }
 
 /* Typography Hierarchy matching reference DCM console */
-h1, h2, h3, h4, h5, h6, .display-heading {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.display-heading {
   font-weight: 700 !important;
 }
 
-.sidebar-item, nav button, nav a {
+.sidebar-item,
+nav button,
+nav a {
   font-weight: 600 !important;
 }
 
-th, .panel-header {
+th,
+.panel-header {
   font-weight: 600 !important;
 }
 
@@ -260,30 +311,43 @@ button {
   font-weight: 600 !important;
 }
 
-a, .text-blue-600 {
+a,
+.text-blue-600 {
   font-weight: 600 !important;
 }
 
-label, .monospace-label, .tech-label {
+label,
+.monospace-label,
+.tech-label {
   font-weight: 600 !important;
 }
 
-strong, b, .inline-emphasis, .font-bold, .font-semibold, .font-black, .font-medium, .font-extrabold {
+strong,
+b,
+.inline-emphasis,
+.font-bold,
+.font-semibold,
+.font-black,
+.font-medium,
+.font-extrabold {
   font-weight: 600 !important;
 }
 
 
 /* Global Form Elements text contrast override */
-input, select, textarea {
+input,
+select,
+textarea {
   color: #000000;
 }
 
 /* Ensure values inside grid under InventoryCard are dark slate in light mode and white in dark mode */
-.grid > span.text-right:not([class*="text-emerald"]):not([class*="text-rose"]):not([class*="text-amber"]):not([class*="text-green"]):not([class*="text-red"]):not([class*="text-slate-300"]):not([class*="text-slate-200"]) {
+.grid>span.text-right:not([class*="text-emerald"]):not([class*="text-rose"]):not([class*="text-amber"]):not([class*="text-green"]):not([class*="text-red"]):not([class*="text-slate-300"]):not([class*="text-slate-200"]) {
   color: var(--slate-805) !important;
 }
 
-input::placeholder, textarea::placeholder {
+input::placeholder,
+textarea::placeholder {
   color: var(--slate-450) !important;
   opacity: 1 !important;
 }
@@ -294,39 +358,60 @@ button:disabled {
 }
 
 /* Global Form Elements Dark Mode override */
-.dark input, .dark select, .dark textarea {
+.dark input,
+.dark select,
+.dark textarea {
   background-color: #18181b !important;
   color: #f4f4f5 !important;
   -webkit-text-fill-color: #f4f4f5 !important;
   border-color: #27272a !important;
 }
 
-.dark input.!bg-transparent {
+.dark input.bg-transparent {
   background-color: transparent !important;
 }
 
-.dark input.!text-white {
+.dark input.text-white {
   color: #ffffff !important;
   -webkit-text-fill-color: #ffffff !important;
 }
 
 /* Global utility classes overrides for light and dark theme translucency */
-.bg-white:not(:hover), .bg-card:not(:hover) {
+.bg-white:not(:hover),
+.bg-card:not(:hover) {
   background-color: var(--white) !important;
 }
-.dark .bg-slate-50, .dark .bg-slate-100, .dark .bg-gray-50, .dark .bg-gray-100 {
+
+.dark .bg-slate-50,
+.dark .bg-slate-100,
+.dark .bg-gray-50,
+.dark .bg-gray-100 {
   background-color: rgba(9, 9, 11, 0.90) !important;
 }
-.dark .bg-gray-50\/50, .dark .bg-slate-50\/50 {
+
+.dark .bg-gray-50\/50,
+.dark .bg-slate-50\/50 {
   background-color: rgba(24, 24, 27, 0.5) !important;
 }
-.dark .text-slate-800, .dark .text-slate-900, .dark .text-gray-900, .dark .text-slate-850 {
+
+.dark .text-slate-800,
+.dark .text-slate-900,
+.dark .text-gray-900,
+.dark .text-slate-850 {
   color: var(--text-body) !important;
 }
-.dark .text-slate-500, .dark .text-slate-400, .dark .text-gray-400, .dark .text-slate-450 {
+
+.dark .text-slate-500,
+.dark .text-slate-400,
+.dark .text-gray-400,
+.dark .text-slate-450 {
   color: var(--slate-400) !important;
 }
-.dark .border-slate-200, .dark .border-gray-200, .dark .border-gray-150, .dark .border-slate-100 {
+
+.dark .border-slate-200,
+.dark .border-gray-200,
+.dark .border-gray-150,
+.dark .border-slate-100 {
   border-color: var(--slate-200) !important;
 }
 
@@ -343,40 +428,68 @@ button:disabled {
 .sidebar-scroll::-webkit-scrollbar {
   width: 4px;
 }
+
 .sidebar-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
+
 .sidebar-scroll::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.25);
   border-radius: 4px;
 }
+
 .sidebar-scroll {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
 }
 
 /* Global Spaciousness Overrides (App-wide layout breathing room) */
-.p-4 { padding: 1.25rem !important; }
-.p-5 { padding: 1.6rem !important; }
-.p-6 { padding: 2.25rem !important; }
-.p-8 { padding: 3rem !important; }
+.p-4 {
+  padding: 1.25rem !important;
+}
 
-.gap-4 { gap: 1.25rem !important; }
-.gap-6 { gap: 1.75rem !important; }
-.gap-8 { gap: 2.5rem !important; }
+.p-5 {
+  padding: 1.6rem !important;
+}
 
-.space-y-4 > :not([hidden]) ~ :not([hidden]) {
+.p-6 {
+  padding: 2.25rem !important;
+}
+
+.p-8 {
+  padding: 3rem !important;
+}
+
+.gap-4 {
+  gap: 1.25rem !important;
+}
+
+.gap-6 {
+  gap: 1.75rem !important;
+}
+
+.gap-8 {
+  gap: 2.5rem !important;
+}
+
+.space-y-4> :not([hidden])~ :not([hidden]) {
   margin-top: 1.25rem !important;
 }
-.space-y-6 > :not([hidden]) ~ :not([hidden]) {
+
+.space-y-6> :not([hidden])~ :not([hidden]) {
   margin-top: 1.75rem !important;
 }
-.space-y-8 > :not([hidden]) ~ :not([hidden]) {
+
+.space-y-8> :not([hidden])~ :not([hidden]) {
   margin-top: 2.5rem !important;
 }
 
 /* Spacious form fields */
-input[type="text"], input[type="password"], input[type="number"], select, textarea {
+input[type="text"],
+input[type="password"],
+input[type="number"],
+select,
+textarea {
   padding-top: 0.75rem !important;
   padding-bottom: 0.75rem !important;
   padding-left: 1rem !important;
@@ -385,17 +498,20 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
 }
 
 /* Spacious button states */
-button.py-2, button.py-2.5 {
+button.py-2,
+button.py-2.5 {
   padding-top: 0.75rem !important;
   padding-bottom: 0.75rem !important;
 }
+
 button.px-4 {
   padding-left: 1.5rem !important;
   padding-right: 1.5rem !important;
 }
 
 /* Spacious tables (event logs, server metrics) */
-th, td {
+th,
+td {
   padding-top: 0.9rem !important;
   padding-bottom: 0.9rem !important;
   padding-left: 1.25rem !important;
@@ -403,32 +519,78 @@ th, td {
 }
 
 /* Legibility Font Size Scale-up Overrides (Make text a little bigger globally) */
-.text-xs { font-size: 0.82rem !important; }
-.text-sm { font-size: 0.94rem !important; }
-.text-base { font-size: 1.05rem !important; }
-.text-lg { font-size: 1.2rem !important; }
-.text-xl { font-size: 1.35rem !important; }
+.text-xs {
+  font-size: 0.82rem !important;
+}
+
+.text-sm {
+  font-size: 0.94rem !important;
+}
+
+.text-base {
+  font-size: 1.05rem !important;
+}
+
+.text-lg {
+  font-size: 1.2rem !important;
+}
+
+.text-xl {
+  font-size: 1.35rem !important;
+}
 
 /* Custom layout sizes mapping */
-.text-\[8px\] { font-size: 10px !important; }
-.text-\[7\.5px\] { font-size: 9.5px !important; }
-.text-\[10px\] { font-size: 11.5px !important; }
-.text-\[10\.5px\] { font-size: 12px !important; }
-.text-\[11px\] { font-size: 12.5px !important; }
-.text-\[12px\] { font-size: 13.5px !important; }
-.text-\[13px\] { font-size: 14.5px !important; }
-.text-\[14px\] { font-size: 15.5px !important; }
+.text-\[8px\] {
+  font-size: 10px !important;
+}
 
-body, .bg-slate-50 {
+.text-\[7\.5px\] {
+  font-size: 9.5px !important;
+}
+
+.text-\[10px\] {
+  font-size: 11.5px !important;
+}
+
+.text-\[10\.5px\] {
+  font-size: 12px !important;
+}
+
+.text-\[11px\] {
+  font-size: 12.5px !important;
+}
+
+.text-\[12px\] {
+  font-size: 13.5px !important;
+}
+
+.text-\[13px\] {
+  font-size: 14.5px !important;
+}
+
+.text-\[14px\] {
+  font-size: 15.5px !important;
+}
+
+body,
+.bg-slate-50 {
   background-color: var(--bg-body) !important;
 }
 
 
 /* Shimmering animation on primary CTA buttons (like Add Server Node) */
 @keyframes shimmer-bg-shift {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
+  0% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0% 50%;
+  }
 }
 
 button.bg-red-600 {
@@ -436,21 +598,24 @@ button.bg-red-600 {
   background-size: 300% 300% !important;
   animation: shimmer-bg-shift 6s ease infinite !important;
 }
+
 button.bg-red-600:hover {
   background: linear-gradient(-45deg, var(--theme-accent-hover), var(--theme-accent), #8b5cf6, var(--theme-accent-hover)) !important;
   background-size: 300% 300% !important;
   animation: shimmer-bg-shift 3s ease infinite !important;
 }
+
 /* Explicit hover overrides for server node grid cards with 3D lift and soft glow */
 .server-node-card {
   background-color: var(--white) !important;
   border-color: var(--slate-200) !important;
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
-              box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1),
-              background-color 0.25s ease,
-              border-color 0.25s ease,
-              color 0.25s ease !important;
+    box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    color 0.25s ease !important;
 }
+
 .server-node-card:hover {
   background-color: var(--theme-accent) !important;
   border-color: var(--theme-accent-hover) !important;
@@ -458,6 +623,7 @@ button.bg-red-600:hover {
   transform: translateY(-4px) scale(1.005) !important;
   box-shadow: 0 16px 24px -8px rgba(0, 0, 0, 0.12), 0 8px 16px -8px var(--theme-accent) !important;
 }
+
 .server-node-card:hover * {
   /* Prevent child elements from retaining dark border colors on hover */
   border-color: rgba(255, 255, 255, 0.15) !important;
@@ -468,6 +634,7 @@ button.bg-red-600:hover {
   transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1) !important;
   position: relative;
 }
+
 .sidebar-item:hover {
   transform: translateX(4px) !important;
   padding-left: 0.85rem !important;
@@ -479,41 +646,92 @@ button.bg-red-600:hover {
 .settings-gear {
   transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
+
 button:hover .settings-gear {
   transform: rotate(90deg) !important;
 }
 
 /* Dynamic status pulse glows */
 @keyframes status-pulse-ok {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
-  70% { transform: scale(1.15); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
-  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+  }
+
+  70% {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+  }
+
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
 }
+
 @keyframes status-pulse-critical {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.5); }
-  70% { transform: scale(1.2); box-shadow: 0 0 0 8px rgba(244, 63, 94, 0); }
-  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(244, 63, 94, 0); }
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.5);
+  }
+
+  70% {
+    transform: scale(1.2);
+    box-shadow: 0 0 0 8px rgba(244, 63, 94, 0);
+  }
+
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(244, 63, 94, 0);
+  }
 }
+
 @keyframes status-pulse-warning {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
-  70% { transform: scale(1.15); box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
-  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4);
+  }
+
+  70% {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 6px rgba(245, 158, 11, 0);
+  }
+
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+  }
 }
+
 @keyframes status-pulse-scanning {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); }
-  70% { transform: scale(1.15); box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
-  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4);
+  }
+
+  70% {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 6px rgba(59, 130, 246, 0);
+  }
+
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+  }
 }
 
 .bg-emerald-500 {
   animation: status-pulse-ok 2s cubic-bezier(0.4, 0, 0.2, 1) infinite !important;
 }
+
 .bg-rose-500 {
   animation: status-pulse-critical 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite !important;
 }
+
 .bg-amber-500 {
   animation: status-pulse-warning 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite !important;
 }
+
 .bg-blue-500 {
   animation: status-pulse-scanning 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite !important;
 }
@@ -522,23 +740,52 @@ button:hover .settings-gear {
 
 /* 1. Fan Spin Animation */
 @keyframes dc-fan-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
+
 .animate-dc-fan-spin {
   animation: dc-fan-spin 1.2s linear infinite;
 }
 
 /* 2. Rapid Random Disk Activity LED Blinking */
 @keyframes dc-disk-activity {
-  0%, 100% { opacity: 0.15; }
-  15% { opacity: 0.85; }
-  30% { opacity: 0.05; }
-  45% { opacity: 0.95; }
-  60% { opacity: 0.2; }
-  75% { opacity: 0.9; }
-  90% { opacity: 0.1; }
+
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+
+  15% {
+    opacity: 0.85;
+  }
+
+  30% {
+    opacity: 0.05;
+  }
+
+  45% {
+    opacity: 0.95;
+  }
+
+  60% {
+    opacity: 0.2;
+  }
+
+  75% {
+    opacity: 0.9;
+  }
+
+  90% {
+    opacity: 0.1;
+  }
 }
+
 .animate-dc-disk-activity {
   animation: dc-disk-activity 0.5s infinite;
 }
@@ -549,17 +796,21 @@ button:hover .settings-gear {
     transform: translateY(0) translateZ(0) translateX(0);
     opacity: 0;
   }
+
   10% {
     opacity: 0.6;
   }
+
   90% {
     opacity: 0.4;
   }
+
   100% {
     transform: translateY(-380px) translateZ(120px) translateX(var(--drift-x, 20px));
     opacity: 0;
   }
 }
+
 .animate-dc-airflow {
   animation: dc-airflow-drift var(--drift-duration, 6s) linear infinite;
 }
@@ -571,11 +822,15 @@ button:hover .settings-gear {
   border: 1px solid rgba(168, 85, 247, 0.25);
   box-shadow: inset 0 0 15px rgba(168, 85, 247, 0.1), 0 8px 32px 0 rgba(0, 0, 0, 0.37);
 }
+
 .dc-glass-door::after {
   content: '';
   position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.06) 45%, rgba(255,255,255,0.12) 48%, rgba(255,255,255,0.06) 51%, transparent 56%);
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(105deg, transparent 40%, rgba(255, 255, 255, 0.06) 45%, rgba(255, 255, 255, 0.12) 48%, rgba(255, 255, 255, 0.06) 51%, transparent 56%);
   background-size: 200% 200%;
   pointer-events: none;
 }
@@ -613,17 +868,17 @@ button:hover .settings-gear {
   width: 340px;
   height: 55%;
   background: linear-gradient(180deg,
-    rgba(80, 180, 255, 0.12) 0%,
-    rgba(80, 180, 255, 0.04) 40%,
-    transparent 100%);
+      rgba(80, 180, 255, 0.12) 0%,
+      rgba(80, 180, 255, 0.04) 40%,
+      transparent 100%);
   mask-image: repeating-linear-gradient(90deg,
-    transparent 0px, transparent 2px,
-    white 2px, white 3px,
-    transparent 3px, transparent 7px);
+      transparent 0px, transparent 2px,
+      white 2px, white 3px,
+      transparent 3px, transparent 7px);
   -webkit-mask-image: repeating-linear-gradient(90deg,
-    transparent 0px, transparent 2px,
-    white 2px, white 3px,
-    transparent 3px, transparent 7px);
+      transparent 0px, transparent 2px,
+      white 2px, white 3px,
+      transparent 3px, transparent 7px);
   animation: login-beams-drift 6s ease-in-out infinite alternate;
   pointer-events: none;
 }
@@ -638,14 +893,21 @@ button:hover .settings-gear {
   height: 400px;
   border-radius: 50%;
   background: radial-gradient(ellipse at 50% 30%,
-    rgba(50, 160, 255, 0.08) 0%,
-    transparent 70%);
+      rgba(50, 160, 255, 0.08) 0%,
+      transparent 70%);
   pointer-events: none;
 }
 
 @keyframes login-beams-drift {
-  0%   { opacity: 0.6; transform: translateX(-50%) scaleY(1); }
-  100% { opacity: 1;   transform: translateX(-50%) scaleY(1.08); }
+  0% {
+    opacity: 0.6;
+    transform: translateX(-50%) scaleY(1);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateX(-50%) scaleY(1.08);
+  }
 }
 
 /* Card */
@@ -655,14 +917,21 @@ button:hover .settings-gear {
   max-width: 92vw;
   background: #fff;
   border-radius: 6px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255,255,255,0.05);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05);
   overflow: hidden;
   animation: login-card-in 0.5s ease-out both;
 }
 
 @keyframes login-card-in {
-  0%   { opacity: 0; transform: translateY(24px) scale(0.97); }
-  100% { opacity: 1; transform: translateY(0) scale(1); }
+  0% {
+    opacity: 0;
+    transform: translateY(24px) scale(0.97);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 /* Card header bar */
@@ -799,4 +1068,13 @@ button:hover .settings-gear {
   cursor: not-allowed;
 }
 
-
+/* Browser autofill styling for white inputs */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
+  -webkit-text-fill-color: #0f172a !important;
+  caret-color: #0f172a !important;
+  transition: background-color 50000s ease-in-out 0s !important;
+}
