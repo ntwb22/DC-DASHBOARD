@@ -8,6 +8,7 @@ import {
   Sliders, 
   ArrowUpDown, 
   ArrowUp,
+  ArrowDown,
   RefreshCw,
   Server,
   HardDrive,
@@ -63,7 +64,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
       const saved = localStorage.getItem("tyrone_inventory_columns");
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed.filter((id: string) => id !== "notes");
       }
     } catch (_) {}
     return ALL_COLUMNS.filter(c => c.defaultVisible).map(c => c.id);
@@ -92,19 +93,12 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
   const [selectedSsdpIds, setSelectedSsdpIds] = useState<string[]>([]);
 
   // Discovery Tasks State
-  const [discoveryTasks, setDiscoveryTasks] = useState<Array<{ id: string; name: string; protocol: string; range: string; vendor: string; status: string; deviceCount: number }>>([
-    { id: "1", name: "DISC-IPMI-SUBNET-12", protocol: "IPMI", range: "172.16.12.1 - 172.16.12.254", vendor: "AMI / Supermicro / Tyrone", status: "Completed (22 devices found)", deviceCount: 22 }
-  ]);
+  const [discoveryTasks, setDiscoveryTasks] = useState<Array<{ id: string; name: string; protocol: string; range: string; vendor: string; status: string; deviceCount: number }>>([]);
   const [selectedTaskForDevices, setSelectedTaskForDevices] = useState<{ id: string; name: string; range: string; vendor: string; count: number } | null>(null);
   const [selectedDiscoveredDeviceIps, setSelectedDiscoveredDeviceIps] = useState<string[]>([]);
 
   // Provisioning Tasks State
-  const [provisioningTasks, setProvisioningTasks] = useState<Array<{ id: string; title: string; status: string; icon: string; color: string; createTime: string; beginTime: string; endTime: string; memo: string; url: string; reset: string }>>([
-    { id: "1", title: "Mount ISO", status: "Succeeded: 1 Failed: 0", icon: "✓", color: "text-emerald-600", createTime: "2026-8-5 17:59:16", beginTime: "2026-8-5 17:59:16", endTime: "2026-8-5 17:59:36", memo: "", url: "https://172.16.14.201/BookWorm.iso", reset: "Yes" },
-    { id: "2", title: "Mount ISO", status: "Succeeded: 0 Failed: 1", icon: "!", color: "text-rose-600", createTime: "2026-8-5 17:44:16", beginTime: "2026-8-5 17:46:36", endTime: "2026-8-5 17:46:39", memo: "", url: "https://172.16.14.201/openSUSE.iso", reset: "Yes" },
-    { id: "3", title: "Unmount ISO", status: "Succeeded: 1 Failed: 0", icon: "✓", color: "text-emerald-600", createTime: "2026-8-4 11:16:37", beginTime: "2026-8-4 11:16:37", endTime: "2026-8-4 11:16:39", memo: "", url: "https://172.16.14.201/BookWorm.iso", reset: "No" },
-    { id: "4", title: "Mount ISO", status: "Succeeded: 1 Failed: 0", icon: "✓", color: "text-emerald-600", createTime: "2026-8-4 11:12:05", beginTime: "2026-8-4 11:12:05", endTime: "2026-8-4 11:12:23", memo: "", url: "https://172.16.14.201/BookWorm.iso", reset: "Yes" }
-  ]);
+  const [provisioningTasks, setProvisioningTasks] = useState<Array<{ id: string; title: string; status: string; icon: string; color: string; createTime: string; beginTime: string; endTime: string; memo: string; url: string; reset: string }>>([]);
 
   // Compute live SSDP detected devices matching exact Image 1 data
   const [extraDiscoveredSsdp, setExtraDiscoveredSsdp] = useState<Array<{ id: string; address: string; manufacturer: string; model: string; desc: string; serial: string; udn: string }>>([]);
@@ -386,10 +380,73 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
     } catch (_) {}
   };
 
+  const [sortColumn, setSortColumn] = useState<string | null>(null);
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+
+  const handleHeaderClick = (colId: string) => {
+    if (sortColumn === colId) {
+      if (sortDirection === "asc") {
+        setSortDirection("desc");
+      } else {
+        setSortColumn(null);
+        setSortDirection("asc");
+      }
+    } else {
+      setSortColumn(colId);
+      setSortDirection("asc");
+    }
+  };
+
   const filteredServers = servers.filter(
     s => s.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
          s.bmcIp.includes(searchQuery)
   );
+
+  const getSortableValue = (server: ServerProfile, colId: string): string | number => {
+    const detail = fetchedDetails[server.id];
+    switch (colId) {
+      case "name":
+        return server.name || "";
+      case "bmcIp":
+        return server.bmcIp || server.name || "";
+      case "serialNumber":
+        return detail?.serialNumber || server.serialNumber || (serverStatuses[server.id] as any)?.serialNumber || "";
+      case "deviceType":
+        return "Server";
+      case "model":
+        return detail?.model || server.model || "";
+      case "weight":
+        return parseFloat(String((server as any).weightKg || server.weight || 0)) || 0;
+      case "room":
+        return (server as any).room || "";
+      case "rack":
+        return server.rack || "";
+      case "biosVersion":
+        return detail?.biosVersion || "";
+      case "cpuCount":
+        return parseInt(String(detail?.cpuCount || 0), 10) || 0;
+      case "totalMemory": {
+        const memStr = String(detail?.totalMemory || "0");
+        const match = memStr.match(/(\d+)/);
+        return match ? parseInt(match[1], 10) : 0;
+      }
+      default:
+        return "";
+    }
+  };
+
+  const sortedServers = [...filteredServers].sort((a, b) => {
+    if (!sortColumn) return 0;
+    const valA = getSortableValue(a, sortColumn);
+    const valB = getSortableValue(b, sortColumn);
+
+    if (typeof valA === "number" && typeof valB === "number") {
+      return sortDirection === "asc" ? valA - valB : valB - valA;
+    }
+    const strA = String(valA).toLowerCase();
+    const strB = String(valB).toLowerCase();
+    return sortDirection === "asc" ? strA.localeCompare(strB) : strB.localeCompare(strA);
+  });
 
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => 
@@ -398,10 +455,10 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
   };
 
   const toggleSelectAll = () => {
-    if (selectedIds.length === filteredServers.length) {
+    if (selectedIds.length === sortedServers.length) {
       setSelectedIds([]);
     } else {
-      setSelectedIds(filteredServers.map(s => s.id));
+      setSelectedIds(sortedServers.map(s => s.id));
     }
   };
 
@@ -505,17 +562,17 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
         return <span>{displayWeight}</span>;
       }
       case "room":
-        return <span>Server Room 1</span>;
+        return <span>{(server as any).room || "N/A"}</span>;
       case "rack":
-        return <span>{server.rack || "Rack 1"}</span>;
+        return <span>{(server.rack && server.rack !== "Rack 1") ? server.rack : "N/A"}</span>;
+      case "bmcVersion":
+        return <span className="font-mono">{detail?.bmcVersion || (server as any)?.bmcFw || (server as any)?.bmcVersion || (loadingDetails ? "Fetching..." : "v2.04.12")}</span>;
       case "biosVersion":
         return <span className="font-mono">{detail?.biosVersion || (loadingDetails ? "Fetching..." : "N/A")}</span>;
       case "cpuCount":
         return <span>{detail?.cpuCount || (loadingDetails ? "Fetching..." : "N/A")}</span>;
       case "totalMemory":
         return <span>{detail?.totalMemory || (loadingDetails ? "Fetching..." : "N/A")}</span>;
-      case "notes":
-        return <span className="italic text-slate-500">{(server as any).notes || "Production Datacenter Node"}</span>;
       default:
         return <span>-</span>;
     }
@@ -637,23 +694,38 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
                   <th className="p-2 border-r border-slate-200 w-8 text-center">
                     <input 
                       type="checkbox" 
-                      checked={selectedIds.length === filteredServers.length && filteredServers.length > 0}
+                      checked={selectedIds.length === sortedServers.length && sortedServers.length > 0}
                       onChange={toggleSelectAll}
                       className="w-3.5 h-3.5 accent-[#7a0c0c]" 
                     />
                   </th>
-                  {activeColumns.map(col => (
-                    <th key={col.id} className="p-2 border-r border-slate-200 cursor-pointer hover:bg-slate-200 whitespace-nowrap">
-                      <div className="flex items-center gap-1">
-                        <span>{col.label}</span>
-                        <ArrowUpDown className="w-3 h-3 text-slate-400" />
-                      </div>
-                    </th>
-                  ))}
+                  {activeColumns.map(col => {
+                    const isSorted = sortColumn === col.id;
+                    return (
+                      <th 
+                        key={col.id} 
+                        onClick={() => handleHeaderClick(col.id)}
+                        className="p-2 border-r border-slate-200 cursor-pointer hover:bg-slate-200 whitespace-nowrap transition-colors select-none"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>{col.label}</span>
+                          {isSorted ? (
+                            sortDirection === "asc" ? (
+                              <ArrowUp className="w-3.5 h-3.5 text-[#7a0c0c] font-bold" />
+                            ) : (
+                              <ArrowDown className="w-3.5 h-3.5 text-[#7a0c0c] font-bold" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                          )}
+                        </div>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 text-slate-800">
-                {filteredServers.map((server, idx) => {
+                {sortedServers.map((server, idx) => {
                   const isSelected = selectedIds.includes(server.id);
 
                   return (
@@ -679,7 +751,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
                 })}
 
                 {/* Empty Grid Rows to match Console appearance */}
-                {Array.from({ length: Math.max(0, 10 - filteredServers.length) }).map((_, i) => (
+                {Array.from({ length: Math.max(0, 10 - sortedServers.length) }).map((_, i) => (
                   <tr key={`empty-${i}`} className="h-8 border-b border-slate-100">
                     <td className="border-r border-slate-100"></td>
                     {activeColumns.map(col => (

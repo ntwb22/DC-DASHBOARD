@@ -304,7 +304,6 @@ export const ProvisioningModal = ({ isOpen, onClose, server, onSuccess }: Provis
                 <option value="Management Module Firmware">Management Module Firmware (BMC)</option>
                 <option value="BIOS">System BIOS</option>
                 <option value="CPLD">CPLD Firmware</option>
-                <option value="PSU Firmware">Power Supply Unit (PSU)</option>
                 <option value="RAID Controller">RAID / HBA Controller</option>
               </select>
             </div>

@@ -14,6 +14,8 @@ import { AboutModal } from "./components/AboutModal";
 import { UserGuideModal } from "./components/UserGuideModal";
 import { ReleaseNotesModal } from "./components/ReleaseNotesModal";
 import { AddDeviceModal } from "./components/AddDeviceModal";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { telemetryWsService } from "./services/websocketService";
 
 
 import {
@@ -171,6 +173,23 @@ const validateBmc = async (ip: string, user: string, pass: string): Promise<void
   }
 };
 
+const normalizeTabId = (
+  rawTab: string
+): "dashboard" | "hierarchy" | "global_inventory" | "sustainability" | "reliability" | "events" | "reports" | "settings" | "inventory_details" => {
+  if (!rawTab) return "dashboard";
+  const clean = rawTab.replace(/^#/, "").trim().toLowerCase();
+  if (clean === "devices" || clean === "global_inventory" || clean === "inventory") return "global_inventory";
+  if (clean === "hierarchy") return "hierarchy";
+  if (clean === "dashboard") return "dashboard";
+  if (clean === "sustainability") return "sustainability";
+  if (clean === "reliability") return "reliability";
+  if (clean === "events") return "events";
+  if (clean === "reports") return "reports";
+  if (clean === "settings") return "settings";
+  if (clean === "inventory_details" || clean === "device_details") return "inventory_details";
+  return "dashboard";
+};
+
 export default function App() {
   // Authentication State for Login / Logout
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
@@ -229,7 +248,7 @@ export default function App() {
               deratedPowerW: item.deratedPowerW || item.powerW || 750,
               powerW: item.powerW || item.deratedPowerW || 750,
               isCustom: true,
-              rack: item.rack || "Rack 1"
+              rack: item.rack || ""
             }));
           try {
             localStorage.setItem("tyrone_fleet", JSON.stringify(filtered));
@@ -247,10 +266,26 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Active Tab View State matching sidebar
-  const [activeTab, setActiveTab] = useState<
+  // Active Tab View State matching sidebar with URL hash sync
+  const [activeTab, setActiveTabState] = useState<
     "dashboard" | "hierarchy" | "global_inventory" | "sustainability" | "reliability" | "events" | "reports" | "settings" | "inventory_details"
-  >("dashboard");
+  >(() => {
+    if (typeof window !== "undefined" && window.location.hash) {
+      return normalizeTabId(window.location.hash);
+    }
+    return "dashboard";
+  });
+
+  const setActiveTab = (tab: string) => {
+    const normalized = normalizeTabId(tab);
+    setActiveTabState(normalized);
+    if (typeof window !== "undefined") {
+      const hash = normalized === "global_inventory" ? "devices" : normalized;
+      if (window.location.hash !== `#${hash}`) {
+        window.history.replaceState(null, "", `#${hash}`);
+      }
+    }
+  };
 
   // Sidebar Devices Submenu Expansion State
   const [isDevicesExpanded, setIsDevicesExpanded] = useState<boolean>(true);
@@ -416,7 +451,7 @@ export default function App() {
           deratedPowerW: item.deratedPowerW || item.powerW || 750,
           powerW: item.powerW || item.deratedPowerW || 750,
           isCustom: true,
-          rack: item.rack || "Rack 1"
+          rack: item.rack || ""
         };
       });
 
@@ -515,59 +550,65 @@ export default function App() {
       await Promise.all(
         servers.map(async (server) => {
           if (!server.bmcIp || server.id.includes("placeholder") || server.bmcIp.includes("192.168.10.12")) {
+            updatedStatuses[server.id] = {
+              ...(updatedStatuses[server.id] || {}),
+              status: "Offline",
+              powerState: "Off",
+              health: "Offline"
+            };
             return;
           }
           try {
-            const svc = new RedfishService({
-              url: server.bmcIp,
+            const service = new RedfishService({
+              url: server.bmcIp.startsWith("http") ? server.bmcIp : `https://${server.bmcIp}`,
               username: server.bmcUsername || "admin",
-              password: server.bmcPassword || "netweb@123"
+              password: server.bmcPassword || "netweb@123",
+              category: server.category || "SM"
             });
+            const sysUri = await service.resolveSystemId();
+            const sys = await service.getSystemDetails(sysUri).catch(() => null);
+            const chassisUri = await service.resolveChassisId();
+            const thermal = await service.getThermal(chassisUri).catch(() => null);
+            const power = await service.getPowerTelemetry(chassisUri).catch(() => null);
 
-            const sysId = await svc.resolveSystemId().catch(() => null);
-            if (sysId) {
-              const details = await svc.getSystemDetails(sysId).catch(() => null);
-              const powerRes = await svc.getPowerTelemetry("1").catch(() => null);
-              const thermalRes = await svc.getThermal("1").catch(() => null);
+            const powerW = power?.PowerControl?.[0]?.PowerConsumedWatts || power?.PowerControl?.[0]?.PowerMetrics?.AverageConsumedWatts || 0;
+            const cpuTemp = thermal?.Temperatures?.[0]?.ReadingCelsius || 0;
 
-              let powerConsumedWatts: number | undefined = undefined;
-              if (powerRes?.PowerControl?.[0]?.PowerConsumedWatts) {
-                powerConsumedWatts = Number(powerRes.PowerControl[0].PowerConsumedWatts);
-              }
-
-              let fetchedTemp: number | undefined = undefined;
-              if (thermalRes?.Temperatures && Array.isArray(thermalRes.Temperatures) && thermalRes.Temperatures.length > 0) {
-                const temps = thermalRes.Temperatures.map((t: any) => t.ReadingCelsius || 0).filter((t: number) => t > 0);
-                if (temps.length > 0) {
-                  fetchedTemp = Math.max(...temps);
-                }
-              }
-
-              if (details) {
-                updatedStatuses[server.id] = {
-                  status: details.Status?.Health === "Critical" ? "Critical" : (details.Status?.Health === "Warning" ? "Warning" : "OK"),
-                  model: details.Model || server.model || "N/A",
-                  manufacturer: details.Manufacturer || "N/A",
-                  serialNumber: details.SerialNumber || server.serialNumber || "N/A",
-                  powerState: details.PowerState || "On",
-                  biosVersion: details.BiosVersion || details.FirmwareVersion || "N/A",
-                  health: details.Status?.Health || "OK",
-                  powerConsumedWatts: powerConsumedWatts ?? 0,
-                  temperature: fetchedTemp ?? 0
-                };
-              }
+            if (sys || thermal || power) {
+              updatedStatuses[server.id] = {
+                status: sys?.Status?.Health || "OK",
+                model: sys?.Model || server.model || "RH21XM",
+                manufacturer: sys?.Manufacturer || "Tyrone Systems",
+                serialNumber: sys?.SerialNumber || server.serialNumber || "N/A",
+                powerState: sys?.PowerState || "On",
+                biosVersion: sys?.BiosVersion || "3.0",
+                health: sys?.Status?.Health || "OK",
+                powerConsumedWatts: powerW,
+                temperature: cpuTemp
+              };
+            } else {
+              updatedStatuses[server.id] = {
+                ...(updatedStatuses[server.id] || {}),
+                status: "Offline",
+                powerState: "Off",
+                health: "Offline"
+              };
             }
-
-            await svc.trackHardwareLinkStates().catch(() => { });
           } catch (e) {
-            console.warn(`Continuous Redfish fleet tracker error for ${server.name} (${server.bmcIp}):`, e);
+            console.warn(`Direct Redfish scan error for ${server.name} (${server.bmcIp}):`, e);
+            updatedStatuses[server.id] = {
+              ...(updatedStatuses[server.id] || {}),
+              status: "Offline",
+              powerState: "Off",
+              health: "Offline"
+            };
           }
         })
       );
 
       setServerStatuses(updatedStatuses);
     } catch (err) {
-      console.error("Centralized fleet scan execution exception:", err);
+      console.error("Centralized Digital Twin scan execution exception:", err);
     } finally {
       setIsScanning(false);
       setLastScanTime(new Date().toLocaleTimeString());
@@ -603,6 +644,13 @@ export default function App() {
     };
     window.addEventListener("change-tab", handleTabChange);
 
+    const handleHashChange = () => {
+      if (typeof window !== "undefined") {
+        setActiveTabState(normalizeTabId(window.location.hash));
+      }
+    };
+    window.addEventListener("hashchange", handleHashChange);
+
     const handleHardwareEvent = (e: any) => {
       const newLog = e.detail;
       setAlerts((prev) => {
@@ -617,9 +665,14 @@ export default function App() {
     };
     window.addEventListener("hardware-event", handleHardwareEvent);
 
+    // Connect to Python backend WebSocket stream (ws://127.0.0.1:8000/ws/events)
+    telemetryWsService.connect();
+
     return () => {
+      telemetryWsService.disconnect();
       window.removeEventListener("fleet-updated", handleFleetUpdate);
       window.removeEventListener("change-tab", handleTabChange);
+      window.removeEventListener("hashchange", handleHashChange);
       window.removeEventListener("hardware-event", handleHardwareEvent);
     };
   }, []);
@@ -629,20 +682,13 @@ export default function App() {
       fetchAlerts();
       runHardwareScan(false);
 
-      const scanTimer = setInterval(() => {
+      const intervalId = setInterval(() => {
         runHardwareScan(false);
       }, 15000);
 
-      const logsTimer = setInterval(() => {
-        fetchAlerts();
-      }, 10000);
-
-      return () => {
-        clearInterval(scanTimer);
-        clearInterval(logsTimer);
-      };
+      return () => clearInterval(intervalId);
     }
-  }, [servers]);
+  }, [servers.length]);
 
   useEffect(() => {
     if (activeServerId) {
@@ -678,7 +724,7 @@ export default function App() {
         osPassword: nodeOsIp.trim() ? nodeOsPassword.trim() : "",
         osSshPort: nodeOsIp.trim() ? nodeOsSshPort || 22 : 22,
         isCustom: true,
-        rack: "Rack 1"
+        rack: ""
       };
 
       let fleet: any[] = [];
@@ -861,6 +907,8 @@ export default function App() {
       );
 
       localStorage.setItem("tyrone_fleet", JSON.stringify(updated));
+      if (id) await fetch(`/api/local/fleet/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => null);
+      if (target?.bmcIp) await fetch(`/api/local/fleet/${encodeURIComponent(target.bmcIp)}`, { method: "DELETE" }).catch(() => null);
       await fetch("/api/local/fleet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -920,6 +968,12 @@ export default function App() {
       );
 
       localStorage.setItem("tyrone_fleet", JSON.stringify(updated));
+      for (const id of ids) {
+        await fetch(`/api/local/fleet/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => null);
+      }
+      for (const t of targets) {
+        if (t.bmcIp) await fetch(`/api/local/fleet/${encodeURIComponent(t.bmcIp)}`, { method: "DELETE" }).catch(() => null);
+      }
       await fetch("/api/local/fleet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1082,9 +1136,6 @@ export default function App() {
         className="min-h-screen flex items-center justify-center p-4 font-sans relative bg-cover bg-center bg-no-repeat"
         style={{ backgroundImage: `url('/login-bg.png')` }}
       >
-        {/* Ambient Dark Overlay */}
-        <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px]"></div>
-
         <div className="relative z-10 bg-slate-950/85 backdrop-blur-xl text-slate-100 rounded-2xl shadow-2xl border border-red-900/40 shadow-red-950/50 max-w-md w-full p-8 space-y-6">
           <div className="text-center flex flex-col items-center justify-center -mt-2">
             <img src="/tyrone-logo.png" alt="Tyrone Logo" className="h-24 max-w-[240px] object-contain mx-auto -mb-1 scale-110 drop-shadow-[0_0_12px_rgba(220,38,38,0.3)]" />
@@ -1156,67 +1207,77 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#dce1e7] text-slate-800 flex flex-col font-sans relative">
-      {/* Top Red Header Bar - Tyrone Data Center Manager Console (Slim Version) */}
-      <header className="relative bg-[#680505] text-white py-1.5 px-3 md:px-5 border-b border-[#4d0000] sticky top-0 z-50 flex items-center justify-between shadow-md select-none">
+      {/* Top Red Header Bar - Tyrone Data Center Manager Console */}
+      <header className="relative bg-[#680505] text-white h-16 md:h-18 px-4 md:px-6 border-b border-[#4d0000] sticky top-0 z-50 flex items-center justify-between shadow-md select-none">
         {/* Subtle datacenter rack background overlay */}
         <div
           className="absolute inset-0 bg-cover bg-center opacity-20 mix-blend-overlay pointer-events-none overflow-hidden"
           style={{ backgroundImage: `url('/login-bg.png')` }}
         />
 
-        <div className="relative z-10 flex items-center gap-3 md:gap-4">
+        {/* Left Balanced Branding Group: Tyrone Logo + Vertical Divider + Core Console Subtitle */}
+        <div className="relative z-10 flex items-center gap-3.5 md:gap-4 h-full">
           <img 
             src="/tyrone-logo.png" 
             alt="Tyrone Logo" 
-            className="h-10 md:h-12 max-w-[240px] object-contain shrink-0 filter brightness-0 invert font-extrabold" 
+            className="h-11 md:h-12 max-w-[260px] object-contain shrink-0 filter brightness-0 invert" 
           />
-          <span className="text-base sm:text-lg md:text-xl font-extrabold text-white tracking-wide leading-none">Data Center Manager Console</span>
+          <div className="h-6.5 w-px bg-white/40 shrink-0" />
+          <span className="text-base md:text-lg font-medium text-slate-100 tracking-wide font-sans leading-none opacity-95">
+            Core Console
+          </span>
         </div>
 
-        <div className="relative z-10 flex items-center gap-3 text-xs font-sans">
+        {/* Right Actions Group: Search Box + Alerts Button + User Profile + Logout + Help (Standard Sizing) */}
+        <div className="relative z-10 flex items-center gap-4 text-xs md:text-sm font-sans h-full">
           {/* Slim Rounded White Search Box */}
           <div className="relative flex items-center">
-            <Search className="w-3 h-3 text-slate-500 absolute left-2.5 pointer-events-none" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-8 pr-2.5 py-0.5 bg-white text-slate-800 rounded-full text-xs w-40 sm:w-56 border-0 focus:outline-none focus:ring-2 focus:ring-red-400/50 shadow-inner font-medium"
+              placeholder="Search..."
+              className="px-3.5 py-1.5 bg-white text-slate-800 rounded-full text-xs md:text-sm w-44 sm:w-60 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-red-400/50 shadow-inner font-medium placeholder-slate-400 leading-none"
             />
           </div>
 
-          <div className="flex items-center gap-2 text-white text-xs font-normal">
+          <div className="flex items-center gap-3 text-white text-xs md:text-sm font-normal">
             {/* Error Alert System Quick Header Access Button */}
             <button
               onClick={() => setShowErrorAlertsModal(true)}
-              className="px-2.5 py-1 bg-red-950/80 hover:bg-red-900 text-white rounded-md text-xs font-bold cursor-pointer flex items-center gap-1.5 transition-all border border-red-500/50 shadow-xs"
+              className="px-3 py-1.5 bg-red-950/80 hover:bg-red-900 text-white rounded-md text-xs md:text-sm font-semibold cursor-pointer flex items-center gap-1.5 transition-all border border-red-500/50 shadow-xs leading-none"
               title="Open Error Alert System"
             >
-              <Bell className="w-3.5 h-3.5 text-red-300 animate-pulse" />
-              <span>Alerts ({alerts.length})</span>
+              <Bell className="w-3.5 h-3.5 md:w-4 md:h-4 text-red-300 animate-pulse shrink-0" />
+              <span className="leading-none">Alerts ({alerts.length})</span>
             </button>
-            <span className="text-white/50">|</span>
 
-            <div className="flex items-center gap-1.5">
-              <User className="w-3.5 h-3.5 text-white/90" />
-              <span className="font-medium text-white">{loginUsername || "admin"}</span>
+            <div className="h-4 md:h-5 w-px bg-white/30 shrink-0" />
+
+            <div className="flex items-center gap-1.5 leading-none">
+              <User className="w-3.5 h-3.5 md:w-4 md:h-4 text-white/90 shrink-0" />
+              <span className="font-semibold text-white leading-none">{loginUsername || "admin"}</span>
             </div>
-            <span className="text-white/50">|</span>
+
+            <div className="h-4 md:h-5 w-px bg-white/30 shrink-0" />
+
             <button
               onClick={handleLogout}
-              className="hover:text-white/80 cursor-pointer hover:underline font-normal text-white"
+              className="hover:text-white/80 cursor-pointer hover:underline font-medium text-white leading-none"
             >
               Logout
             </button>
-            <span className="text-white/50">|</span>
+
+            <div className="h-4 md:h-5 w-px bg-white/30 shrink-0" />
+
             {/* Help Dropdown Menu */}
-            <div className="relative">
+            <div className="relative flex items-center">
               <button
                 onClick={() => setIsHelpDropdownOpen(!isHelpDropdownOpen)}
-                className="hover:text-white/80 cursor-pointer flex items-center gap-1 font-normal text-white focus:outline-none"
+                className="hover:text-white/80 cursor-pointer flex items-center gap-1 font-medium text-white focus:outline-none leading-none"
               >
-                <span>Help</span>
-                <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isHelpDropdownOpen ? "rotate-180" : ""}`} />
+                <span className="leading-none">Help</span>
+                <ChevronDown className={`w-3.5 h-3.5 md:w-4 md:h-4 transition-transform shrink-0 ${isHelpDropdownOpen ? "rotate-180" : ""}`} />
               </button>
 
               {isHelpDropdownOpen && (
@@ -1329,18 +1390,20 @@ export default function App() {
 
               {activeTab === "hierarchy" && (
                 <motion.div key="tab-hierarchy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full">
-                  <HierarchyView
-                    servers={servers}
-                    serverStatuses={serverStatuses}
-                    onSelectServer={handleSelectServer}
-                    onOpenInventoryDetails={(id) => {
-                      if (id) setActiveServerId(id);
-                      setActiveTab("inventory_details");
-                    }}
-                    selectedServerId={activeServerId}
-                    alerts={alerts}
-                    onEditServer={(server) => handleStartEditNode(server)}
-                  />
+                  <ErrorBoundary>
+                    <HierarchyView
+                      servers={servers}
+                      serverStatuses={serverStatuses}
+                      onSelectServer={handleSelectServer}
+                      onOpenInventoryDetails={(id) => {
+                        if (id) setActiveServerId(id);
+                        setActiveTab("inventory_details");
+                      }}
+                      selectedServerId={activeServerId}
+                      alerts={alerts}
+                      onEditServer={(server) => handleStartEditNode(server)}
+                    />
+                  </ErrorBoundary>
                 </motion.div>
               )}
 

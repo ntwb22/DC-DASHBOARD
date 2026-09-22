@@ -58,10 +58,7 @@ export function CpuView({ servers = [] }: CpuViewProps) {
         }
 
         if (candidateServers.length === 0) {
-          candidateServers = [
-            { id: "server-172.16.12.50", name: "172.16.12.50", bmcIp: "172.16.12.50", bmcUsername: "ADMIN", bmcPassword: "ADMIN", rack: "Server Room 1", category: "SM" },
-            { id: "server-172.16.12.55", name: "172.16.12.55", bmcIp: "172.16.12.55", bmcUsername: "admin", bmcPassword: "netweb@123", rack: "Server Room 1", category: "SM" }
-          ];
+          candidateServers = [];
         }
 
         await Promise.all(
@@ -76,19 +73,16 @@ export function CpuView({ servers = [] }: CpuViewProps) {
                 url: bmcIp.startsWith("http") ? bmcIp : `https://${bmcIp}`,
                 username: srv.bmcUsername || "admin",
                 password: srv.bmcPassword || "netweb@123",
-                category: srv.category,
-                chassisUri: srv.chassisUri
+                category: srv.category || "SM"
               });
-
-              // Fetch real Redfish processor telemetry
-              const procs = await service.getProcessors().catch(() => []);
+              const sysUri = await service.resolveSystemId();
+              const procs = await service.getProcessors(sysUri);
 
               if (Array.isArray(procs) && procs.length > 0) {
                 procs.forEach((proc: any, idx: number) => {
                   const rawCpuId = proc.Id || proc.Socket || `CPU-${idx + 1}`;
                   const displayId = (rawCpuId.includes("CPU") || rawCpuId.includes("Cpu")) ? rawCpuId : `CPU-${rawCpuId}`;
 
-                  // Sanitize model string if BMC returned pure numeric or DevType string
                   let cpuModel = proc.Model || proc.Name;
                   if (!cpuModel || cpuModel === "N/A" || typeof cpuModel === "number" || /^\d+$/.test(String(cpuModel).trim()) || String(cpuModel).startsWith("DevType")) {
                     if (srv.model && srv.model !== "N/A" && srv.model !== "SYS-621H-TN12R" && !/^\d+$/.test(String(srv.model).trim())) {

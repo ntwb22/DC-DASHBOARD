@@ -19,10 +19,10 @@ export const ALL_COLUMNS: ColumnDefinition[] = [
   { id: "weight", label: "Weight (kg)", page: 1, defaultVisible: true },
 
   // Page 2
+  { id: "bmcVersion", label: "BMC Information", page: 2, defaultVisible: true },
   { id: "biosVersion", label: "BIOS Information", page: 2, defaultVisible: true },
   { id: "cpuCount", label: "Number of CPU", page: 2, defaultVisible: true },
-  { id: "totalMemory", label: "Total Memory", page: 2, defaultVisible: true },
-  { id: "notes", label: "Notes", page: 2, defaultVisible: true }
+  { id: "totalMemory", label: "Total Memory", page: 2, defaultVisible: true }
 ];
 
 interface SelectColumnsModalProps {

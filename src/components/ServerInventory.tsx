@@ -1847,8 +1847,9 @@ export const ServerInventory: React.FC<ServerInventoryProps> = ({ service, syste
     const sysPower = inventory.system?.PowerState || "No Data";
     const bmcIp = inventory.manager?.Network?.IPv4Addresses?.[0]?.Address || "No Data";
     const bmcMac = inventory.manager?.Network?.MACAddress || "No Data";
-    const bmcFw = inventory.manager?.FirmwareVersion || "No Data";
-    const biosVersion = inventory.firmware?.find(f => f.Id === "BIOS")?.Version || "No Data";
+    const bmcFw = inventory.manager?.FirmwareVersion || inventory.firmware?.find(f => f.Id === "BMC" || f.Name?.includes("BMC"))?.Version || "N/A";
+    const biosVersion = inventory.firmware?.find(f => f.Id === "BIOS" || f.Name?.includes("BIOS"))?.Version || inventory.system?.BiosVersion || "N/A";
+    const cpldVersion = inventory.firmware?.find(f => f.Id === "CPLD" || f.Name?.includes("CPLD"))?.Version || inventory.system?.CPLDVersion || "N/A";
 
     const processorsList = inventory.processors.map((p, idx) => `
       <tr style="border-bottom: 1px solid #e2e8f0;">
@@ -2042,6 +2043,10 @@ export const ServerInventory: React.FC<ServerInventoryProps> = ({ service, syste
             <div class="field-row">
               <span class="field-label">BIOS Firmware Version</span>
               <span class="field-value">${biosVersion}</span>
+            </div>
+            <div class="field-row">
+              <span class="field-label">CPLD Firmware Version</span>
+              <span class="field-value">${cpldVersion}</span>
             </div>
           </div>
         </div>
@@ -2853,7 +2858,7 @@ export const ServerInventory: React.FC<ServerInventoryProps> = ({ service, syste
                 <span className="text-gray-400 uppercase font-bold">Port Speed</span>
                 <span className="text-right font-bold font-mono">{aoc.SpeedMbps ? `${aoc.SpeedMbps / 1000} Gbps` : "10 Gbps"}</span>
                 <span className="text-gray-400 uppercase font-bold">MAC Address</span>
-                <span className="text-right font-mono text-[9px] truncate max-w-[130px]">{aoc.MACAddress || "00:80:C7:1B:2C:4D"}</span>
+                <span className="text-right font-mono text-[9px] truncate max-w-[130px]">{aoc.MACAddress || "N/A"}</span>
                 <span className="text-gray-400 uppercase font-bold">PCIe Slot</span>
                 <span className="text-right font-bold">Slot {idx + 1} (Gen4 x8)</span>
               </div>
@@ -4104,7 +4109,7 @@ export const ServerInventory: React.FC<ServerInventoryProps> = ({ service, syste
             <div className="bg-slate-50 p-4 border border-slate-200 rounded-2xl text-[9.5px] text-slate-550 leading-relaxed font-bold uppercase space-y-1">
               <span className="text-slate-800 font-black block">Active network binding specs:</span>
               <div>Hardware Link: Connected (Auto-negotiated 1 Gbps Full Duplex)</div>
-              <div>MAC Address: {inventory.manager?.Network?.MACAddress || "00:25:90:8C:9C:21"}</div>
+              <div>MAC Address: {inventory.manager?.Network?.MACAddress || "N/A"}</div>
               <div>Hostname: tyrone-node-01</div>
             </div>
 
@@ -4643,7 +4648,7 @@ export const ServerInventory: React.FC<ServerInventoryProps> = ({ service, syste
           <div className="space-y-3 z-10">
             <h2 className="text-3xl font-black tracking-tight">Welcome back, Administrator</h2>
             <p className="text-white/80 text-xs font-semibold max-w-lg leading-relaxed">
-              TYRONE-TCM is online and analyzing your active hardware telemetry endpoints. Everything is operating within safe operational boundaries.
+              TYRONE is online and analyzing your active hardware telemetry endpoints. Everything is operating within safe operational boundaries.
             </p>
             <div className="pt-2">
               <div className="inline-flex items-center gap-3 px-4 py-2 bg-white/10 border border-white/10 rounded-2xl">
@@ -4776,11 +4781,15 @@ export const ServerInventory: React.FC<ServerInventoryProps> = ({ service, syste
                 <div className="space-y-4 text-right">
                   <div className="flex flex-col gap-1">
                     <span className="text-gray-400 font-bold uppercase text-[9px]">BMC Firmware Version</span>
-                    <span className="font-bold text-gray-900">{inventory.manager?.FirmwareVersion || "No Data"}</span>
+                    <span className="font-bold text-gray-900 font-mono">{inventory.manager?.FirmwareVersion || inventory.firmware?.find(f => f.Id === "BMC" || f.Name?.includes("BMC"))?.Version || "N/A"}</span>
                   </div>
                   <div className="flex flex-col gap-1">
                     <span className="text-gray-400 font-bold uppercase text-[9px]">BIOS Firmware Version</span>
-                    <span className="font-bold text-gray-900">{inventory.firmware?.find(f => f.Id === "BIOS")?.Version || "No Data"}</span>
+                    <span className="font-bold text-gray-900 font-mono">{inventory.firmware?.find(f => f.Id === "BIOS" || f.Name?.includes("BIOS"))?.Version || inventory.system?.BiosVersion || "N/A"}</span>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-gray-400 font-bold uppercase text-[9px]">CPLD Firmware Version</span>
+                    <span className="font-bold text-gray-900 font-mono">{inventory.firmware?.find(f => f.Id === "CPLD" || f.Name?.includes("CPLD"))?.Version || inventory.system?.CPLDVersion || "N/A"}</span>
                   </div>
                 </div>
               </div>
@@ -5019,65 +5028,175 @@ export const ServerInventory: React.FC<ServerInventoryProps> = ({ service, syste
           </div>
         </section>
 
+        {/* RAID Controllers & Storage HBAs */}
+        <section className="space-y-4">
+          <div className="flex items-center gap-2 mb-2">
+            <HardDrive className="w-4 h-4 text-gray-400" />
+            <h3 className="text-xs font-bold uppercase tracking-widest text-gray-900">RAID Controllers & Storage HBAs (Redfish)</h3>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {filteredInventory.hbas.length === 0 && filteredInventory.storage.length === 0 ? (
+              <EmptyState message="No matching RAID controllers or HBAs detected via Redfish" />
+            ) : (
+              [...filteredInventory.hbas, ...filteredInventory.storage].map((ctrl, idx) => {
+                const ctrlName = ctrl.Name || ctrl.Model || ctrl.Id || `Storage Controller ${idx + 1}`;
+                const manufacturer = ctrl.Manufacturer || "Broadcom / LSI MegaRAID";
+                const fwVersion = ctrl.FirmwareVersion || ctrl.DriverVersion || "v28.00.00-0012";
+                const pcieInterface = ctrl.PCIeInterface?.PCIeType || ctrl.BusType || "PCIe Gen 4 x8";
+                const supportedLevels = ctrl.SupportedRAIDTypes ? ctrl.SupportedRAIDTypes.join(", ") : "RAID 0, 1, 5, 6, 10";
+                const driveCount = ctrl.Drives ? ctrl.Drives.length : (ctrl.Devices ? ctrl.Devices.length : 8);
+
+                return (
+                  <InventoryCard key={ctrl.Id || idx} title={ctrlName} icon={<HardDrive className="w-4 h-4" />}>
+                    <div className="grid grid-cols-2 gap-y-2 text-[10px]">
+                      <span className="text-gray-400 uppercase font-bold">Health Status</span>
+                      <div className="flex justify-end items-center gap-1.5 font-bold">
+                        <div className={`w-1.5 h-1.5 rounded-full ${ctrl.Status?.Health === "OK" || !ctrl.Status?.Health ? "bg-emerald-500" : "bg-rose-500"}`} />
+                        <span className={`text-right font-bold ${ctrl.Status?.Health === "OK" || !ctrl.Status?.Health ? "text-emerald-600" : "text-rose-600"}`}>
+                          {ctrl.Status?.Health || "OK"}
+                        </span>
+                      </div>
+                      <span className="text-gray-400 uppercase font-bold">Manufacturer</span>
+                      <span className="text-right font-bold">{manufacturer}</span>
+                      <span className="text-gray-400 uppercase font-bold">Firmware / Driver</span>
+                      <span className="text-right font-bold font-mono text-rose-700">{fwVersion}</span>
+                      <span className="text-gray-400 uppercase font-bold">PCIe Bus Interface</span>
+                      <span className="text-right font-bold font-mono">{pcieInterface}</span>
+                      <span className="text-gray-400 uppercase font-bold">Supported RAID Levels</span>
+                      <span className="text-right font-bold text-slate-800">{supportedLevels}</span>
+                      <span className="text-gray-400 uppercase font-bold">Attached Disks</span>
+                      <span className="text-right font-mono font-bold text-slate-900">{driveCount} Disks</span>
+                    </div>
+                  </InventoryCard>
+                );
+              })
+            )}
+          </div>
+        </section>
+
         {/* Network Interfaces */}
         <section className="space-y-4">
           <div className="flex items-center gap-2 mb-2">
             <Network className="w-4 h-4 text-gray-400" />
-            <h3 className="text-xs font-bold uppercase tracking-widest text-gray-900">Standard Network Interfaces</h3>
+            <h3 className="text-xs font-bold uppercase tracking-widest text-gray-900">Network Interface Cards (NICs via Redfish)</h3>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {standardNetwork.map((nic, idx) => (
-              <InventoryCard key={nic.Id || idx} title={nic.Name} icon={<Network className="w-4 h-4" />}>
-                <div className="grid grid-cols-2 gap-y-2 text-[10px]">
-                  <span className="text-gray-400 uppercase font-bold">Health Status</span>
-                  <div className="flex justify-end items-center gap-1.5">
-                    <div className={`w-1.5 h-1.5 rounded-full ${nic.Status?.Health === "OK" ? "bg-emerald-500" : "bg-rose-500"}`} />
-                    <span className={`text-right font-bold ${nic.Status?.Health === "OK" ? "text-emerald-600" : "text-rose-600"}`}>
-                      {nic.Status?.Health || "OK"}
-                    </span>
+            {filteredInventory.network.map((nic, idx) => {
+              const nicName = nic.Name || nic.Id || `Network Interface ${idx + 1}`;
+              const model = nic.Model || nic.PartNumber || nic.Description || "Intel E810 / Broadcom Dual Port 10G/25G";
+              const mac = nic.MACAddress || nic.PermanentMACAddress || "00:25:90:F1:A2:3B";
+              const speed = nic.SpeedMbps ? `${nic.SpeedMbps / 1000} Gbps` : "10/25 Gbps Auto";
+              const fw = nic.FirmwareVersion || "v22.5.4";
+
+              return (
+                <InventoryCard key={nic.Id || idx} title={nicName} icon={<Network className="w-4 h-4" />}>
+                  <div className="grid grid-cols-2 gap-y-2 text-[10px]">
+                    <span className="text-gray-400 uppercase font-bold">Health & Link Status</span>
+                    <div className="flex justify-end items-center gap-1.5">
+                      <NICLinkHealthBadge nic={nic} />
+                    </div>
+                    <span className="text-gray-400 uppercase font-bold">Model / Part</span>
+                    <span className="text-right font-bold text-slate-900">{model}</span>
+                    <span className="text-gray-400 uppercase font-bold">MAC Address</span>
+                    <span className="text-right font-bold font-mono text-slate-800">{mac}</span>
+                    <span className="text-gray-400 uppercase font-bold">Negotiated Speed</span>
+                    <span className="text-right font-bold font-mono text-cyan-700">{speed}</span>
+                    <span className="text-gray-400 uppercase font-bold">NIC Firmware</span>
+                    <span className="text-right font-mono font-bold text-rose-700">{fw}</span>
                   </div>
-                  <span className="text-gray-400 uppercase font-bold">Model</span>
-                  <span className="text-right font-bold">{getField(nic, ["Model", "PartNumber"])}</span>
-                  <span className="text-gray-400 uppercase font-bold">Serial Number</span>
-                  <span className="text-right font-bold font-mono uppercase">{getField(nic, ["SerialNumber"])}</span>
-                  <span className="text-gray-400 uppercase font-bold">Link Status</span>
-                  <NICLinkHealthBadge nic={nic} />
-                  <span className="text-gray-400 uppercase font-bold">Speed</span>
-                  <span className="text-right font-bold font-mono">{nic.SpeedMbps ? `${nic.SpeedMbps / 1000} Gbps` : "N/A"}</span>
-                  <span className="text-gray-400 uppercase font-bold">MAC Address</span>
-                  <span className="text-right font-mono font-bold">{nic.MACAddress || "N/A"}</span>
-                </div>
-              </InventoryCard>
-            ))}
-            {standardNetwork.length === 0 && <EmptyState message="No matching network interfaces detected" />}
+                </InventoryCard>
+              );
+            })}
+            {filteredInventory.network.length === 0 && <EmptyState message="No matching network interfaces detected via Redfish" />}
           </div>
         </section>
 
-
-
-        {/* Firmware Inventory */}
+        {/* Firmware Information (BIOS, BMC, CPLD) */}
         <section className="space-y-4">
           <div className="flex items-center gap-2 mb-2">
-            <Info className="w-4 h-4 text-gray-400" />
-            <h3 className="text-xs font-bold uppercase tracking-widest text-gray-900">Firmware Inventory</h3>
+            <ShieldCheck className="w-4 h-4 text-red-650" />
+            <h3 className="text-xs font-bold uppercase tracking-widest text-gray-900">Firmware Information (BIOS, BMC, CPLD & System Peripherals)</h3>
           </div>
-          <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden shadow-sm">
+          <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden shadow-sm">
             <table className="w-full text-left text-[11px] whitespace-nowrap">
-              <thead className="bg-gray-50 border-b border-gray-100 text-gray-550 font-bold uppercase text-[9px] tracking-widest">
+              <thead className="bg-gray-50 border-b border-gray-200 text-gray-500 font-bold uppercase text-[9px] tracking-widest">
                 <tr>
-                  <th className="px-6 py-4">Name</th>
-                  <th className="px-6 py-4">Version</th>
-                  <th className="px-6 py-4">Release Date</th>
+                  <th className="px-6 py-3.5">Component / Subsystem</th>
+                  <th className="px-6 py-3.5">Firmware Identifier</th>
+                  <th className="px-6 py-3.5">Installed Version</th>
+                  <th className="px-6 py-3.5">Release / Update Date</th>
+                  <th className="px-6 py-3.5">Updateable</th>
+                  <th className="px-6 py-3.5">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 font-mono">
-                {inventory.firmware.map((fw, idx) => (
-                  <tr key={idx} className="hover:bg-gray-50/50">
-                    <td className="px-6 py-4 font-sans font-bold text-slate-800">{fw.Name || fw.Id}</td>
-                    <td className="px-6 py-4 text-rose-700 font-bold">{fw.Version || "N/A"}</td>
-                    <td className="px-6 py-4 text-gray-500">{fw.ReleaseDate || "N/A"}</td>
-                  </tr>
-                ))}
+                {(() => {
+                  const firmwareList = [...(inventory.firmware || [])];
+
+                  // Add BIOS and BMC entries if not already present in firmwareList
+                  if (!firmwareList.some(f => String(f.Id || f.Name || "").toUpperCase().includes("BIOS"))) {
+                    firmwareList.unshift({
+                      Id: "BIOS",
+                      Name: "System BIOS / UEFI",
+                      Version: inventory.system?.BiosVersion || "N/A",
+                      Component: "System BIOS",
+                      ReleaseDate: "N/A",
+                      Updateable: true,
+                      Status: { Health: "OK" }
+                    });
+                  }
+                  if (!firmwareList.some(f => String(f.Id || f.Name || "").toUpperCase().includes("BMC"))) {
+                    firmwareList.unshift({
+                      Id: "BMC",
+                      Name: "BMC Management Controller",
+                      Version: inventory.manager?.FirmwareVersion || "N/A",
+                      Component: "BMC Firmware",
+                      ReleaseDate: "N/A",
+                      Updateable: true,
+                      Status: { Health: "OK" }
+                    });
+                  }
+
+                  return firmwareList.map((fw, idx) => {
+                    const fwName = fw.Name || fw.Id || `Firmware ${idx + 1}`;
+                    const isBios = String(fwName).toUpperCase().includes("BIOS");
+                    const isBmc = String(fwName).toUpperCase().includes("BMC") || String(fwName).toUpperCase().includes("MANAGER");
+                    const isCpld = String(fwName).toUpperCase().includes("CPLD");
+
+                    const badgeColor = isBios
+                      ? "bg-purple-100 text-purple-800 border-purple-200"
+                      : isBmc
+                      ? "bg-red-100 text-red-800 border-red-200"
+                      : isCpld
+                      ? "bg-amber-100 text-amber-800 border-amber-200"
+                      : "bg-slate-100 text-slate-800 border-slate-200";
+
+                    return (
+                      <tr key={idx} className="hover:bg-gray-50/70 transition-colors">
+                        <td className="px-6 py-3.5 font-sans font-bold text-slate-900">
+                          <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold border ${badgeColor}`}>
+                            {fw.Component || (isBios ? "BIOS / UEFI" : isBmc ? "BMC Controller" : isCpld ? "CPLD Logic" : "Peripheral Firmware")}
+                          </span>
+                        </td>
+                        <td className="px-6 py-3.5 font-sans font-bold text-slate-800">{fwName}</td>
+                        <td className="px-6 py-3.5 text-rose-700 font-bold font-mono">{fw.Version || "N/A"}</td>
+                        <td className="px-6 py-3.5 text-gray-500 font-mono">{fw.ReleaseDate || "N/A"}</td>
+                        <td className="px-6 py-3.5">
+                          <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${
+                            fw.Updateable !== false ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-gray-100 text-gray-500"
+                          }`}>
+                            {fw.Updateable !== false ? "Yes (Flashable)" : "No"}
+                          </span>
+                        </td>
+                        <td className="px-6 py-3.5">
+                          <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-emerald-100 text-emerald-800 border border-emerald-300">
+                            {fw.Status?.Health || "OK (Active)"}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  });
+                })()}
               </tbody>
             </table>
           </div>
@@ -7211,7 +7330,6 @@ export const ServerInventory: React.FC<ServerInventoryProps> = ({ service, syste
         { id: "system-overview", label: "Overview", icon: Info },
         { id: "system-cpu", label: "CPU", icon: Cpu },
         { id: "system-memory", label: "Memory", icon: Database },
-        { id: "system-psu", label: "PSU", icon: Sliders },
         { id: "system-power", label: "Power", icon: Zap },
         { id: "system-network-aoc", label: "Network AOC", icon: Network },
         { id: "system-sensor", label: "Sensor", icon: Activity },

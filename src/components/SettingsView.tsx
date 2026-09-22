@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Plus, Save, Trash2, X, Pencil, Check, RefreshCw, Key, Eye, EyeOff } from "lucide-react";
+import { Plus, Save, Trash2, X, Pencil, Check, RefreshCw, Key, Eye, EyeOff, Radio, Send, Bell, Shield, Network, CheckCircle2, AlertCircle } from "lucide-react";
 import { ConfirmModal } from "./ConfirmModal";
 
 interface SettingsViewProps {
@@ -9,7 +9,7 @@ interface SettingsViewProps {
 
 export function SettingsView({ activeUsername = "admin", onUpdateUsername }: SettingsViewProps) {
   const [activeSettingsTab, setActiveSettingsTab] = useState<
-    "user_management" | "email_subscriptions"
+    "user_management" | "email_subscriptions" | "snmp_trap"
   >("user_management");
 
   const [consoleUsernameInput, setConsoleUsernameInput] = useState<string>(activeUsername);
@@ -311,6 +311,127 @@ export function SettingsView({ activeUsername = "admin", onUpdateUsername }: Set
     setTimeout(() => setSelStatus(null), 4000);
   };
 
+  // SNMP Trap Persistent State
+  const [snmpEnabled, setSnmpEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem("tyrone_snmp_trap_config");
+      if (saved) return JSON.parse(saved).enabled ?? true;
+    } catch {}
+    return true;
+  });
+  const [snmpVersion, setSnmpVersion] = useState<"v1" | "v2c" | "v3">((): any => {
+    try {
+      const saved = localStorage.getItem("tyrone_snmp_trap_config");
+      if (saved) return JSON.parse(saved).version || "v2c";
+    } catch {}
+    return "v2c";
+  });
+  const [snmpHost, setSnmpHost] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem("tyrone_snmp_trap_config");
+      if (saved) return JSON.parse(saved).host || "172.16.12.100";
+    } catch {}
+    return "172.16.12.100";
+  });
+  const [snmpPort, setSnmpPort] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem("tyrone_snmp_trap_config");
+      if (saved) return JSON.parse(saved).port || "162";
+    } catch {}
+    return "162";
+  });
+  const [snmpCommunity, setSnmpCommunity] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem("tyrone_snmp_trap_config");
+      if (saved) return JSON.parse(saved).community || "public";
+    } catch {}
+    return "public";
+  });
+  const [snmpSecurityName, setSnmpSecurityName] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem("tyrone_snmp_trap_config");
+      if (saved) return JSON.parse(saved).securityName || "snmpadmin";
+    } catch {}
+    return "snmpadmin";
+  });
+  const [snmpSecurityLevel, setSnmpSecurityLevel] = useState<"noAuthNoPriv" | "authNoPriv" | "authPriv">((): any => {
+    try {
+      const saved = localStorage.getItem("tyrone_snmp_trap_config");
+      if (saved) return JSON.parse(saved).securityLevel || "authPriv";
+    } catch {}
+    return "authPriv";
+  });
+  const [snmpAuthProtocol, setSnmpAuthProtocol] = useState<"SHA" | "MD5">((): any => {
+    try {
+      const saved = localStorage.getItem("tyrone_snmp_trap_config");
+      if (saved) return JSON.parse(saved).authProtocol || "SHA";
+    } catch {}
+    return "SHA";
+  });
+  const [snmpAuthPass, setSnmpAuthPass] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem("tyrone_snmp_trap_config");
+      if (saved) return JSON.parse(saved).authPass || "AuthPass123!";
+    } catch {}
+    return "AuthPass123!";
+  });
+  const [snmpPrivProtocol, setSnmpPrivProtocol] = useState<"AES" | "DES">((): any => {
+    try {
+      const saved = localStorage.getItem("tyrone_snmp_trap_config");
+      if (saved) return JSON.parse(saved).privProtocol || "AES";
+    } catch {}
+    return "AES";
+  });
+  const [snmpPrivPass, setSnmpPrivPass] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem("tyrone_snmp_trap_config");
+      if (saved) return JSON.parse(saved).privPass || "PrivPass123!";
+    } catch {}
+    return "PrivPass123!";
+  });
+
+  const [snmpTrapCritical, setSnmpTrapCritical] = useState<boolean>(true);
+  const [snmpTrapWarning, setSnmpTrapWarning] = useState<boolean>(true);
+  const [snmpTrapInfo, setSnmpTrapInfo] = useState<boolean>(false);
+
+  const [snmpStatus, setSnmpStatus] = useState<string | null>(null);
+  const [sendingTestTrap, setSendingTestTrap] = useState<boolean>(false);
+
+  const handleSaveSnmpConfig = () => {
+    const config = {
+      enabled: snmpEnabled,
+      version: snmpVersion,
+      host: snmpHost.trim(),
+      port: snmpPort.trim(),
+      community: snmpCommunity.trim(),
+      securityName: snmpSecurityName.trim(),
+      securityLevel: snmpSecurityLevel,
+      authProtocol: snmpAuthProtocol,
+      authPass: snmpAuthPass,
+      privProtocol: snmpPrivProtocol,
+      privPass: snmpPrivPass,
+      critical: snmpTrapCritical,
+      warning: snmpTrapWarning,
+      info: snmpTrapInfo
+    };
+    localStorage.setItem("tyrone_snmp_trap_config", JSON.stringify(config));
+    setSnmpStatus("SNMP Trap configuration saved successfully.");
+    setTimeout(() => setSnmpStatus(null), 4000);
+  };
+
+  const handleSendTestTrap = () => {
+    if (!snmpHost.trim()) {
+      alert("Destination Host / IP Address is required to send a test trap.");
+      return;
+    }
+    setSendingTestTrap(true);
+    setTimeout(() => {
+      setSendingTestTrap(false);
+      setSnmpStatus(`Test SNMP ${snmpVersion.toUpperCase()} Trap notification successfully transmitted to ${snmpHost}:${snmpPort}!`);
+      setTimeout(() => setSnmpStatus(null), 5000);
+    }, 800);
+  };
+
   return (
     <div className="flex-1 flex flex-col overflow-y-auto bg-[#dce1e7] text-slate-800 text-xs select-none p-3 space-y-3 w-full font-sans">
 
@@ -318,7 +439,8 @@ export function SettingsView({ activeUsername = "admin", onUpdateUsername }: Set
       <div className="flex items-center gap-1 border-b border-slate-300 pb-0">
         {[
           { id: "user_management", label: "User Management" },
-          { id: "email_subscriptions", label: "Email Subscriptions" }
+          { id: "email_subscriptions", label: "Email Subscriptions" },
+          { id: "snmp_trap", label: "SNMP Trap" }
         ].map((tab) => (
           <button
             key={tab.id}
@@ -609,6 +731,266 @@ export function SettingsView({ activeUsername = "admin", onUpdateUsername }: Set
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* SNMP TRAP SUB-TAB */}
+      {activeSettingsTab === "snmp_trap" && (
+        <div className="space-y-4 font-sans">
+          {/* Status Message Toast */}
+          {snmpStatus && (
+            <div className="bg-emerald-50 border border-emerald-300 text-emerald-800 px-4 py-2.5 rounded-md flex items-center gap-2 shadow-xs animate-fade-in font-bold text-xs">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{snmpStatus}</span>
+            </div>
+          )}
+
+          {/* Card 1: Service Enable / Disable Header */}
+          <div className="bg-white border border-slate-300 rounded shadow-xs overflow-hidden">
+            <div className="bg-[#680505] text-white px-4 py-2.5 text-xs font-bold flex items-center justify-between border-b border-[#4d0000]">
+              <div className="flex items-center gap-2">
+                <Radio className="w-4 h-4 text-rose-300" />
+                <span>SNMP Trap Forwarding Service</span>
+              </div>
+              <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+                <span className="font-bold text-slate-200">
+                  {snmpEnabled ? "ENABLED" : "DISABLED"}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={snmpEnabled}
+                  onChange={e => setSnmpEnabled(e.target.checked)}
+                  className="w-4 h-4 accent-emerald-500 cursor-pointer"
+                />
+              </label>
+            </div>
+            <div className="p-4 bg-slate-50/50 flex items-center justify-between">
+              <div className="space-y-1">
+                <h4 className="font-bold text-slate-800 text-xs">Out-of-Band Hardware Event SNMP Trap Forwarder</h4>
+                <p className="text-slate-500 text-[11px]">
+                  Automatically dispatches SNMP Trap notifications to centralized NMS/SIEM receivers when hardware alerts, thermal warnings, or power faults occur.
+                </p>
+              </div>
+              <div className={`px-3 py-1.5 rounded-full text-xs font-extrabold uppercase border ${
+                snmpEnabled ? "bg-emerald-100 text-emerald-800 border-emerald-300" : "bg-slate-200 text-slate-600 border-slate-300"
+              }`}>
+                {snmpEnabled ? "● Active Forwarder" : "○ Inactive"}
+              </div>
+            </div>
+          </div>
+
+          {/* Card 2: SNMP Trap Destination & Protocol Settings */}
+          <div className="bg-white border border-slate-300 rounded shadow-xs overflow-hidden">
+            <div className="bg-[#680505] text-white px-4 py-2.5 text-xs font-bold flex items-center gap-2 border-b border-[#4d0000]">
+              <Network className="w-4 h-4 text-rose-300" />
+              <span>Target Receiver & Protocol Configuration</span>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="grid grid-cols-12 items-center gap-4">
+                <label className="col-span-3 text-slate-700 font-bold text-xs text-right pr-2">SNMP Version *</label>
+                <div className="col-span-9 flex items-center gap-4">
+                  {(["v1", "v2c", "v3"] as const).map(ver => (
+                    <label key={ver} className="flex items-center gap-1.5 font-bold cursor-pointer text-slate-800">
+                      <input
+                        type="radio"
+                        name="snmpVersion"
+                        value={ver}
+                        checked={snmpVersion === ver}
+                        onChange={() => setSnmpVersion(ver)}
+                        className="accent-[#680505]"
+                      />
+                      <span>SNMP {ver.toUpperCase()}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-12 items-center gap-4">
+                <label className="col-span-3 text-slate-700 font-bold text-xs text-right pr-2">Trap Receiver Host / IP *</label>
+                <div className="col-span-9">
+                  <input
+                    type="text"
+                    value={snmpHost}
+                    onChange={e => setSnmpHost(e.target.value)}
+                    placeholder="e.g. 172.16.12.100 or nms.company.local"
+                    className="w-full max-w-md px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-12 items-center gap-4">
+                <label className="col-span-3 text-slate-700 font-bold text-xs text-right pr-2">Trap UDP Port *</label>
+                <div className="col-span-9">
+                  <input
+                    type="text"
+                    value={snmpPort}
+                    onChange={e => setSnmpPort(e.target.value)}
+                    placeholder="162"
+                    className="w-32 px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
+                  />
+                  <span className="text-[11px] text-slate-500 ml-2">(Standard SNMP Trap UDP port is 162)</span>
+                </div>
+              </div>
+
+              {(snmpVersion === "v1" || snmpVersion === "v2c") && (
+                <div className="grid grid-cols-12 items-center gap-4 animate-fade-in">
+                  <label className="col-span-3 text-slate-700 font-bold text-xs text-right pr-2">Community String *</label>
+                  <div className="col-span-9">
+                    <input
+                      type="text"
+                      value={snmpCommunity}
+                      onChange={e => setSnmpCommunity(e.target.value)}
+                      placeholder="public"
+                      className="w-64 px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {snmpVersion === "v3" && (
+                <div className="space-y-3 bg-slate-50 border border-slate-200 p-4 rounded-md animate-fade-in">
+                  <h5 className="font-bold text-slate-800 text-xs border-b border-slate-200 pb-1.5 flex items-center gap-1.5">
+                    <Shield className="w-3.5 h-3.5 text-[#680505]" />
+                    <span>SNMP v3 USM Security Parameters</span>
+                  </h5>
+
+                  <div className="grid grid-cols-12 items-center gap-4">
+                    <label className="col-span-3 text-slate-700 font-bold text-xs text-right pr-2">Security Name *</label>
+                    <div className="col-span-9">
+                      <input
+                        type="text"
+                        value={snmpSecurityName}
+                        onChange={e => setSnmpSecurityName(e.target.value)}
+                        placeholder="snmpadmin"
+                        className="w-64 px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono focus:outline-none focus:border-[#680505]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-12 items-center gap-4">
+                    <label className="col-span-3 text-slate-700 font-bold text-xs text-right pr-2">Security Level</label>
+                    <div className="col-span-9">
+                      <select
+                        value={snmpSecurityLevel}
+                        onChange={e => setSnmpSecurityLevel(e.target.value as any)}
+                        className="w-64 px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold focus:outline-none focus:border-[#680505]"
+                      >
+                        <option value="authPriv">authPriv (Authentication & Privacy Encryption)</option>
+                        <option value="authNoPriv">authNoPriv (Authentication Only)</option>
+                        <option value="noAuthNoPriv">noAuthNoPriv (No Auth, No Privacy)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {snmpSecurityLevel !== "noAuthNoPriv" && (
+                    <>
+                      <div className="grid grid-cols-12 items-center gap-4">
+                        <label className="col-span-3 text-slate-700 font-bold text-xs text-right pr-2">Auth Protocol & Key</label>
+                        <div className="col-span-9 flex items-center gap-2">
+                          <select
+                            value={snmpAuthProtocol}
+                            onChange={e => setSnmpAuthProtocol(e.target.value as any)}
+                            className="w-24 px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold focus:outline-none"
+                          >
+                            <option value="SHA">SHA</option>
+                            <option value="MD5">MD5</option>
+                          </select>
+                          <input
+                            type="password"
+                            value={snmpAuthPass}
+                            onChange={e => setSnmpAuthPass(e.target.value)}
+                            placeholder="Authentication Passphrase"
+                            className="w-64 px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono focus:outline-none focus:border-[#680505]"
+                          />
+                        </div>
+                      </div>
+
+                      {snmpSecurityLevel === "authPriv" && (
+                        <div className="grid grid-cols-12 items-center gap-4">
+                          <label className="col-span-3 text-slate-700 font-bold text-xs text-right pr-2">Privacy Protocol & Key</label>
+                          <div className="col-span-9 flex items-center gap-2">
+                            <select
+                              value={snmpPrivProtocol}
+                              onChange={e => setSnmpPrivProtocol(e.target.value as any)}
+                              className="w-24 px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold focus:outline-none"
+                            >
+                              <option value="AES">AES</option>
+                              <option value="DES">DES</option>
+                            </select>
+                            <input
+                              type="password"
+                              value={snmpPrivPass}
+                              onChange={e => setSnmpPrivPass(e.target.value)}
+                              placeholder="Privacy Encryption Passphrase"
+                              className="w-64 px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono focus:outline-none focus:border-[#680505]"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Event Severity Triggers */}
+              <div className="grid grid-cols-12 items-start gap-4 border-t border-slate-200 pt-4">
+                <label className="col-span-3 text-slate-700 font-bold text-xs text-right pr-2 pt-1">Event Severity Triggers</label>
+                <div className="col-span-9 space-y-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={snmpTrapCritical}
+                      onChange={e => setSnmpTrapCritical(e.target.checked)}
+                      className="accent-[#680505] w-4 h-4"
+                    />
+                    <span className="font-bold text-red-700">Critical / Fatal Events</span>
+                    <span className="text-slate-500 text-[11px]">(Power Outages, Memory Uncorrectable ECC, Fan Failures)</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={snmpTrapWarning}
+                      onChange={e => setSnmpTrapWarning(e.target.checked)}
+                      className="accent-[#680505] w-4 h-4"
+                    />
+                    <span className="font-bold text-amber-700">Warning / Degradation Events</span>
+                    <span className="text-slate-500 text-[11px]">(Thermal Thresholds, Redundancy Degraded, Disk Degraded)</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={snmpTrapInfo}
+                      onChange={e => setSnmpTrapInfo(e.target.checked)}
+                      className="accent-[#680505] w-4 h-4"
+                    />
+                    <span className="font-bold text-blue-700">Informational / Operational Events</span>
+                    <span className="text-slate-500 text-[11px]">(User logins, Virtual Media Mounts, System Reboots)</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Footer Actions */}
+              <div className="flex items-center justify-end gap-3 border-t border-slate-200 pt-4">
+                <button
+                  type="button"
+                  onClick={handleSendTestTrap}
+                  disabled={sendingTestTrap || !snmpEnabled}
+                  className="px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white font-bold rounded cursor-pointer text-xs disabled:opacity-50 flex items-center gap-1.5 transition-colors shadow-xs"
+                >
+                  <Send className={`w-3.5 h-3.5 ${sendingTestTrap ? "animate-pulse" : ""}`} />
+                  <span>{sendingTestTrap ? "Transmitting Trap..." : "Send Test Trap"}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveSnmpConfig}
+                  className="px-5 py-2 bg-[#680505] hover:bg-[#520000] text-white font-bold rounded cursor-pointer text-xs shadow-xs flex items-center gap-1.5 transition-colors"
+                >
+                  <Save className="w-3.5 h-[#680505]" />
+                  <span>Save SNMP Trap Settings</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

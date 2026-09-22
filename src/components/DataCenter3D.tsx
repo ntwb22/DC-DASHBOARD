@@ -167,35 +167,29 @@ export function DataCenter3D({
     let active = true;
     const fetchTelemetry = async () => {
       try {
-        const svc = new RedfishService({
-          url: selectedServer.bmcIp,
-          username: selectedServer.bmcUsername,
-          password: selectedServer.bmcPassword || ""
+        const ip = selectedServer.bmcIp || selectedServer.ip;
+        if (!ip) return;
+        const service = new RedfishService({
+          url: ip.startsWith("http") ? ip : `https://${ip}`,
+          username: selectedServer.bmcUsername || "admin",
+          password: selectedServer.bmcPassword || "netweb@123",
+          category: selectedServer.category || "SM"
         });
+        const chassisUri = await service.resolveChassisId();
+        const thermal = await service.getThermal(chassisUri).catch(() => null);
+        const power = await service.getPowerTelemetry(chassisUri).catch(() => null);
 
-        // 1. Fetch Power Watts
-        const pData = await svc.getPowerTelemetry();
-        const consumed = pData?.PowerControl?.[0]?.PowerConsumedWatts;
-
-        // 2. Fetch Thermal Temperatures
-        const systems = await svc.getSystems();
-        let temp: number | null = null;
-        if (systems && systems[0]) {
-          const chassisDetails = await svc.proxyRequest("/redfish/v1/Chassis/1");
-          if (chassisDetails && chassisDetails.Thermal) {
-            const tData = await svc.proxyRequest(chassisDetails.Thermal["@odata.id"]);
-            const temps = tData?.Temperatures || [];
-            if (temps[0]) {
-              temp = temps[0].ReadingCelsius;
-            }
-          }
-        }
+        const consumed = power?.PowerControl?.[0]?.PowerConsumedWatts || power?.PowerControl?.[0]?.PowerMetrics?.AverageConsumedWatts || null;
+        const temp = thermal?.Temperatures?.[0]?.ReadingCelsius || null;
 
         if (active) {
-          setPowerWatts(consumed !== undefined ? `${consumed} Watts` : "N/A (No telemetry)");
-          setTempCelsius(temp !== null ? `${temp}° C` : "N/A (No telemetry)");
+          if (consumed !== null) setPowerWatts(`${consumed} W`);
+          else setPowerWatts("N/A");
+
+          if (temp !== null) setTempCelsius(`${temp} °C`);
+          else setTempCelsius("N/A");
         }
-      } catch (e) {
+      } catch (err) {
         if (active) {
           setPowerWatts("Error");
           setTempCelsius("Error");

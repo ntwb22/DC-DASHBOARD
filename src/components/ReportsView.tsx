@@ -43,10 +43,10 @@ export function ReportsView({ servers = [] }: { servers?: any[] }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 font-medium text-slate-800">
-              {(servers.length > 0 ? servers : [{ name: "Management-Node-A", bmcIp: "172.16.12.50" }, { name: "Storage-Node-B", bmcIp: "172.16.12.55" }]).map((s: any, idx: number) => (
+              {servers.map((s: any, idx: number) => (
                 <tr key={idx} className={idx % 2 === 0 ? "bg-white" : "bg-slate-50"}>
                   <td className="px-3 py-2 border-r border-slate-200 font-bold text-[#680505]">Server Inventory & Health Audit</td>
-                  <td className="px-3 py-2 border-r border-slate-200">{s.name || "Server Node"} ({s.bmcIp || s.ip || "172.16.12.50"})</td>
+                  <td className="px-3 py-2 border-r border-slate-200">{s.name || "Server Node"} ({s.bmcIp || s.ip || "N/A"})</td>
                   <td className="px-3 py-2 border-r border-slate-200">
                     <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded font-bold text-[10px] uppercase">Compliant</span>
                   </td>

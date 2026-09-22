@@ -503,46 +503,199 @@ export function AddDeviceHierarchyModal({
     }
   })();
 
-  const availableServers = (servers || []).filter(s => {
-    const idStr = String(s.id || "").toLowerCase();
-    const ipStr = String(s.bmcIp || s.ip || "").toLowerCase();
-    const nameStr = String(s.name || "").toLowerCase();
-    return !deletedKeys.has(idStr) && !deletedKeys.has(ipStr) && !deletedKeys.has(nameStr);
-  });
+  // Retrieve active hierarchy rack names
+  const activeHierarchyRackNames = (() => {
+    const rackSet = new Set<string>();
+    try {
+      const savedRacks = localStorage.getItem("tyrone_hierarchy_racks");
+      if (savedRacks) {
+        const parsed = JSON.parse(savedRacks);
+        if (parsed && typeof parsed === "object") {
+          Object.values(parsed).forEach((rackList: any) => {
+            if (Array.isArray(rackList)) {
+              rackList.forEach((r: any) => {
+                if (r && typeof r === "object") {
+                  if (r.name) rackSet.add(String(r.name).trim().toLowerCase());
+                  if (r.id) rackSet.add(String(r.id).trim().toLowerCase());
+                } else if (r && typeof r === "string") {
+                  rackSet.add(r.trim().toLowerCase());
+                }
+              });
+            }
+          });
+        }
+      }
+    } catch (_) {}
+    return rackSet;
+  })();
 
-  const filteredServers = availableServers.filter(s =>
-    (s.name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (s.bmcIp || s.ip || "").toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Retrieve server to rack mappings
+  const serverRacksMap = (() => {
+    try {
+      const saved = localStorage.getItem("tyrone_server_racks");
+      const parsed = saved ? JSON.parse(saved) : {};
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch { return {}; }
+  })();
 
+  // Gather all servers from props and localStorage fleet
+  const allKnownServers = (() => {
+    const mergedMap = new Map<string, any>();
+    (servers || []).forEach(s => {
+      if (s && (s.id || s.bmcIp || s.ip)) {
+        const idVal = String(s.id || s.bmcIp || s.ip);
+        const key = idVal.toLowerCase();
+        if (!deletedKeys.has(key) && !deletedKeys.has(String(s.bmcIp || "").toLowerCase()) && !deletedKeys.has(String(s.name || "").toLowerCase())) {
+          mergedMap.set(key, { ...s, id: s.id || idVal });
+        }
+      }
+    });
+    try {
+      const savedFleet = localStorage.getItem("tyrone_fleet");
+      if (savedFleet) {
+        const parsed = JSON.parse(savedFleet);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((f: any) => {
+            if (f && (f.id || f.bmcIp || f.ip)) {
+              const idVal = String(f.id || f.bmcIp || f.ip);
+              const key = idVal.toLowerCase();
+              if (key && !deletedKeys.has(key) && !deletedKeys.has(String(f.bmcIp || "").toLowerCase()) && !deletedKeys.has(String(f.name || "").toLowerCase())) {
+                if (!mergedMap.has(key)) {
+                  mergedMap.set(key, { ...f, id: f.id || idVal });
+                }
+              }
+            }
+          });
+        }
+      }
+    } catch (_) {}
+    return Array.from(mergedMap.values());
+  })();
 
-  const isAllSelected = filteredServers.length > 0 && filteredServers.every(s => selectedServerIds.includes(s.id));
+  // Filter for devices that are NOT currently in the selected target rack, prioritizing unassigned devices
+  const availableServers = (() => {
+    const unassignedList = allKnownServers.filter(s => {
+      if (!s) return false;
+      const rawCurrentRack = (s.id && serverRacksMap[s.id]) || (s.bmcIp && serverRacksMap[s.bmcIp]) || s.rack || "";
+      const currentRack = String(rawCurrentRack).trim().toLowerCase();
+      return !currentRack || currentRack === "unassigned" || currentRack === "not in hierarchy" || currentRack === "none";
+    });
 
-  const handleSelectAll = () => {
-    if (isAllSelected) {
-      setSelectedServerIds(prev => prev.filter(id => !filteredServers.some(s => s.id === id)));
+    if (unassignedList.length > 0) return unassignedList;
+
+    const list = allKnownServers.filter(s => {
+      if (!s) return false;
+      const rawCurrentRack = (s.id && serverRacksMap[s.id]) || (s.bmcIp && serverRacksMap[s.bmcIp]) || s.rack || "";
+      const currentRack = String(rawCurrentRack).trim().toLowerCase();
+      const targetRack = String(rackName || "").trim().toLowerCase();
+
+      if (!currentRack || currentRack !== targetRack) {
+        return true;
+      }
+      return false;
+    });
+
+    if (list.length > 0) return list;
+    return allKnownServers;
+  })();
+
+  const [sortCol, setSortCol] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  const handleHeaderSort = (colKey: string) => {
+    if (sortCol === colKey) {
+      if (sortDir === "asc") setSortDir("desc");
+      else {
+        setSortCol(null);
+        setSortDir("asc");
+      }
     } else {
-      const allFilteredIds = filteredServers.map(s => s.id);
-      setSelectedServerIds(prev => Array.from(new Set([...prev, ...allFilteredIds])));
+      setSortCol(colKey);
+      setSortDir("asc");
     }
   };
 
-  const handleToggleServer = (id: string) => {
-    setSelectedServerIds(prev =>
-      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+  const filteredServers = availableServers.filter(s => {
+    if (!s) return false;
+    const term = searchTerm.toLowerCase();
+    const currentRack = String((s.id && serverRacksMap[s.id]) || (s.bmcIp && serverRacksMap[s.bmcIp]) || s.rack || "").toLowerCase();
+    return (
+      String(s.name || "").toLowerCase().includes(term) ||
+      String(s.bmcIp || s.ip || "").toLowerCase().includes(term) ||
+      String(s.model || "").toLowerCase().includes(term) ||
+      String(s.serialNumber || s.serial || "").toLowerCase().includes(term) ||
+      currentRack.includes(term)
     );
+  });
+
+  const sortedServers = [...filteredServers].sort((a, b) => {
+    if (!sortCol || !a || !b) return 0;
+    let valA: any = "";
+    let valB: any = "";
+    if (sortCol === "name") { valA = String(a.name || a.bmcIp || a.id || ""); valB = String(b.name || b.bmcIp || b.id || ""); }
+    else if (sortCol === "bmcIp") { valA = String(a.bmcIp || a.ip || ""); valB = String(b.bmcIp || b.ip || ""); }
+    else if (sortCol === "rack") { valA = String((a.id && serverRacksMap[a.id]) || (a.bmcIp && serverRacksMap[a.bmcIp]) || a.rack || "Unassigned"); valB = String((b.id && serverRacksMap[b.id]) || (b.bmcIp && serverRacksMap[b.bmcIp]) || b.rack || "Unassigned"); }
+    else if (sortCol === "model") { valA = String(a.model || a.manufacturer || ""); valB = String(b.model || b.manufacturer || ""); }
+    else if (sortCol === "serialNumber") { valA = String(a.serialNumber || a.serial || ""); valB = String(b.serialNumber || b.serial || ""); }
+    else if (sortCol === "deviceType") { valA = String(a.deviceType || "Server"); valB = String(b.deviceType || "Server"); }
+    else if (sortCol === "deratedPowerW") { valA = parseFloat(String(a.deratedPowerW || a.powerW || 0)); valB = parseFloat(String(b.deratedPowerW || b.powerW || 0)); }
+
+    if (typeof valA === "number" && typeof valB === "number") {
+      return sortDir === "asc" ? valA - valB : valB - valA;
+    }
+    return sortDir === "asc" ? String(valA).localeCompare(String(valB)) : String(valB).localeCompare(String(valA));
+  });
+
+  const isSelected = (srv: any) => {
+    if (!srv) return false;
+    return (
+      (srv.id && selectedServerIds.includes(String(srv.id))) ||
+      (srv.bmcIp && selectedServerIds.includes(String(srv.bmcIp))) ||
+      (srv.ip && selectedServerIds.includes(String(srv.ip)))
+    );
+  };
+
+  const isAllSelected = sortedServers.length > 0 && sortedServers.every(s => isSelected(s));
+
+  const handleSelectAll = () => {
+    if (isAllSelected) {
+      setSelectedServerIds([]);
+    } else {
+      const allKeys: string[] = [];
+      sortedServers.forEach(s => {
+        if (s.id) allKeys.push(String(s.id));
+        if (s.bmcIp) allKeys.push(String(s.bmcIp));
+        if (s.ip) allKeys.push(String(s.ip));
+      });
+      setSelectedServerIds(Array.from(new Set(allKeys)));
+    }
+  };
+
+  const handleToggleServer = (srv: any) => {
+    if (!srv) return;
+    const keys = [srv.id, srv.bmcIp, srv.ip].filter(Boolean).map(k => String(k));
+    if (keys.length === 0) return;
+    const currentlySel = isSelected(srv);
+    if (currentlySel) {
+      setSelectedServerIds(prev => prev.filter(k => !keys.includes(k)));
+    } else {
+      setSelectedServerIds(prev => Array.from(new Set([...prev, ...keys])));
+    }
   };
 
   const handleOK = () => {
     if (tab === "existing") {
-      if (selectedServerIds.length === 0) {
+      const selectedServers = availableServers.filter(srv => isSelected(srv));
+      if (selectedServers.length === 0) {
+        if (availableServers.length === 0) {
+          onOpenAddNewDeviceModal();
+          onClose();
+          return;
+        }
         setError("Please select at least one device from the list first.");
         return;
       }
-      const selectedServers = availableServers.filter(srv => selectedServerIds.includes(srv.id));
-      if (selectedServers.length > 0) {
-        onSelectExistingDevice(selectedServers[0], selectedServers);
-      }
+      onSelectExistingDevice(selectedServers[0], selectedServers);
     } else if (tab === "new") {
       onOpenAddNewDeviceModal();
     }
@@ -599,13 +752,13 @@ export function AddDeviceHierarchyModal({
           {/* Search bar */}
           <div className="flex items-center gap-2">
             <div className="relative flex-1 max-w-xs">
-              <Search className="w-4 h-4 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none z-10" />
               <input
                 type="text"
                 placeholder="Name or Address"
                 value={searchTerm}
                 onChange={e => setSearchTerm(e.target.value)}
-                className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded font-sans text-xs focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
+                className="w-full pl-10 pr-3 py-1.5 border border-slate-300 rounded font-sans text-xs focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
               />
             </div>
             <button
@@ -636,39 +789,66 @@ export function AddDeviceHierarchyModal({
                       title="Select All Devices"
                     />
                   </th>
-                  <th className="p-2.5 bg-slate-100">Name ↑↓</th>
-                  <th className="p-2.5 bg-slate-100">Address ↑↓</th>
-                  <th className="p-2.5 bg-slate-100">Model ↑↓</th>
-                  <th className="p-2.5 bg-slate-100">Serial Number ↑↓</th>
-                  <th className="p-2.5 bg-slate-100">Device Type ↑↓</th>
-                  <th className="p-2.5 bg-slate-100">Derated Power (W) ↑↓</th>
+                  <th onClick={() => handleHeaderSort("name")} className="p-2.5 bg-slate-100 hover:bg-slate-200 cursor-pointer select-none">
+                    Name {sortCol === "name" ? (sortDir === "asc" ? "↑" : "↓") : "↑↓"}
+                  </th>
+                  <th onClick={() => handleHeaderSort("bmcIp")} className="p-2.5 bg-slate-100 hover:bg-slate-200 cursor-pointer select-none">
+                    Address {sortCol === "bmcIp" ? (sortDir === "asc" ? "↑" : "↓") : "↑↓"}
+                  </th>
+                  <th onClick={() => handleHeaderSort("rack")} className="p-2.5 bg-slate-100 hover:bg-slate-200 cursor-pointer select-none">
+                    Current Location {sortCol === "rack" ? (sortDir === "asc" ? "↑" : "↓") : "↑↓"}
+                  </th>
+                  <th onClick={() => handleHeaderSort("model")} className="p-2.5 bg-slate-100 hover:bg-slate-200 cursor-pointer select-none">
+                    Model {sortCol === "model" ? (sortDir === "asc" ? "↑" : "↓") : "↑↓"}
+                  </th>
+                  <th onClick={() => handleHeaderSort("serialNumber")} className="p-2.5 bg-slate-100 hover:bg-slate-200 cursor-pointer select-none">
+                    Serial Number {sortCol === "serialNumber" ? (sortDir === "asc" ? "↑" : "↓") : "↑↓"}
+                  </th>
+                  <th onClick={() => handleHeaderSort("deviceType")} className="p-2.5 bg-slate-100 hover:bg-slate-200 cursor-pointer select-none">
+                    Device Type {sortCol === "deviceType" ? (sortDir === "asc" ? "↑" : "↓") : "↑↓"}
+                  </th>
+                  <th onClick={() => handleHeaderSort("deratedPowerW")} className="p-2.5 bg-slate-100 hover:bg-slate-200 cursor-pointer select-none">
+                    Derated Power (W) {sortCol === "deratedPowerW" ? (sortDir === "asc" ? "↑" : "↓") : "↑↓"}
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {filteredServers.length > 0 ? (
-                  filteredServers.map(s => (
-                    <tr
-                      key={s.id}
-                      onClick={() => handleToggleServer(s.id)}
-                      className={`hover:bg-slate-50 cursor-pointer transition-colors ${selectedServerIds.includes(s.id) ? "bg-slate-100 font-bold text-slate-900" : ""
-                        }`}
-                    >
-                      <td className="p-2.5 text-center" onClick={e => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          checked={selectedServerIds.includes(s.id)}
-                          onChange={() => handleToggleServer(s.id)}
-                          className="accent-[#680505] cursor-pointer"
-                        />
-                      </td>
-                      <td className="p-2.5 text-[#680505] font-bold">{s.name}</td>
-                      <td className="p-2.5 font-mono">{s.bmcIp}</td>
-                      <td className="p-2.5">Tyrone Server</td>
-                      <td className="p-2.5 font-mono">{(s as any).serialNumber || s.bmcIp || s.id}</td>
-                      <td className="p-2.5">Server</td>
-                      <td className="p-2.5">400</td>
-                    </tr>
-                  ))
+                {sortedServers.length > 0 ? (
+                  sortedServers.map(s => {
+                    const currentRackVal = (s.id && serverRacksMap[s.id]) || (s.bmcIp && serverRacksMap[s.bmcIp]) || s.rack;
+                    const displayRack = currentRackVal ? String(currentRackVal) : "Unassigned";
+                    return (
+                      <tr
+                        key={s.id || s.bmcIp || s.ip}
+                        onClick={() => handleToggleServer(s)}
+                        onDoubleClick={() => {
+                          onSelectExistingDevice(s, [s]);
+                          onClose();
+                        }}
+                        className={`hover:bg-slate-50 cursor-pointer transition-colors ${isSelected(s) ? "bg-slate-100 font-bold text-slate-900" : ""}`}
+                      >
+                        <td className="p-2.5 text-center" onClick={e => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={isSelected(s)}
+                            onChange={() => handleToggleServer(s)}
+                            className="accent-[#680505] cursor-pointer"
+                          />
+                        </td>
+                        <td className="p-2.5 text-[#680505] font-bold">{s.name || s.bmcIp || s.id}</td>
+                        <td className="p-2.5 font-mono">{s.bmcIp || s.ip || "N/A"}</td>
+                        <td className="p-2.5">
+                          <span className={`px-2 py-0.5 rounded text-[11px] font-semibold ${displayRack === "Unassigned" ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-700"}`}>
+                            {displayRack}
+                          </span>
+                        </td>
+                        <td className="p-2.5">{s.model || s.manufacturer || "Tyrone Server"}</td>
+                        <td className="p-2.5 font-mono">{s.serialNumber || s.serial || s.bmcIp || s.id}</td>
+                        <td className="p-2.5">{s.deviceType || "Server"}</td>
+                        <td className="p-2.5">{s.deratedPowerW || s.powerW || "400"}</td>
+                      </tr>
+                    );
+                  })
                 ) : (
                   <tr>
                     <td colSpan={8} className="p-8 text-center text-slate-500 font-medium">

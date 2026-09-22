@@ -177,20 +177,16 @@ export function GpuView({ servers = [] }: GpuViewProps) {
             const rackName = srv.rack || "Unassigned";
             const bmcIp = srv.bmcIp || srv.ip;
             if (!bmcIp) return;
-            const chassisId = srv.category === "AS" ? "Self" : "1";
-
             const service = new RedfishService({
               url: bmcIp.startsWith("http") ? bmcIp : `https://${bmcIp}`,
               username: srv.bmcUsername || "admin",
-              password: srv.bmcPassword || "netweb@123"
+              password: srv.bmcPassword || "netweb@123",
+              category: srv.category || "SM"
             });
-
-            // 1. Query PCIeDevice GPU1
-            const gpuDev = await service.getPCIeDevice("GPU1", chassisId).catch(() => null);
-            // 2. Query PCIeFunction 1 for GPU1
-            const gpuFunc = await service.getPCIeFunction("GPU1", "1", chassisId).catch(() => null);
-            // 3. Query PCIeDevices Collection
-            const pcieList = await service.getPCIeDevices(chassisId).catch(() => []);
+            const chassisUri = await service.resolveChassisId();
+            const pcieList = await service.getPCIeDevices(chassisUri).catch(() => []);
+            const gpuDev = null;
+            const gpuFunc = null;
 
             const seenUuids = new Set<string>();
 

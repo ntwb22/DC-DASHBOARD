@@ -1,6 +1,6 @@
 {
-  "name": "TYRONE-TCM",
-  "short_name": "TYRONE-TCM",
+  "name": "TYRONE",
+  "short_name": "TYRONE",
   "description": "Enterprise-grade fleet management and hardware control dashboard.",
   "start_url": "/",
   "display": "standalone",

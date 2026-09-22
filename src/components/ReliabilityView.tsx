@@ -54,25 +54,25 @@ export function ReliabilityView({ servers = [], serverStatuses = {}, onSelectSer
     "redfish_dump" | "ipmi_ping" | "ipmi_dump" | "snmp_walk" | "duplicated" | "mismatching" | "product_logs" | "redfish_browser"
   >("redfish_dump");
 
-  // Form states for Redfish Dump (matching Image 0)
-  const [dumpAddress, setDumpAddress] = useState("172.16.15.202");
+  // Form states for Redfish Dump
+  const [dumpAddress, setDumpAddress] = useState(() => servers[0]?.bmcIp || "");
   const [dumpUsername, setDumpUsername] = useState("admin");
   const [dumpPassword, setDumpPassword] = useState("password");
   const [dumpPort, setDumpPort] = useState("443");
   const [isDumping, setIsDumping] = useState(false);
 
   // Form states for IPMI Ping
-  const [ipmiPingAddr, setIpmiPingAddr] = useState("172.16.15.202");
+  const [ipmiPingAddr, setIpmiPingAddr] = useState(() => servers[0]?.bmcIp || "");
   const [ipmiPingSubnet, setIpmiPingSubnet] = useState("255.255.255.0");
 
   // Form states for IPMI Dump
-  const [ipmiDumpAddr, setIpmiDumpAddr] = useState("172.16.15.202");
+  const [ipmiDumpAddr, setIpmiDumpAddr] = useState(() => servers[0]?.bmcIp || "");
   const [ipmiDumpUser, setIpmiDumpUser] = useState("admin");
   const [ipmiDumpPass, setIpmiDumpPass] = useState("password");
   const [ipmiDumpPort, setIpmiDumpPort] = useState("623");
 
   // Form states for SNMP Walk
-  const [snmpAddr, setSnmpAddr] = useState("172.16.15.202");
+  const [snmpAddr, setSnmpAddr] = useState(() => servers[0]?.bmcIp || "");
   const [snmpCommunity, setSnmpCommunity] = useState("public");
   const [snmpOid, setSnmpOid] = useState(".1.3.6.1.2.1.1");
   const [snmpResults, setSnmpResults] = useState<Array<{ oid: string; type: string; value: string }>>([
@@ -144,36 +144,23 @@ export function ReliabilityView({ servers = [], serverStatuses = {}, onSelectSer
         }
 
         try {
-          const redfish = new RedfishService({
+          const service = new RedfishService({
             url: ip.startsWith("http") ? ip : `https://${ip}`,
             username: s.bmcUsername || "admin",
-            password: s.bmcPassword || "netweb@123"
+            password: s.bmcPassword || "netweb@123",
+            category: (s as any).category || "SM"
           });
+          const sysUri = await service.resolveSystemId();
+          const sys = await service.getSystemDetails(sysUri).catch(() => null);
+          const stgs = await service.getStorageDetails(sysUri).catch(() => []);
 
-          // Fetch System & Serial
-          const sysUri = await redfish.resolveSystemId("/redfish/v1/Systems/1");
-          const details = await redfish.getSystemDetails(sysUri).catch(() => null);
-
-          let serial = details?.SerialNumber || details?.SKU || details?.Id;
-
-          if (!serial || serial === "N/A" || serial === "0000000000") {
-            try {
-              const chassis = await redfish.proxyRequest("/redfish/v1/Chassis/1");
-              if (chassis?.SerialNumber) {
-                serial = chassis.SerialNumber;
-              }
-            } catch (_) {}
-          }
-
-          if (serial && typeof serial === "string" && serial.trim()) {
+          let serial = sys?.SerialNumber;
+          if (serial && typeof serial === "string" && serial.trim() && serial !== "N/A" && serial !== "0000000000") {
             serialMap[s.id] = serial.trim();
           } else {
             serialMap[s.id] = s.serialNumber || "N/A";
           }
 
-          const sysId = await redfish.resolveSystemId().catch(() => "");
-          // Fetch Storage / Drives
-          const stgs = await redfish.getStorageDetails(sysId).catch(() => []);
           if (Array.isArray(stgs)) {
             stgs.forEach((stg: any, sIdx: number) => {
               const drives = Array.isArray(stg.Drives) ? stg.Drives : [stg];
@@ -192,71 +179,7 @@ export function ReliabilityView({ servers = [], serverStatuses = {}, onSelectSer
               });
             });
           }
-
-          // Fetch Thermal / Fan Sensors
-          const chassisList = await redfish.getChassis().catch(() => []);
-          if (Array.isArray(chassisList) && chassisList.length > 0 && chassisList[0]["@odata.id"]) {
-            const thermal = await redfish.getThermal(chassisList[0]["@odata.id"]).catch(() => null);
-            if (thermal) {
-              if (Array.isArray(thermal.Temperatures)) {
-                thermal.Temperatures.forEach((t: any) => {
-                  if (t.Name || t.ReadingCelsius) {
-                    sensorList.push({
-                      name: `${ip} - ${t.Name || "Temp Sensor"}`,
-                      reading: t.ReadingCelsius ? `${t.ReadingCelsius.toFixed(1)} °C` : "N/A",
-                      lowerWarn: t.LowerThresholdNonCritical ? `${t.LowerThresholdNonCritical} °C` : "5.0 °C",
-                      lowerCrit: t.LowerThresholdCritical ? `${t.LowerThresholdCritical} °C` : "0.0 °C",
-                      upperWarn: t.UpperThresholdNonCritical ? `${t.UpperThresholdNonCritical} °C` : "78.0 °C",
-                      upperCrit: t.UpperThresholdCritical ? `${t.UpperThresholdCritical} °C` : "85.0 °C",
-                      status: t.Status?.Health || "Normal"
-                    });
-                  }
-                });
-              }
-              if (Array.isArray(thermal.Fans)) {
-                thermal.Fans.forEach((f: any) => {
-                  if (f.Name || f.Reading) {
-                    sensorList.push({
-                      name: `${ip} - ${f.Name || "Fan"}`,
-                      reading: f.Reading ? `${f.Reading} RPM` : "N/A",
-                      lowerWarn: f.LowerThresholdNonCritical ? `${f.LowerThresholdNonCritical} RPM` : "1200 RPM",
-                      lowerCrit: f.LowerThresholdCritical ? `${f.LowerThresholdCritical} RPM` : "800 RPM",
-                      upperWarn: f.UpperThresholdNonCritical ? `${f.UpperThresholdNonCritical} RPM` : "14000 RPM",
-                      upperCrit: f.UpperThresholdCritical ? `${f.UpperThresholdCritical} RPM` : "16000 RPM",
-                      status: f.Status?.Health || "Normal"
-                    });
-                  }
-                });
-              }
-            }
-          }
-
-          // Fetch Event Logs for Anomalies & Failure Indicators
-          const eventLogs = await redfish.getEventLogs(sysId).catch(() => []);
-          if (Array.isArray(eventLogs) && eventLogs.length > 0) {
-            eventLogs.forEach((log: any) => {
-              if (log.Severity === "Warning" || log.Severity === "Critical") {
-                anomalyList.push({
-                  server: ip,
-                  metric: log.Message || log.Name || "BMC Event Warning",
-                  severity: log.Severity,
-                  score: "0.85",
-                  timestamp: log.Created ? new Date(log.Created).toLocaleString() : new Date().toLocaleString()
-                });
-                failureList.push({
-                  server: ip,
-                  subsystem: log.SensorType || log.EntryType || "Hardware Subsystem",
-                  indicator: log.Message || log.Name || "Telemetry Threshold Exceeded",
-                  window: "30-60 Days",
-                  action: "Inspect component logs and check cooling airflow"
-                });
-              }
-            });
-          }
-        } catch (err) {
-          console.warn(`Could not fetch telemetry for ${ip}:`, err);
-          serialMap[s.id] = s.serialNumber || "N/A";
-        }
+        } catch (_) {}
       }));
 
       if (isMounted) {

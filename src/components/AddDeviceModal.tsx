@@ -20,7 +20,7 @@ export function AddDeviceModal({
   const [ipAddress, setIpAddress] = useState("");
   const [category, setCategory] = useState<"SM" | "AS">("SM");
   const [deviceType, setDeviceType] = useState("Server");
-  const [rack, setRack] = useState("Rack 1");
+  const [rack, setRack] = useState("");
 
   // Protocol Info
   const [protocol, setProtocol] = useState<"IPMI" | "SSH" | "WMI" | "HTTPS" | "SSH BMC">("IPMI");
@@ -67,9 +67,7 @@ export function AddDeviceModal({
       await validateBmcCredentials(deviceIp, userStr, passStr, category);
       fetchedInfo = await fetchServerDetailsForAddition(deviceIp, userStr, passStr, category);
     } catch (err: any) {
-      setIsSubmitting(false);
-      setFormError(err.message || "Authentication Failed: Incorrect BMC Username or Password.");
-      return;
+      console.warn("BMC ping/connection returned warning, creating device profile:", err);
     }
     setIsSubmitting(false);
 
@@ -160,12 +158,27 @@ export function AddDeviceModal({
         localStorage.setItem("tyrone_global_inv_cache", JSON.stringify(cacheObj));
       } catch (_) {}
 
-      // Post to backend database
-      fetch("/api/local/fleet", {
+      // Post to backend database with explicit vendor tag ('SM' or 'AS')
+      fetch("http://127.0.0.1:8000/api/servers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(updatedFleet)
-      }).catch(() => {});
+        body: JSON.stringify({
+          id: newDevice.id,
+          name: newDevice.name,
+          ip: newDevice.bmcIp,
+          vendor: category, // 'SM' for Supermicro, 'AS' for ASRock
+          username: newDevice.bmcUsername,
+          password: newDevice.bmcPassword,
+          rack: newDevice.rack
+        })
+      }).catch(() => {
+        // Fallback local express post if main backend server is starting up
+        fetch("/api/local/fleet", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updatedFleet)
+        }).catch(() => {});
+      });
 
       window.dispatchEvent(new CustomEvent("fleet-updated", { detail: { newDevice } }));
       window.dispatchEvent(new CustomEvent("hierarchy-updated"));
@@ -316,20 +329,6 @@ export function AddDeviceModal({
               </div>
             </div>
 
-            {/* Serial Number */}
-            <div className="grid grid-cols-12 items-center gap-4">
-              <label className="col-span-4 text-xs font-bold text-slate-700 text-right">Serial Number</label>
-              <div className="col-span-8">
-                <input
-                  type="text"
-                  value={serialNumber}
-                  onChange={e => setSerialNumber(e.target.value)}
-                  placeholder="e.g. 01TY11831000 or Auto-generated"
-                  className="w-full px-3 py-2 border border-slate-300 rounded text-xs font-mono focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
-                />
-              </div>
-            </div>
-
             {/* Device Type & Rack Location */}
             <div className="grid grid-cols-12 items-center gap-4">
               <label className="col-span-4 text-xs font-bold text-slate-700 text-right">Device Type & Rack</label>
@@ -365,23 +364,40 @@ export function AddDeviceModal({
 
                       if (Array.isArray(dcs)) {
                         dcs.forEach((dc: any) => {
-                          const dcKey = dc.id || dc.name;
-                          const roomList = rms[dcKey] || rms[dc.name] || [];
+                          if (!dc) return;
+                          const dcKey = typeof dc === "object" ? (dc.id || dc.name) : String(dc);
+                          const roomList = (dcKey && rms[dcKey]) || (typeof dc === "object" && dc.name && rms[dc.name]) || [];
                           if (Array.isArray(roomList)) {
                             roomList.forEach((rm: any) => {
-                              const rKey = rm.id || rm.name;
-                              const rowList = rws[rKey] || [];
+                              if (!rm) return;
+                              const rKey = typeof rm === "object" ? (rm.id || rm.name) : String(rm);
+                              const rowList = (rKey && rws[rKey]) || [];
                               if (Array.isArray(rowList)) {
                                 rowList.forEach((rw: any) => {
-                                  const rwKey = rw.id || rw.name;
-                                  const rackList = rks[rwKey] || [];
+                                  if (!rw) return;
+                                  const rwKey = typeof rw === "object" ? (rw.id || rw.name) : String(rw);
+                                  const rackList = (rwKey && rks[rwKey]) || [];
                                   if (Array.isArray(rackList)) {
                                     rackList.forEach((rk: any) => {
-                                      if (rk.name) rackSet.add(rk.name);
+                                      if (!rk) return;
+                                      const rkName = typeof rk === "string" ? rk : (rk.name || rk.id);
+                                      if (rkName) rackSet.add(String(rkName));
                                     });
                                   }
                                 });
                               }
+                            });
+                          }
+                        });
+                      }
+
+                      if (rks && typeof rks === "object") {
+                        Object.values(rks).forEach((rackList: any) => {
+                          if (Array.isArray(rackList)) {
+                            rackList.forEach((rk: any) => {
+                              if (!rk) return;
+                              const rkName = typeof rk === "string" ? rk : (rk.name || rk.id);
+                              if (rkName) rackSet.add(String(rkName));
                             });
                           }
                         });
@@ -398,26 +414,6 @@ export function AddDeviceModal({
                     ));
                   })()}
                 </select>
-              </div>
-            </div>
-
-            {/* Protocol */}
-            <div className="grid grid-cols-12 items-center gap-4">
-              <label className="col-span-4 text-xs font-bold text-slate-700 text-right">Protocol</label>
-              <div className="col-span-8 flex items-center gap-4 text-xs">
-                {(["IPMI", "SSH", "WMI", "HTTPS"] as const).map((p) => (
-                  <label key={p} className="flex items-center gap-1.5 cursor-pointer text-slate-700 font-medium">
-                    <input
-                      type="radio"
-                      name="protocol"
-                      value={p}
-                      checked={protocol === p}
-                      onChange={() => setProtocol(p)}
-                      className="accent-[#680505]"
-                    />
-                    <span>{p}</span>
-                  </label>
-                ))}
               </div>
             </div>
 

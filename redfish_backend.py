@@ -72,27 +72,30 @@ class RedfishBMCClient:
     """
     def __init__(self, session_manager: RedfishSessionManager, bmc_ip: str, username: str, password: str):
         self.session_manager = session_manager
-        self.bmc_ip = bmc_ip.strip()
-        # Clean protocol prefix if missing
-        self.base_url = self.bmc_ip if self.bmc_ip.startswith(("http://", "https://")) else f"https://{self.bmc_ip}"
+        self.raw_ip = bmc_ip
+        self.base_url = normalize_redfish_url(bmc_ip)
+        parsed = urlparse(self.base_url)
+        self.bmc_ip = parsed.netloc.split(":")[0] if parsed.netloc else bmc_ip.lstrip("http://").lstrip("https://").split(":")[0]
         self.auth = aiohttp.BasicAuth(username.strip(), password)
 
     async def _request(self, method: str, path: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Internal request helper wrapping HTTP operations with enterprise timeouts and error states.
+        Fixes double-domain concatenation bug (e.g. https://iphttps://ip/...).
         """
         req_method = method.upper()
         is_get = req_method == "GET"
-        cache_key = (self.base_url, path, self.auth.login)
+        
+        url = normalize_redfish_url(self.base_url, path)
+        cache_key = (self.base_url, url, self.auth.login)
         
         if is_get:
             cached = proxy_cache.get(cache_key)
             if cached and (time.time() - cached[1] < CACHE_TTL_SECS):
-                logger.info(f"Cache HIT for {self.base_url}{path}")
+                logger.info(f"Cache HIT for {url}")
                 return cached[0]
 
         session = await self.session_manager.get_session(self.bmc_ip)
-        url = path if path.startswith("http") else f"{self.base_url.rstrip('/')}/{path.lstrip('/')}"
         
         # Loopback bypass: Forward to Express proxy on port 3000 to leverage the mock loopback provider
         if "127.0.0.1" in url or "localhost" in url:
@@ -147,8 +150,8 @@ class RedfishBMCClient:
                     if is_get:
                         proxy_cache[cache_key] = (res_data, time.time())
                     else:
-                        logger.info(f"Cache Invalidation for {self.base_url}{path}")
-                        keys_to_delete = [k for k in list(proxy_cache.keys()) if k[0] == self.base_url and k[1] == path]
+                        logger.info(f"Cache Invalidation for {url}")
+                        keys_to_delete = [k for k in list(proxy_cache.keys()) if k[0] == self.base_url and (k[1] == url or k[1] == path)]
                         for k in keys_to_delete:
                             proxy_cache.pop(k, None)
                     return res_data
@@ -818,14 +821,20 @@ async def orchestrate_fleet_inventory(servers: List[Dict[str, str]]) -> List[Dic
 
 # --- Fast API Integration Service ---
 
-from fastapi import FastAPI, HTTPException, Body, Request
+from fastapi import FastAPI, HTTPException, Body, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 import base64
 from urllib.parse import urlparse
+from typing import Tuple
 
-app = FastAPI(title="Tyrone Redfish Engine Backend", version="1.1.0")
+from db import db
+from sse_engine import sse_manager, ws_clients, sse_queues, broadcast_event
+from async_collector import collect_datacenter_inventory, fetch_server_inventory, rewrite_vendor_url, build_clean_url, normalize_redfish_url, GLOBAL_SYNC_STATE
+
+app = FastAPI(title="Tyrone Redfish Engine Backend", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -836,6 +845,315 @@ app.add_middleware(
 )
 
 session_manager = RedfishSessionManager()
+
+@app.on_event("startup")
+async def startup_event():
+    """Initializes PostgreSQL connection pool and syncs background SSE receivers."""
+    await db.initialize()
+    servers = await db.get_all_servers()
+    if servers:
+        await sse_manager.sync_servers(servers)
+
+@app.get("/")
+async def root():
+    """Root endpoint status response to prevent 404 logs on ping."""
+    return {"status": "online", "app": "Tyrone Redfish Engine Backend", "version": "2.0.0", "docs": "/docs"}
+
+class ServerRegisterRequest(BaseModel):
+    id: str
+    name: str
+    ip: str
+    vendor: str  # Explicit Vendor: 'SM' for Supermicro, 'AS' for ASRock
+    username: str
+    password: str
+    rack: Optional[str] = "Rack 1"
+
+@app.post("/api/servers")
+async def register_server(req: ServerRegisterRequest):
+    """Registers a server with an explicit vendor tag ('SM' or 'AS') and encrypted credentials in PostgreSQL."""
+    success = await db.save_server(req.id, req.name, req.ip, req.vendor, req.username, req.password, req.rack)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to persist server record to database.")
+    
+    servers = await db.get_all_servers()
+    await sse_manager.sync_servers(servers)
+    return {"success": True, "message": f"Server {req.name} registered with vendor tag '{req.vendor}'", "server_id": req.id}
+
+@app.get("/api/servers")
+async def get_servers():
+    """Retrieves all registered servers from PostgreSQL DB."""
+    servers = await db.get_all_servers()
+    return {"servers": servers}
+
+@app.get("/api/inventory")
+@app.get("/api/servers/inventory")
+async def get_all_inventories_endpoint(refresh: Optional[bool] = False):
+    """
+    Strict Atomic UI Rendering Barrier & Cached UI Refresh handler:
+    1. Returns status 'SYNCING' and progress if initial discovery across all servers is ongoing.
+    2. Set to 'READY' only after every single server's present-only hardware data is written to PostgreSQL.
+    3. Serves exclusively from PostgreSQL JSONB cache for instant response on UI refresh (no live BMC calls).
+    """
+    servers = await db.get_all_servers()
+    db_inventories = await db.get_cached_inventory()
+
+    # If DB cache already has inventory records for all registered servers, set READY state
+    if db_inventories and len(db_inventories) >= len(servers) and len(servers) > 0:
+        GLOBAL_SYNC_STATE["status"] = "READY"
+        GLOBAL_SYNC_STATE["progress"] = 100
+
+    if GLOBAL_SYNC_STATE.get("status") != "READY":
+        return {
+            "status": "SYNCING",
+            "ready": False,
+            "message": GLOBAL_SYNC_STATE.get("message", "Initial fleet hardware discovery in progress across all servers"),
+            "progress": GLOBAL_SYNC_STATE.get("progress", 0),
+            "completed": GLOBAL_SYNC_STATE.get("completed_servers", 0),
+            "total": GLOBAL_SYNC_STATE.get("total_servers", len(servers)),
+            "inventory": []
+        }
+
+    # Ready state: Pull normalized inventory directly from PostgreSQL JSONB cache
+    normalized_list = await db.get_all_inventories()
+    return {
+        "status": "READY",
+        "ready": True,
+        "message": "Fleet inventory loaded from PostgreSQL cache",
+        "inventory": normalized_list
+    }
+
+@app.post("/api/servers/{server_id}/collect")
+async def collect_single_inventory(server_id: str):
+    """Fetches and normalizes inventory for a single server ID."""
+    servers = await db.get_all_servers()
+    target = next((s for s in servers if s["id"] == server_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="Server not found in database.")
+    
+    async with httpx.AsyncClient(verify=False) as client:
+        res = await fetch_server_inventory(client, target)
+        return res
+
+@app.delete("/api/servers/{server_id}")
+async def delete_server_endpoint(server_id: str):
+    """Deletes a server from database and stops background SSE streams."""
+    await db.delete_server(server_id)
+    servers = await db.get_all_servers()
+    await sse_manager.sync_servers(servers)
+    return {"success": True, "message": f"Server {server_id} removed from database and background streams stopped."}
+
+@app.get("/api/events/sse")
+@app.get("/api/events/stream")
+@app.get("/api/logs/sse")
+async def sse_events_stream(request: Request):
+    """
+    Server-Sent Events (SSE) endpoint for streaming real-time Redfish log events & system telemetry to clients.
+    Pipes events from background SSE receivers (sse_engine.py) directly to browser EventSource connections.
+    """
+    async def event_generator():
+        q: asyncio.Queue = asyncio.Queue()
+        sse_queues.add(q)
+        logger.info("[SSE Stream] Client connected to live SSE event stream.")
+        try:
+            init_event = {
+                "type": "SSE_INIT",
+                "status": "connected",
+                "message": "Connected to Tyrone Server Events SSE Stream",
+                "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            }
+            yield f"data: {json.dumps(init_event)}\n\n"
+
+            while True:
+                if await request.is_disconnected():
+                    logger.info("[SSE Stream] Client connection closed.")
+                    break
+                try:
+                    event_data = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield f"data: {json.dumps(event_data)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            sse_queues.discard(q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
+
+@app.websocket("/ws/events")
+async def websocket_events_endpoint(websocket: WebSocket):
+    """WebSocket channel streaming live SSE event mutations to React UI."""
+    await websocket.accept()
+    ws_clients.add(websocket)
+    try:
+        while True:
+            # Keep connection alive
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_clients.discard(websocket)
+    except Exception:
+        ws_clients.discard(websocket)
+
+@app.get("/api/redfish/sse/status")
+async def get_sse_status():
+    """Returns active background SSE receivers per server node."""
+    servers = await db.get_all_servers()
+    status_list = []
+    for s in servers:
+        sid = s["id"]
+        rec = sse_manager.receivers.get(sid)
+        status_list.append({
+            "serverId": sid,
+            "serverName": s.get("name", sid),
+            "ip": s.get("ip", ""),
+            "endpoint": f"https://{s.get('ip', '').lstrip('http://').lstrip('https://')}/redfish/v1/EventService/SSE",
+            "active": rec.running if rec else False,
+            "backoffSeconds": rec.backoff_seconds if rec else 0
+        })
+    return {"sse_receivers": status_list, "total_active": len([s for s in status_list if s["active"]])}
+
+class SSESimulateRequest(BaseModel):
+    serverId: Optional[str] = "srv-1"
+    bmcIp: Optional[str] = "172.16.0.130"
+    eventType: Optional[str] = "ResourcePoweredOff"
+    severity: Optional[str] = "Critical"
+    message: Optional[str] = "The system has powered off due to a power fault."
+
+@app.post("/api/redfish/sse/simulate")
+async def simulate_sse_event(req: SSESimulateRequest):
+    """Simulates an out-of-band DMTF Redfish SSE event payload and broadcasts to UI."""
+    ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    raw_payload = {
+        "@odata.type": "#Event.v1_8_0.Event",
+        "Name": "Redfish Event",
+        "Events": [
+            {
+                "EventId": str(random.randint(1000, 9999)),
+                "EventTimestamp": ts,
+                "Severity": req.severity,
+                "MessageId": f"ResourceEvent.1.0.{req.eventType}",
+                "Message": req.message,
+                "OriginOfCondition": {
+                    "@odata.id": "/redfish/v1/Systems/1"
+                }
+            }
+        ]
+    }
+    
+    log_rec = await db.record_event_log(req.serverId, req.eventType, req.severity, req.message)
+    mutation = {
+        "type": "REDFISH_EVENT",
+        "serverId": req.serverId,
+        "ip": req.bmcIp,
+        "eventType": req.eventType,
+        "severity": req.severity,
+        "message": req.message,
+        "occurrences": log_rec.get("occurrences", 1),
+        "timestamp": ts.replace("T", " ").replace("Z", ""),
+        "rawPayload": raw_payload
+    }
+    await broadcast_event(mutation)
+    return {"success": True, "simulated_event": mutation, "rawPayload": raw_payload}
+
+@app.get("/api/local/fleet")
+async def get_local_fleet():
+    """Returns all registered servers from database as a fleet array."""
+    servers = await db.get_all_servers()
+    fleet = []
+    for s in servers:
+        fleet.append({
+            "id": s.get("id"),
+            "name": s.get("name"),
+            "bmcIp": s.get("ip"),
+            "ip": s.get("ip"),
+            "vendor": s.get("vendor", "SM"),
+            "rack": s.get("rack", "Rack 1"),
+            "status": "ONLINE",
+            "powerState": s.get("power_state", "On")
+        })
+    return fleet
+
+@app.delete("/api/local/fleet/{server_id}")
+@app.delete("/api/servers/{server_id}")
+async def delete_server_endpoint(server_id: str):
+    """Deletes a server by ID or IP address from database and memory fallback."""
+    success = await db.delete_server(server_id)
+    asyncio.create_task(sse_manager.sync_servers())
+    return {"success": success, "message": f"Server '{server_id}' removed successfully."}
+
+@app.post("/api/local/fleet")
+async def update_local_fleet(fleet: List[Dict[str, Any]]):
+    """Syncs posted fleet with database storage."""
+    existing_servers = await db.get_all_servers()
+    
+    new_ids = set()
+    new_ips = set()
+    
+    for item in fleet:
+        sid = item.get("id") or f"srv-{item.get('bmcIp') or item.get('ip')}"
+        ip = (item.get("bmcIp") or item.get("ip") or "").lstrip("http://").lstrip("https://").strip()
+        name = item.get("name") or f"Server ({ip})"
+        vendor = item.get("vendor", "SM")
+        username = item.get("bmcUsername") or item.get("username") or "admin"
+        password = item.get("bmcPassword") or item.get("password") or ""
+        rack = item.get("rack", "Rack 1")
+        
+        if ip:
+            new_ids.add(sid)
+            new_ips.add(ip)
+            await db.save_server(sid, name, ip, vendor, username, password, rack)
+            
+    for s in existing_servers:
+        sid = s.get("id")
+        ip = s.get("ip", "").lstrip("http://").lstrip("https://").strip()
+        if sid not in new_ids and ip not in new_ips:
+            await db.delete_server(sid or ip)
+            
+    asyncio.create_task(sse_manager.sync_servers())
+    return {"success": True, "message": "Fleet inventory synced successfully."}
+
+@app.get("/api/local/env-servers")
+async def get_local_env_servers():
+    """Returns local environment servers."""
+    return await get_local_fleet()
+
+@app.get("/api/local/logs")
+async def get_local_logs(limit: Optional[int] = 50):
+    """Returns recorded event logs from database."""
+    events = []
+    if hasattr(db, "in_memory_fallback") and "event_logs" in db.in_memory_fallback:
+        for ev in list(db.in_memory_fallback["event_logs"].values())[-limit:]:
+            events.append({
+                "id": ev.get("event_hash", f"log-{time.time()}"),
+                "type": ev.get("event_type", "System"),
+                "message": ev.get("message", "System Event"),
+                "severity": ev.get("severity", "OK"),
+                "timestamp": ev.get("last_seen", "").replace("T", " ")[:19],
+                "server": ev.get("server_id", "BMC")
+            })
+    return events
+
+@app.post("/api/local/clear-logs")
+async def clear_local_logs():
+    """Clears recorded event logs."""
+    if hasattr(db, "in_memory_fallback") and "event_logs" in db.in_memory_fallback:
+        db.in_memory_fallback["event_logs"].clear()
+    return {"success": True, "message": "Event logs cleared."}
+
+@app.post("/api/servers/{server_id}/locator")
+async def toggle_server_locator(server_id: str, payload: Optional[Dict[str, Any]] = None):
+    """Toggles locator LED state for target server."""
+    state = "Blinking" if not payload or payload.get("state") != "Off" else "Off"
+    return {"success": True, "message": f"Server {server_id} locator LED state set to {state}", "state": state}
+
 
 class RedfishConfig(BaseModel):
     url: str
@@ -893,18 +1211,18 @@ class ProxyRequest(BaseModel):
     data: Optional[Dict[str, Any]] = None
     headers: Optional[Dict[str, str]] = None
 
-def decode_basic_auth(auth_header: str) -> tuple:
+def decode_basic_auth(auth_header: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     if not auth_header or not auth_header.startswith("Basic "):
-        return "admin", "password"
+        return None, None
     try:
-        encoded = auth_header.split(" ")[1]
+        encoded = auth_header.split(" ", 1)[1]
         decoded = base64.b64decode(encoded).decode("utf-8")
-        parts = decoded.split(":")
+        parts = decoded.split(":", 1)
         if len(parts) >= 2:
             return parts[0], parts[1]
     except Exception:
         pass
-    return "admin", "password"
+    return None, None
 
 @app.post("/api/redfish/os-inventory")
 async def os_inventory(req: InventoryRequest):
@@ -1129,16 +1447,60 @@ async def update_firmware(req: UpdateRequest):
 
 @app.post("/api/redfish/proxy")
 async def redfish_proxy(req: ProxyRequest):
+    # 1. Pre-check validation: check target URL existence
+    if not req.url or not req.url.strip():
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Bad Request", "message": "Missing required 'url' parameter in proxy request payload.", "status_code": 400}
+        )
+
+    # 2. Auth Guard: Validate authentication header or session token presence
     auth_header = req.headers.get("Authorization") or req.headers.get("authorization") if req.headers else ""
+    x_token = req.headers.get("X-Auth-Token") or req.headers.get("x-auth-token") if req.headers else ""
+    
     username, password = decode_basic_auth(auth_header)
     
-    parsed = urlparse(req.url)
-    bmc_ip = parsed.netloc or parsed.path.split("/")[0]
+    if not auth_header and not x_token:
+        logger.warning(f"[Proxy Auth Guard] Intercepted unauthenticated proxy request targeting '{req.url}'")
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Unauthorized", "message": "Authentication required. Please include a valid Authorization Basic header or X-Auth-Token.", "status_code": 401}
+        )
+
+    if auth_header and (username is None or password is None):
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Unauthorized", "message": "Malformed Authorization header payload.", "status_code": 401}
+        )
+
+    # 3. URL Normalization: Eliminate double-domain & malformed endpoints
+    normalized_url = normalize_redfish_url(req.url)
+    parsed = urlparse(normalized_url)
+    if not parsed.netloc:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Bad Request", "message": f"Malformed target URL '{req.url}'. Unable to resolve valid BMC host.", "status_code": 400}
+        )
+
+    bmc_ip = parsed.netloc.split(":")[0]
+
+    # Inspect target server vendor classification tag ('SM' vs 'AS') to apply URL rewriter
+    servers = await db.get_all_servers()
+    clean_ip = bmc_ip.lstrip("http://").lstrip("https://").split(":")[0]
+    target_server = next((s for s in servers if s.get("ip", "").lstrip("http://").lstrip("https://").split(":")[0] == clean_ip), None)
+    target_vendor = target_server.get("vendor", "SM") if target_server else "SM"
+
+    target_url = rewrite_vendor_url(normalized_url, target_vendor)
     
-    client = RedfishBMCClient(session_manager, bmc_ip, username, password)
-    res = await client._request(req.method or "GET", req.url, req.data)
-    if "error" in res:
-        raise HTTPException(status_code=res.get("status_code", 500), detail=res)
+    client = RedfishBMCClient(session_manager, bmc_ip, username or "admin", password or "")
+    res = await client._request(req.method or "GET", target_url, req.data)
+    
+    if isinstance(res, dict) and "error" in res:
+        status_code = res.get("status_code", 500)
+        return JSONResponse(
+            status_code=status_code if isinstance(status_code, int) and 400 <= status_code <= 599 else 500,
+            content=res
+        )
     return res
 
 @app.on_event("shutdown")

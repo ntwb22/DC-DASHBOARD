@@ -76,10 +76,7 @@ export function AIOpsView({ servers = [], alerts = [] }: AIOpsViewProps) {
         } catch (_) {}
       }
       if (fleetList.length === 0) {
-        fleetList = [
-          { name: "172.16.12.50", bmcIp: "172.16.12.50", powerW: 800, weightKg: "789 kg", sizeU: "156 U", rack: "Rack 1" },
-          { name: "172.16.12.55", bmcIp: "172.16.12.55", powerW: 750, weightKg: "22.8 kg", sizeU: "2 U", rack: "Rack 1" }
-        ];
+        fleetList = [];
       }
 
       if (textLower.includes("thermal") || textLower.includes("power")) {

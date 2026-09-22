@@ -13,16 +13,11 @@ export const ALL_GADGETS = [
   "Space Capacity",
   "Weight Capacity",
   "Summary of Hierarchy",
-  "Top 3 High Temperature Rooms",
   "Power Data Summary",
   "Device Statistics",
-  "Cooling Anomaly",
   "Device Health Summary",
   "Component Health Summary",
-  "Recent Inventory Changes",
-  "Events by Severity",
-  "Events by Day",
-  "Power Usage Effectiveness"
+  "Recent Inventory Changes"
 ];
 
 export const DEFAULT_ENABLED_GADGETS = ALL_GADGETS;
@@ -65,7 +60,7 @@ export function GadgetsModal({ isOpen, enabledGadgets, onClose, onSave }: Gadget
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs font-sans select-none">
       <div className="bg-white border border-slate-300 rounded shadow-2xl max-w-2xl w-full overflow-hidden text-slate-800 text-xs flex flex-col max-h-[85vh]">
-        
+
         {/* Header Bar matching Tyrone style */}
         <div className="bg-[#7a0c0c] text-white px-5 py-3 flex items-center justify-between font-sans shrink-0">
           <span className="font-bold text-sm tracking-wide">Customize Dashboard Gadgets</span>

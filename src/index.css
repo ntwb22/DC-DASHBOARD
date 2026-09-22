@@ -13,7 +13,13 @@ body,
   background-color: #dce1e7 !important;
   font-size: 16px !important;
   line-height: 1.5 !important;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif !important;
+  font-weight: 300 !important;
+}
+
+*, ::before, ::after {
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif !important;
+  font-weight: 300 !important;
 }
 
 /* Tyrone DCM Console Reference Typography Scale (+2px scale) */
@@ -50,8 +56,8 @@ body,
 }
 
 @theme {
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-sans: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  --font-mono: Arial, "Helvetica Neue", Helvetica, sans-serif;
 
   --color-primary: var(--theme-accent);
 
@@ -186,7 +192,8 @@ input,
 button,
 select,
 textarea {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif !important;
+  font-weight: 300 !important;
 }
 
 html.dark,
@@ -281,56 +288,24 @@ body {
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* Typography Hierarchy matching reference DCM console */
-h1,
-h2,
-h3,
-h4,
-h5,
-h6,
-.display-heading {
-  font-weight: 700 !important;
+/* Typography Hierarchy - General elements have font-weight 300 */
+*, ::before, ::after,
+p, span, div, a, button, input, select, textarea, label, th, td, table, tr,
+strong, b, em, i, small, code, pre,
+.sidebar-item, nav button, nav a,
+.text-blue-600, .monospace-label, .tech-label, .inline-emphasis,
+.font-normal, .font-medium, .font-semibold, .font-bold, .font-extrabold, .font-black {
+  font-weight: 300 !important;
 }
 
-.sidebar-item,
-nav button,
-nav a {
-  font-weight: 600 !important;
-}
-
-th,
-.panel-header {
-  font-weight: 600 !important;
-}
-
-td {
-  font-weight: 400 !important;
-}
-
-button {
-  font-weight: 600 !important;
-}
-
-a,
-.text-blue-600 {
-  font-weight: 600 !important;
-}
-
-label,
-.monospace-label,
-.tech-label {
-  font-weight: 600 !important;
-}
-
-strong,
-b,
-.inline-emphasis,
-.font-bold,
-.font-semibold,
-.font-black,
-.font-medium,
-.font-extrabold {
-  font-weight: 600 !important;
+/* Headings have font-weight 450 */
+h1, h2, h3, h4, h5, h6,
+.display-heading,
+.panel-header,
+.card-header,
+.login-title,
+.login-brand {
+  font-weight: 450 !important;
 }
 
 
@@ -946,7 +921,7 @@ button:hover .settings-gear {
 
 .login-brand {
   font-size: 20px;
-  font-weight: 900;
+  font-weight: 450 !important;
   color: #e53e3e;
   letter-spacing: -0.5px;
   font-style: italic;
@@ -954,7 +929,7 @@ button:hover .settings-gear {
 
 .login-title {
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 450 !important;
   letter-spacing: 0.5px;
 }
 
@@ -1035,7 +1010,7 @@ button:hover .settings-gear {
 .login-error {
   color: #e53e3e;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 300 !important;
   margin: -6px 0 0;
 }
 
@@ -1048,7 +1023,7 @@ button:hover .settings-gear {
   background: linear-gradient(135deg, #1a6b6a 0%, #1b5e6e 100%);
   color: #fff;
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 300 !important;
   font-family: "Inter", sans-serif;
   letter-spacing: 0.3px;
   cursor: pointer;

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { AlertTriangle, RefreshCw, Trash2, Download, Search, X, Radio, Bell, Plus, ShieldCheck, CheckCircle2, Server, Info } from "lucide-react";
+import { AlertTriangle, RefreshCw, Trash2, Download, Search, X, Radio, Bell, Plus, ShieldCheck, CheckCircle2, Server, Info, Activity, Zap, Play, Terminal, Power, Flame, ShieldAlert, Code } from "lucide-react";
 import axios from "axios";
 import { ConfirmModal } from "./ConfirmModal";
 import { RedfishService } from "../services/redfishService";
@@ -42,7 +42,7 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
   const [fetchFullHistory, setFetchFullHistory] = useState<boolean>(false);
 
   // Fetch event logs across ALL servers in active fleet
-  const fetchLiveLogs = async () => {
+  const fetchLiveLogs = async (pullFull: boolean = false) => {
     setIsRefreshingLogs(true);
     try {
       const activeFleet = (servers || []).filter((s: any) =>
@@ -69,32 +69,31 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
         return;
       }
 
-      const limitParam = fetchFullHistory ? 1000 : 10;
+      const limitParam = (fetchFullHistory || pullFull) ? 1000 : 50;
       const res = await axios.get(`/api/local/logs?limit=${limitParam}`).catch(() => null);
       const backendLogs = (res?.data && Array.isArray(res.data)) ? res.data : [];
 
       const bmcLogPromises = validServers.map(async (server: any) => {
         if (!server?.bmcIp) return [];
         try {
-          const bmcUser = (server.bmcUsername && server.bmcUsername.trim()) ? server.bmcUsername.trim() : "admin";
-          const bmcPass = (server.bmcPassword !== undefined && server.bmcPassword !== null) ? server.bmcPassword.trim() : "netweb@123";
           const service = new RedfishService({
             url: server.bmcIp.startsWith("http") ? server.bmcIp : `https://${server.bmcIp}`,
-            username: bmcUser,
-            password: bmcPass
+            username: server.bmcUsername || "admin",
+            password: server.bmcPassword || "netweb@123",
+            category: server.category || "SM"
           });
-          const sysId = await service.resolveSystemId().catch(() => "");
-          const logs = await service.getEventLogs(sysId).catch(() => []);
+          const sysUri = await service.resolveSystemId();
+          const logs = await service.getEventLogs(sysUri).catch(() => []);
           if (Array.isArray(logs) && logs.length > 0) {
             const mapped = logs.map((l: any, idx: number) => ({
-              id: l.Id || `bmc-${server.bmcIp}-${idx}`,
-              type: l.SensorType || l.EntryType || "Power",
-              message: l.Message || l.Name || `BMC System Event Log [OEM]: Event on ${server.name || server.bmcIp}`,
-              severity: l.Severity === "Critical" ? "Critical" : (l.Severity === "Warning" ? "Warning" : "OK"),
-              timestamp: l.Created ? l.Created.replace("T", " ").slice(0, 19) : new Date().toISOString().replace("T", " ").slice(0, 19),
+              id: l.id || l.Id || `bmc-${server.bmcIp}-${idx}`,
+              type: l.type || l.SensorType || l.EntryType || "Power",
+              message: l.message || l.Message || l.Name || `BMC System Event Log: Event on ${server.name || server.bmcIp}`,
+              severity: l.severity === "Critical" ? "Critical" : (l.severity === "Warning" ? "Warning" : "OK"),
+              timestamp: l.timestamp ? l.timestamp.replace("T", " ").slice(0, 19) : new Date().toISOString().replace("T", " ").slice(0, 19),
               server: server.bmcIp
             }));
-            return fetchFullHistory ? mapped : mapped.slice(0, 10);
+            return (fetchFullHistory || pullFull) ? mapped : mapped.slice(0, 20);
           }
         } catch (_) {}
         return [];
@@ -104,7 +103,7 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
       const allBmcLogs = bmcResults.flat();
 
       const merged = [...allBmcLogs, ...backendLogs];
-      setLiveFetchedLogs(fetchFullHistory ? merged : merged.slice(0, 10));
+      setLiveFetchedLogs((fetchFullHistory || pullFull) ? merged : merged.slice(0, 50));
     } catch (_) {
     } finally {
       setIsRefreshingLogs(false);
@@ -113,8 +112,15 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
 
   useEffect(() => {
     fetchLiveLogs();
-    const interval = setInterval(fetchLiveLogs, 2000);
-    return () => clearInterval(interval);
+    const handleLiveEvent = () => {
+      fetchLiveLogs();
+    };
+    window.addEventListener("redfish-event", handleLiveEvent);
+    window.addEventListener("hardware-event", handleLiveEvent);
+    return () => {
+      window.removeEventListener("redfish-event", handleLiveEvent);
+      window.removeEventListener("hardware-event", handleLiveEvent);
+    };
   }, [fetchFullHistory]);
 
   const activeAlerts = useMemo(() => {
@@ -146,16 +152,17 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
     const seen = new Set<string>();
     const unique: HardwareLog[] = [];
     combined.forEach((item, idx) => {
-      const srvStr = String(item.server || "").toLowerCase();
+      const fallbackServer = item.server || item.ip || item.serverId || item.entity || (activeServers[0] ? activeServers[0].bmcIp : "172.16.12.55");
+      const srvStr = String(fallbackServer).toLowerCase();
       if (deletedKeys.has(srvStr)) return;
 
       // STRICT FILTER: Only show event if it belongs to one of the added active devices!
       const matchesAddedDevice = Array.from(validServerIps).some(validIp =>
         srvStr === validIp || srvStr.includes(validIp) || validIp.includes(srvStr)
-      );
+      ) || activeServers.length > 0;
       if (!matchesAddedDevice) return;
 
-      const key = item.id || `${item.server}-${item.message}-${item.timestamp}`;
+      const key = item.id || `${fallbackServer}-${item.message}-${item.timestamp}`;
       if (!seen.has(key)) {
         seen.add(key);
         unique.push({
@@ -164,7 +171,7 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
           message: String(item.message || "Hardware alert recorded"),
           severity: (item.severity === "Critical" || item.severity === "Warning" ? item.severity : "OK") as any,
           timestamp: String(item.timestamp || new Date().toISOString().replace("T", " ").slice(0, 19)),
-          server: String(item.server || "")
+          server: String(fallbackServer)
         });
       }
     });
@@ -172,7 +179,7 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
   }, [liveFetchedLogs, alerts, servers]);
 
 
-  const [activeTab, setActiveTab] = useState<"events" | "event_service" | "thresholds">("events");
+  const [activeTab, setActiveTab] = useState<"events" | "sse_stream" | "event_service" | "thresholds">("events");
   const [selectedServerFilter, setSelectedServerFilter] = useState<string>("ALL");
   const [searchText, setSearchText] = useState("");
   const [startDate, setStartDate] = useState("");
@@ -181,6 +188,62 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
   const [visibleLimit, setVisibleLimit] = useState<number>(50);
   const [selectedEventModal, setSelectedEventModal] = useState<HardwareLog | null>(null);
   const eventTableRef = React.useRef<HTMLDivElement>(null);
+
+  // SSE Stream Inspector States
+  const [sseStatusList, setSseStatusList] = useState<any[]>([]);
+  const [isSimulatingSse, setIsSimulatingSse] = useState<boolean>(false);
+  const [selectedSsePayload, setSelectedSsePayload] = useState<any>({
+    "@odata.type": "#Event.v1_8_0.Event",
+    "Name": "Redfish Event",
+    "Events": [
+      {
+        "EventId": "1042",
+        "EventTimestamp": new Date().toISOString(),
+        "Severity": "Critical",
+        "MessageId": "ResourceEvent.1.0.ResourcePoweredOff",
+        "Message": "The system has powered off due to a power fault.",
+        "OriginOfCondition": {
+          "@odata.id": "/redfish/v1/Systems/1"
+        }
+      }
+    ]
+  });
+
+  const fetchSseStatus = async () => {
+    try {
+      const res = await axios.get("/api/redfish/sse/status");
+      if (res.data && res.data.sse_receivers) {
+        setSseStatusList(res.data.sse_receivers);
+      }
+    } catch (_) {}
+  };
+
+  useEffect(() => {
+    if (activeTab === "sse_stream") {
+      fetchSseStatus();
+      const timer = setInterval(fetchSseStatus, 5000);
+      return () => clearInterval(timer);
+    }
+  }, [activeTab]);
+
+  const handleSimulateSse = async (preset: { eventType: string; severity: string; message: string; serverId?: string; bmcIp?: string }) => {
+    setIsSimulatingSse(true);
+    try {
+      const targetServer = servers[0] || { id: "srv-1", bmcIp: "172.16.0.130" };
+      const res = await axios.post("/api/redfish/sse/simulate", {
+        serverId: preset.serverId || targetServer.id,
+        bmcIp: preset.bmcIp || targetServer.bmcIp,
+        eventType: preset.eventType,
+        severity: preset.severity,
+        message: preset.message
+      });
+      if (res.data && res.data.rawPayload) {
+        setSelectedSsePayload(res.data.rawPayload);
+      }
+      fetchLiveLogs();
+    } catch (_) {}
+    setIsSimulatingSse(false);
+  };
 
   const availableServers = useMemo(() => {
     return (servers || []).map(s => ({
@@ -285,6 +348,7 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
     });
     return days;
   }, [activeAlerts]);
+
 
   // Compressed: group by server+message, count duplicates
   const displayAlerts = useMemo(() => {
@@ -483,7 +547,9 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
   };
 
   const tabs = [
-    { id: "events" as const, label: "Events" },
+    { id: "events" as const, label: "Events & SEL Logs", icon: Bell },
+    { id: "sse_stream" as const, label: "Redfish SSE Live Stream (/redfish/v1/EventService/SSE)", icon: Activity },
+    { id: "event_service" as const, label: "EventService Subscriptions", icon: Radio },
   ];
 
   return (
@@ -492,28 +558,21 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
       <div className="bg-[#7a0c0c] text-white py-2 px-4 rounded flex flex-wrap items-center justify-between gap-3 shadow-xs mb-3">
         <div className="flex items-center gap-2 font-bold text-xs">
           <Bell className="w-4 h-4 text-amber-300" />
-          <span className="text-sm font-extrabold uppercase tracking-wider">Events</span>
+          <span className="text-sm font-extrabold uppercase tracking-wider">Events Management Console</span>
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              const nextState = !fetchFullHistory;
-              setFetchFullHistory(nextState);
-            }}
-            className={`px-3 py-1 rounded text-xs font-bold transition-all cursor-pointer border flex items-center gap-1.5 ${
-              fetchFullHistory
-                ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-600 shadow-xs"
-                : "bg-white/20 hover:bg-white/30 text-white border-white/30"
-            }`}
-            title={fetchFullHistory ? "Currently showing full log history. Click to show recent 10 logs only." : "Currently showing recent 10 logs with details. Click to view previous historical logs."}
+          <button 
+            onClick={() => fetchLiveLogs(true)} 
+            disabled={isRefreshingLogs}
+            className="flex items-center gap-1.5 text-white/95 hover:text-white cursor-pointer text-xs font-bold bg-amber-600/90 hover:bg-amber-600 px-3 py-1 rounded transition-colors shadow-2xs"
+            title="Pull IPMI SEL Event Logs from all server BMCs"
           >
-            <Radio className="w-3.5 h-3.5" />
-            <span>{fetchFullHistory ? "Showing All Logs (Click for Recent 10)" : "Show Previous Logs"}</span>
+            <Download className={`w-3.5 h-3.5 ${isRefreshingLogs ? "animate-spin" : ""}`} />
+            <span>{isRefreshingLogs ? "Pulling IPMI SEL Logs..." : "Pull IPMI Event Logs"}</span>
           </button>
           <button 
-            onClick={fetchLiveLogs} 
+            onClick={() => fetchLiveLogs(false)} 
             disabled={isRefreshingLogs}
             className="flex items-center gap-1 text-white/90 hover:text-white cursor-pointer text-xs font-semibold bg-white/10 px-2.5 py-1 rounded hover:bg-white/20 transition-colors"
           >
@@ -523,11 +582,8 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
         </div>
       </div>
 
-      {/* ========================================================================= */}
-      {/* TAB 1: EVENTS & SEL LOGS                                                  */}
-      {/* ========================================================================= */}
-      {activeTab === "events" && (
-        <div className="flex-1 flex flex-col min-h-0 w-full space-y-3">
+      {/* Events & SEL Logs Main Container */}
+      <div className="flex-1 flex flex-col min-h-0 w-full space-y-3">
 
           {/* Event Severity Pie Chart Card */}
           <div className="bg-white border border-slate-300 rounded p-3 shadow-xs flex items-center justify-between gap-4">
@@ -759,94 +815,6 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
             </div>
           )}
         </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* TAB 2: REDFISH EVENTSERVICE SUBSCRIPTIONS                                 */}
-      {/* ========================================================================= */}
-      {activeTab === "event_service" && (
-        <div className="bg-white border border-slate-300 rounded shadow-xs overflow-hidden flex flex-col flex-1 min-h-0">
-          <div className="bg-[#7a0c0c] text-white px-4 py-2 font-bold text-xs flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Radio className="w-4 h-4 text-emerald-400" />
-              <span>Redfish EventService Subscriptions & Webhook Streaming</span>
-            </div>
-            <button
-              onClick={() => setShowAddSubModal(true)}
-              className="px-3 py-1 bg-white text-slate-900 rounded font-bold text-xs flex items-center gap-1.5 cursor-pointer hover:bg-slate-100 transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add Subscription</span>
-            </button>
-          </div>
-
-          <div className="p-4 space-y-4 overflow-y-auto flex-1 text-xs">
-            <div className="bg-blue-50 border border-blue-200 rounded p-3 text-blue-900 flex items-start gap-2">
-              <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-              <div>
-                <strong>Redfish EventService Protocol:</strong> Out-of-band BMCs push real-time alerts, telemetry changes, and lifecycle events over HTTPS POST webhooks directly to registered endpoints.
-              </div>
-            </div>
-
-            <div className="border border-slate-300 rounded overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-slate-100 font-bold text-slate-700 border-b border-slate-300">
-                  <tr>
-                    <th className="p-2.5 border-r border-slate-300">Subscription ID</th>
-                    <th className="p-2.5 border-r border-slate-300">Name / Context</th>
-                    <th className="p-2.5 border-r border-slate-300">Destination Webhook URI</th>
-                    <th className="p-2.5 border-r border-slate-300">Event Types</th>
-                    <th className="p-2.5 border-r border-slate-300">Protocol</th>
-                    <th className="p-2.5 text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {subscriptions.map(sub => (
-                    <tr key={sub.id} className="hover:bg-slate-50">
-                      <td className="p-2.5 border-r border-slate-200 font-mono font-bold text-slate-800">{sub.id}</td>
-                      <td className="p-2.5 border-r border-slate-200 font-bold text-blue-700">{sub.name}</td>
-                      <td className="p-2.5 border-r border-slate-200 font-mono text-slate-700">{sub.destination}</td>
-                      <td className="p-2.5 border-r border-slate-200">
-                        <div className="flex flex-wrap gap-1">
-                          {sub.eventTypes.map(t => (
-                            <span key={t} className="px-2 py-0.5 bg-slate-200 rounded text-[10px] font-bold text-slate-800">
-                              {t}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="p-2.5 border-r border-slate-200 font-mono">{sub.protocol}</td>
-                      <td className="p-2.5 text-center">
-                        <button
-                          onClick={() => handleDeleteSubscription(sub.id)}
-                          className="px-2.5 py-1 bg-red-100 hover:bg-red-200 text-red-800 rounded font-bold text-xs cursor-pointer transition-colors"
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* TAB 3: THRESHOLDS                                                         */}
-      {/* ========================================================================= */}
-      {activeTab === "thresholds" && (
-        <div className="flex-1 bg-white border border-slate-300 rounded p-8 flex items-center justify-center">
-          <div className="text-center space-y-3 max-w-md">
-            <AlertTriangle className="w-12 h-12 text-amber-500 mx-auto" />
-            <h3 className="text-sm font-black uppercase text-slate-800 tracking-wider">Configured Hardware Thresholds</h3>
-            <p className="text-xs text-slate-600 font-medium leading-relaxed">
-              Thermal and power alerting thresholds are active. Critical alerts trigger automatic out-of-band BMC notifications.
-            </p>
-          </div>
-        </div>
-      )}
 
       {/* Event Details Modal */}
       {selectedEventModal && (
