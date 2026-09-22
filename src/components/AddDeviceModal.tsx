@@ -217,35 +217,11 @@ export function AddDeviceModal({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  if (onBackToDevicesNotInHierarchy) {
-                    onBackToDevicesNotInHierarchy();
-                  } else {
-                    onClose();
-                  }
-                }}
-                className="px-3 py-1 text-[11px] font-bold rounded cursor-pointer bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors"
-              >
-                Devices not in Hierarchy
-              </button>
-              <button
-                type="button"
                 className="px-3 py-1 text-[11px] font-bold rounded cursor-pointer bg-[#680505] text-white shadow-xs"
               >
                 Add New Device
               </button>
             </div>
-
-            {onBackToDevicesNotInHierarchy && (
-              <button
-                type="button"
-                onClick={onBackToDevicesNotInHierarchy}
-                className="text-[11px] font-bold text-[#680505] hover:text-[#520000] hover:underline cursor-pointer flex items-center gap-1"
-              >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                <span>Back to Devices not in Hierarchy</span>
-              </button>
-            )}
           </div>
 
           {formError && (

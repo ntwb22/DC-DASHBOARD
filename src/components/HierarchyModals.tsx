@@ -572,31 +572,14 @@ export function AddDeviceHierarchyModal({
     return Array.from(mergedMap.values());
   })();
 
-  // Filter for devices that are NOT currently in the selected target rack, prioritizing unassigned devices
+  // Filter strictly for devices that are NOT currently added in any rack (Devices not in Hierarchy)
   const availableServers = (() => {
-    const unassignedList = allKnownServers.filter(s => {
+    return allKnownServers.filter(s => {
       if (!s) return false;
-      const rawCurrentRack = (s.id && serverRacksMap[s.id]) || (s.bmcIp && serverRacksMap[s.bmcIp]) || s.rack || "";
+      const rawCurrentRack = (s.id && serverRacksMap[s.id]) || (s.bmcIp && serverRacksMap[s.bmcIp]) || (s.ip && serverRacksMap[s.ip]) || s.rack || "";
       const currentRack = String(rawCurrentRack).trim().toLowerCase();
       return !currentRack || currentRack === "unassigned" || currentRack === "not in hierarchy" || currentRack === "none";
     });
-
-    if (unassignedList.length > 0) return unassignedList;
-
-    const list = allKnownServers.filter(s => {
-      if (!s) return false;
-      const rawCurrentRack = (s.id && serverRacksMap[s.id]) || (s.bmcIp && serverRacksMap[s.bmcIp]) || s.rack || "";
-      const currentRack = String(rawCurrentRack).trim().toLowerCase();
-      const targetRack = String(rackName || "").trim().toLowerCase();
-
-      if (!currentRack || currentRack !== targetRack) {
-        return true;
-      }
-      return false;
-    });
-
-    if (list.length > 0) return list;
-    return allKnownServers;
   })();
 
   const [sortCol, setSortCol] = useState<string | null>(null);
@@ -718,15 +701,6 @@ export function AddDeviceHierarchyModal({
         {/* Sub-Tabs & Body */}
         <div className="p-5 space-y-4 font-sans overflow-y-auto flex-1 min-h-0">
           <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
-            <button
-              onClick={() => setTab("existing")}
-              className={`px-4 py-1.5 text-xs font-bold rounded cursor-pointer ${tab === "existing"
-                ? "bg-[#680505] text-white shadow-xs"
-                : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                }`}
-            >
-              Devices not in Hierarchy
-            </button>
             <button
               onClick={() => {
                 onOpenAddNewDeviceModal();

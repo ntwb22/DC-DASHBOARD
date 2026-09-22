@@ -859,7 +859,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
       });
     }
     if (activeCategoryFilter === "Not in Hierarchy") {
-      return servers.filter(s => !serverRacks[s.id] || serverRacks[s.id] === "" || serverRacks[s.id] === "Unassigned");
+      return servers.filter(s => {
+        const rawCurrentRack = (s.id && serverRacks[s.id]) || (s.bmcIp && serverRacks[s.bmcIp]) || s.rack || "";
+        const currentRack = String(rawCurrentRack).trim().toLowerCase();
+        return !currentRack || currentRack === "unassigned" || currentRack === "not in hierarchy" || currentRack === "none";
+      });
     }
     if (activeCategoryFilter === "Connection Lost" || activeCategoryFilter === "Offline") {
       return servers.filter(s => {
@@ -1029,7 +1033,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
   }, [servers]);
 
   const notInHierarchy = useMemo(() => {
-    return servers.filter(s => !serverRacks[s.id] || serverRacks[s.id] === "" || serverRacks[s.id] === "Unassigned").length;
+    return servers.filter(s => {
+      const rawCurrentRack = (s.id && serverRacks[s.id]) || (s.bmcIp && serverRacks[s.bmcIp]) || s.rack || "";
+      const currentRack = String(rawCurrentRack).trim().toLowerCase();
+      return !currentRack || currentRack === "unassigned" || currentRack === "not in hierarchy" || currentRack === "none";
+    }).length;
   }, [servers, serverRacks]);
 
   const healthyCount = Math.max(0, totalDevices - unhealthyCount - connectionLost);
@@ -1706,7 +1714,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             case "Device Statistics":
               colSpanClass = "lg:col-span-12";
               cardContent = (
-                <div className="px-3 py-2 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+                <div className="px-3 py-2 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
                   {/* 1. ONLINE */}
                   <div 
                     onClick={() => setActiveCategoryFilter("Online")} 
@@ -1725,27 +1733,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <div className="flex flex-col leading-tight min-w-0">
                       <span className={`text-xs font-black ${onlineCount > 0 ? "text-emerald-800 dark:text-emerald-300" : "text-slate-800 dark:text-zinc-200"}`}>{onlineCount}</span>
                       <span className="text-[8px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-tight truncate">ONLINE</span>
-                    </div>
-                  </div>
-
-                  {/* 2. NOT IN HIERARCHY */}
-                  <div 
-                    onClick={() => setActiveCategoryFilter("Not in Hierarchy")} 
-                    className={`flex items-center gap-2 p-1.5 rounded-md cursor-pointer transition-all group border ${
-                      notInHierarchy > 0
-                        ? "bg-blue-50/90 dark:bg-blue-950/40 border-blue-400 dark:border-blue-600/80 hover:bg-blue-100 dark:hover:bg-blue-900/60 hover:border-blue-500 shadow-2xs"
-                        : "bg-slate-50/70 dark:bg-zinc-800/40 border-slate-200/80 dark:border-zinc-700/60 hover:border-blue-400 hover:bg-blue-50/40"
-                    }`} 
-                    title="Click to view servers Not in Hierarchy"
-                  >
-                    <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform shadow-2xs ${
-                      notInHierarchy > 0 ? "bg-blue-100 dark:bg-blue-900/80 text-blue-600 dark:text-blue-300" : "bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-400"
-                    }`}>
-                      <Layers className="w-3.5 h-3.5" />
-                    </div>
-                    <div className="flex flex-col leading-tight min-w-0">
-                      <span className={`text-xs font-black ${notInHierarchy > 0 ? "text-blue-800 dark:text-blue-300" : "text-slate-800 dark:text-zinc-200"}`}>{notInHierarchy}</span>
-                      <span className="text-[8px] font-bold text-blue-700 dark:text-blue-400 uppercase tracking-tight truncate">Not in Hierarchy</span>
                     </div>
                   </div>
 
