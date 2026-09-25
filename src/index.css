@@ -474,7 +474,7 @@ textarea {
 
 /* Spacious button states */
 button.py-2,
-button.py-2.5 {
+button[class*="py-2.5"] {
   padding-top: 0.75rem !important;
   padding-bottom: 0.75rem !important;
 }
@@ -1052,4 +1052,21 @@ input:-webkit-autofill:active {
   -webkit-text-fill-color: #0f172a !important;
   caret-color: #0f172a !important;
   transition: background-color 50000s ease-in-out 0s !important;
+}
+
+/* Virtual Scrolling & CSS Content-Visibility Optimization for Zero-Lag Tables */
+.virtual-table-row {
+  content-visibility: auto;
+  contain-intrinsic-size: 1px 36px;
+  contain: layout style paint;
+}
+.virtual-log-row {
+  content-visibility: auto;
+  contain-intrinsic-size: 1px 42px;
+  contain: layout style paint;
+}
+.virtual-card-item {
+  content-visibility: auto;
+  contain-intrinsic-size: 1px 120px;
+  contain: layout style paint;
 }

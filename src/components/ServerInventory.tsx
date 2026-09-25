@@ -7213,7 +7213,7 @@ export const ServerInventory: React.FC<ServerInventoryProps> = ({ service, syste
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-[9.5px]">
                   {selEntries.map((l) => (
-                    <tr key={l.id} className="hover:bg-slate-50/60 transition-all font-mono">
+                    <tr key={l.id} className="hover:bg-slate-50/60 transition-all font-mono virtual-log-row">
                       <td className="py-3.5 px-4">
                         <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider ${
                           l.severity === "Critical" ? "bg-rose-100 text-rose-755 border border-rose-200" :

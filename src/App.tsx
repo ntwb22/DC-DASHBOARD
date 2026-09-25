@@ -48,6 +48,8 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronsRight,
+  ChevronLeft,
+  Menu,
   Search,
   User,
   LogOut,
@@ -289,6 +291,23 @@ export default function App() {
 
   // Sidebar Devices Submenu Expansion State
   const [isDevicesExpanded, setIsDevicesExpanded] = useState<boolean>(true);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("tyrone_sidebar_collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleSidebarCollapse = () => {
+    setIsSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("tyrone_sidebar_collapsed", String(next));
+      } catch (_) {}
+      return next;
+    });
+  };
 
   const [copiedCommand, setCopiedCommand] = useState<boolean>(false);
   const [showChatbot, setShowChatbot] = useState<boolean>(false);
@@ -321,6 +340,36 @@ export default function App() {
 
   // Help Dropdown & Modals State
   const [isHelpDropdownOpen, setIsHelpDropdownOpen] = useState<boolean>(false);
+  const [isUserPopoverOpen, setIsUserPopoverOpen] = useState<boolean>(false);
+  const [userIp, setUserIp] = useState<string | null>(null);
+  const [loadingIp, setLoadingIp] = useState<boolean>(false);
+  const [copiedIp, setCopiedIp] = useState<boolean>(false);
+
+  const fetchUserIp = async () => {
+    setLoadingIp(true);
+    try {
+      const res = await fetch("/api/user-ip");
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.ip) {
+          setUserIp(data.ip);
+          setLoadingIp(false);
+          return;
+        }
+      }
+    } catch { }
+
+    if (window.location.hostname && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+      setUserIp(window.location.hostname);
+    } else {
+      setUserIp("127.0.0.1");
+    }
+    setLoadingIp(false);
+  };
+
+  useEffect(() => {
+    fetchUserIp();
+  }, []);
   const [isAboutModalOpen, setIsAboutModalOpen] = useState<boolean>(false);
   const [isUserGuideModalOpen, setIsUserGuideModalOpen] = useState<boolean>(false);
   const [isReleaseNotesModalOpen, setIsReleaseNotesModalOpen] = useState<boolean>(false);
@@ -638,6 +687,7 @@ export default function App() {
       fetchServers();
     };
     window.addEventListener("fleet-updated", handleFleetUpdate);
+    window.addEventListener("inventory-updated", handleFleetUpdate);
 
     const handleTabChange = (e: any) => {
       if (e.detail) setActiveTab(e.detail);
@@ -671,6 +721,7 @@ export default function App() {
     return () => {
       telemetryWsService.disconnect();
       window.removeEventListener("fleet-updated", handleFleetUpdate);
+      window.removeEventListener("inventory-updated", handleFleetUpdate);
       window.removeEventListener("change-tab", handleTabChange);
       window.removeEventListener("hashchange", handleHashChange);
       window.removeEventListener("hardware-event", handleHardwareEvent);
@@ -696,10 +747,10 @@ export default function App() {
     }
   }, [activeServerId]);
 
-  const handleSelectServer = (id: string) => {
+  const handleSelectServer = React.useCallback((id: string) => {
     setActiveServerId(id);
     setActiveTab("hierarchy");
-  };
+  }, []);
 
   const handleAddNodeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1206,17 +1257,25 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#dce1e7] text-slate-800 flex flex-col font-sans relative">
+    <div className="h-screen bg-[#dce1e7] text-slate-800 flex flex-col font-sans relative overflow-hidden">
       {/* Top Red Header Bar - Tyrone Data Center Manager Console */}
-      <header className="relative bg-[#680505] text-white h-16 md:h-18 px-4 md:px-6 border-b border-[#4d0000] sticky top-0 z-50 flex items-center justify-between shadow-md select-none">
+      <header className="relative bg-[#680505] text-white h-16 md:h-18 px-4 md:px-6 border-b border-[#4d0000] shrink-0 z-50 flex items-center justify-between shadow-md select-none">
         {/* Subtle datacenter rack background overlay */}
         <div
           className="absolute inset-0 bg-cover bg-center opacity-20 mix-blend-overlay pointer-events-none overflow-hidden"
           style={{ backgroundImage: `url('/login-bg.png')` }}
         />
 
-        {/* Left Balanced Branding Group: Tyrone Logo + Vertical Divider + Core Console Subtitle */}
-        <div className="relative z-10 flex items-center gap-3.5 md:gap-4 h-full">
+        {/* Left Balanced Branding Group: Collapse Menu Button + Tyrone Logo + Vertical Divider + Core Console Subtitle */}
+        <div className="relative z-10 flex items-center gap-3 md:gap-3.5 h-full">
+          <button
+            onClick={toggleSidebarCollapse}
+            className="p-1.5 text-white/90 hover:text-white hover:bg-white/10 rounded-md transition-colors cursor-pointer shrink-0 flex items-center justify-center focus:outline-none"
+            title={isSidebarCollapsed ? "Expand sidebar menu" : "Collapse sidebar menu"}
+            aria-label="Toggle collapse menu"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
           <img 
             src="/tyrone-logo.png" 
             alt="Tyrone Logo" 
@@ -1254,9 +1313,81 @@ export default function App() {
 
             <div className="h-4 md:h-5 w-px bg-white/30 shrink-0" />
 
-            <div className="flex items-center gap-1.5 leading-none">
-              <User className="w-3.5 h-3.5 md:w-4 md:h-4 text-white/90 shrink-0" />
-              <span className="font-semibold text-white leading-none">{loginUsername || "admin"}</span>
+            {/* User Profile / Logged In IP Popover Dropdown */}
+            <div className="relative flex items-center">
+              <button
+                onClick={() => {
+                  const nextState = !isUserPopoverOpen;
+                  setIsUserPopoverOpen(nextState);
+                  if (nextState && !userIp) {
+                    fetchUserIp();
+                  }
+                }}
+                className="flex items-center gap-1.5 leading-none hover:text-white/80 cursor-pointer focus:outline-none transition-colors"
+                title="Click to view logged in user IP & profile"
+              >
+                <User className="w-3.5 h-3.5 md:w-4 md:h-4 text-white/90 shrink-0" />
+                <span className="font-semibold text-white leading-none">{loginUsername || "admin"}</span>
+                {userIp && <span className="text-[11px] text-red-200 font-mono bg-red-950/60 px-1.5 py-0.5 rounded border border-red-500/30">({userIp})</span>}
+                <ChevronDown className={`w-3 h-3 text-white/70 transition-transform shrink-0 ${isUserPopoverOpen ? "rotate-180" : ""}`} />
+              </button>
+
+              {isUserPopoverOpen && (
+                <>
+                  {/* Invisible backdrop to dismiss popover */}
+                  <div
+                    className="fixed inset-0 z-[55]"
+                    onClick={() => setIsUserPopoverOpen(false)}
+                  />
+                  <div className="absolute right-0 top-full mt-2 w-64 bg-slate-900 text-white rounded-lg shadow-2xl border border-slate-700/80 p-3.5 z-[60] text-xs font-sans animate-fade-in">
+                    <div className="flex items-center gap-2.5 pb-2.5 border-b border-slate-800 mb-3">
+                      <div className="w-8 h-8 rounded-full bg-red-600/30 text-red-400 border border-red-500/40 flex items-center justify-center font-bold text-sm shrink-0">
+                        {(loginUsername || "admin")[0].toUpperCase()}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-bold text-white truncate text-sm">{loginUsername || "admin"}</div>
+                        <div className="text-[11px] text-slate-400 font-medium">Administrator</div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      <div className="bg-slate-800/90 rounded-md p-2.5 border border-slate-700/60">
+                        <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider mb-1 flex items-center justify-between">
+                          <span>Logged In User IP</span>
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono text-sm text-emerald-400 font-bold tracking-wide">
+                            {loadingIp ? "Fetching..." : (userIp || "127.0.0.1")}
+                          </span>
+                          <button
+                            onClick={() => {
+                              const ipToCopy = userIp || "127.0.0.1";
+                              navigator.clipboard.writeText(ipToCopy);
+                              setCopiedIp(true);
+                              setTimeout(() => setCopiedIp(false), 2000);
+                            }}
+                            className="px-2 py-1 text-[11px] bg-slate-700 hover:bg-slate-600 text-slate-200 rounded transition-colors font-sans flex items-center gap-1 shrink-0 cursor-pointer"
+                            title="Copy IP Address"
+                          >
+                            {copiedIp ? (
+                              <>
+                                <Check className="w-3 h-3 text-emerald-400" />
+                                <span className="text-emerald-400 font-medium">Copied</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3 text-slate-300" />
+                                <span>Copy</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="h-4 md:h-5 w-px bg-white/30 shrink-0" />
@@ -1287,7 +1418,7 @@ export default function App() {
                     className="fixed inset-0 z-[55]"
                     onClick={() => setIsHelpDropdownOpen(false)}
                   />
-                  <div className="absolute right-0 mt-2 w-44 bg-white rounded-md shadow-2xl border border-slate-200 py-1.5 z-[60] text-slate-800 animate-fade-in text-xs font-normal">
+                  <div className="absolute right-0 top-full mt-2 w-44 bg-white rounded-md shadow-2xl border border-slate-200 py-1.5 z-[60] text-slate-800 animate-fade-in text-xs font-normal overflow-hidden">
                     <button
                       onClick={() => {
                         setIsHelpDropdownOpen(false);
@@ -1327,25 +1458,55 @@ export default function App() {
       {/* Main Container Layout with Left Navigation Sidebar */}
       <div className="flex-1 flex min-h-0 relative overflow-hidden">
         {/* Left Sidebar Menu Panel - Red Theme matching exact reference format */}
-        <aside className="w-48 sm:w-52 bg-[#680505] text-white flex flex-col shrink-0 border-r border-[#4d0000] font-semibold select-none z-20 overflow-y-auto max-h-[calc(100vh-38px)]">
-          <div className="py-0.5 space-y-0.5">
+        <aside
+          className={`${
+            isSidebarCollapsed ? "w-14 sm:w-16" : "w-48 sm:w-52"
+          } transition-all duration-200 bg-[#680505] text-white flex flex-col shrink-0 border-r border-[#4d0000] font-semibold select-none z-20 h-full overflow-hidden`}
+        >
+          <div className="py-1 space-y-0.5 overflow-y-auto flex-1">
             {sidebarTabs.map((t) => {
               const Icon = t.icon;
-              const isActive = activeTab === t.id || (t.id === "global_inventory" && activeTab === "inventory_details");
+              const isActive =
+                activeTab === t.id ||
+                (t.id === "global_inventory" && activeTab === "inventory_details");
               return (
                 <button
                   key={t.id}
                   onClick={() => setActiveTab(t.id as any)}
-                  className={`w-full px-4 py-2.5 text-left flex items-center justify-between cursor-pointer transition-colors ${isActive
+                  title={isSidebarCollapsed ? t.label : undefined}
+                  className={`w-full text-left flex items-center cursor-pointer transition-colors ${
+                    isSidebarCollapsed
+                      ? "justify-center px-2 py-3"
+                      : "justify-between px-4 py-2.5"
+                  } ${
+                    isActive
                       ? "bg-[#e3e8ee] text-[#680505] font-bold shadow-xs"
                       : "text-white hover:bg-[#520000]"
-                    }`}
+                  }`}
                 >
-                  <div className="flex items-center gap-3">
-                    <Icon className={`w-4.5 h-4.5 shrink-0 ${isActive ? "text-[#680505]" : "text-white"}`} />
-                    <span className="text-sm font-bold tracking-tight">{t.label}</span>
+                  <div
+                    className={`flex items-center ${
+                      isSidebarCollapsed ? "justify-center" : "gap-3 min-w-0"
+                    }`}
+                  >
+                    <Icon
+                      className={`w-4.5 h-4.5 shrink-0 ${
+                        isActive ? "text-[#680505]" : "text-white"
+                      }`}
+                    />
+                    {!isSidebarCollapsed && (
+                      <span className="text-sm font-bold tracking-tight truncate">
+                        {t.label}
+                      </span>
+                    )}
                   </div>
-                  <ChevronsRight className={`w-4 h-4 shrink-0 ${isActive ? "text-[#680505]" : "text-white"}`} />
+                  {!isSidebarCollapsed && (
+                    <ChevronsRight
+                      className={`w-4 h-4 shrink-0 ${
+                        isActive ? "text-[#680505]" : "text-white"
+                      }`}
+                    />
+                  )}
                 </button>
               );
             })}
@@ -1353,7 +1514,7 @@ export default function App() {
         </aside>
 
         {/* Right Main Workplace Area - Scrollable */}
-        <main className="flex-1 overflow-y-auto max-h-[calc(100vh-40px)] p-2 sm:p-3 bg-[#dce1e7] flex flex-col justify-start min-h-0">
+        <main className="flex-1 overflow-y-auto p-2 sm:p-3 bg-[#dce1e7] flex flex-col justify-start min-h-0 h-full">
           {loading ? (
             <div className="flex flex-col items-center justify-center py-24 space-y-4">
               <RefreshCw className="w-8 h-8 text-[#7a0c0c] animate-spin" />

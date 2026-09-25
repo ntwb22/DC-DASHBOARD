@@ -192,6 +192,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
     return dashAvailableRacks.length > 0 ? dashAvailableRacks[0] : "";
   });
 
+  // Selected server filter state for Component Health Summary
+  const [selectedHealthServerIp, setSelectedHealthServerIp] = useState<string>("All");
+
   useEffect(() => {
     if (dashAvailableRacks.length > 0) {
       if (!dashSelectedRack || !dashAvailableRacks.includes(dashSelectedRack)) {
@@ -820,18 +823,24 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   // Gadget Order State for Drag & Drop Movable Cards
   const [gadgetOrder, setGadgetOrder] = useState<string[]>(() => {
-    let order: string[] = ALL_GADGETS;
     try {
+      const savedVersion = localStorage.getItem("tyrone_gadget_order_ver");
+      if (savedVersion !== "v4") {
+        localStorage.setItem("tyrone_gadget_order_ver", "v4");
+        localStorage.setItem("tyrone_gadget_order", JSON.stringify(ALL_GADGETS));
+        return ALL_GADGETS;
+      }
       const saved = localStorage.getItem("tyrone_gadget_order");
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const missing = ALL_GADGETS.filter(g => !parsed.includes(g));
-          order = [...parsed, ...missing];
+          const validSaved = parsed.filter(g => ALL_GADGETS.includes(g));
+          const missing = ALL_GADGETS.filter(g => !validSaved.includes(g));
+          return [...validSaved, ...missing];
         }
       }
     } catch (_) {}
-    return order;
+    return ALL_GADGETS;
   });
 
 
@@ -1877,7 +1886,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               break;
 
             case "Power Capacity":
-              colSpanClass = "lg:col-span-4";
+              colSpanClass = "lg:col-span-6";
               cardContent = (
                 <div className="p-4 flex-1 flex flex-col justify-between space-y-3 font-sans">
                   <div className="flex items-center justify-between">
@@ -1891,12 +1900,49 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <span>Used: {(dashUsedPowerW / 1000).toFixed(2)} kW</span>
                     <span>Headroom: {Math.max(0, (dashPowerW - dashUsedPowerW) / 1000).toFixed(2)} kW</span>
                   </div>
+
+                  {/* Small Dot Graph (Power Load Trend) */}
+                  <div className="pt-2 border-t border-slate-100 dark:border-zinc-800/80">
+                    <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 dark:text-zinc-400 mb-1">
+                      <span className="uppercase tracking-wider">Power Load Trend (Dots Graph)</span>
+                      <span className="text-emerald-500 font-mono flex items-center gap-1 text-[9px]">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping inline-block" /> Live
+                      </span>
+                    </div>
+                    <div className="w-full h-14">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={powerTrendData} margin={{ top: 6, right: 6, left: 6, bottom: 4 }}>
+                          <Tooltip
+                            content={({ active, payload }) => {
+                              if (active && payload && payload.length) {
+                                return (
+                                  <div className="bg-slate-900/95 text-white px-2 py-1 rounded text-[10px] font-mono shadow-lg border border-slate-700">
+                                    <span className="text-amber-400 font-bold">{payload[0].value} W</span>
+                                  </div>
+                                );
+                              }
+                              return null;
+                            }}
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="power"
+                            stroke="#f59e0b"
+                            strokeWidth={1.5}
+                            strokeDasharray="2 2"
+                            dot={{ r: 3.5, fill: "#10b981", stroke: "#047857", strokeWidth: 1.5 }}
+                            activeDot={{ r: 5.5, fill: "#ef4444", stroke: "#ffffff", strokeWidth: 2 }}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
                 </div>
               );
               break;
 
             case "Space Capacity":
-              colSpanClass = "lg:col-span-4";
+              colSpanClass = "lg:col-span-6";
               cardContent = (
                 <div className="p-4 flex-1 flex flex-col justify-between space-y-3 font-sans">
                   <div className="flex items-center justify-between">
@@ -1910,12 +1956,54 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <span>Rack Limit: {dashSpaceU} U</span>
                     <span>Free: {Math.max(0, dashSpaceU - dashUsedSpaceU)} U</span>
                   </div>
+
+                  {/* Pie Chart Section */}
+                  <div className="pt-2 border-t border-slate-100 dark:border-zinc-800/80 flex items-center justify-between gap-2">
+                    <div className="w-16 h-16 shrink-0">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={[
+                              { name: "Used Space", value: dashUsedSpaceU || 1 },
+                              { name: "Free Space", value: Math.max(0, dashSpaceU - dashUsedSpaceU) }
+                            ]}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={14}
+                            outerRadius={28}
+                            paddingAngle={3}
+                            dataKey="value"
+                          >
+                            <Cell key="used" fill="#6366f1" />
+                            <Cell key="free" fill="#cbd5e1" />
+                          </Pie>
+                          <Tooltip formatter={(val: any, name: any) => [`${val} U`, name]} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="flex-1 space-y-1 text-xs">
+                      <div className="flex justify-between items-center text-[11px]">
+                        <span className="flex items-center gap-1.5 text-slate-600 dark:text-zinc-400 font-medium">
+                          <span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" />
+                          Used Space:
+                        </span>
+                        <span className="font-bold text-indigo-600 dark:text-indigo-400">{dashUsedSpaceU} U</span>
+                      </div>
+                      <div className="flex justify-between items-center text-[11px]">
+                        <span className="flex items-center gap-1.5 text-slate-600 dark:text-zinc-400 font-medium">
+                          <span className="w-2 h-2 rounded-full bg-slate-300 dark:bg-zinc-600 inline-block" />
+                          Free Space:
+                        </span>
+                        <span className="font-bold text-slate-700 dark:text-zinc-300">{Math.max(0, dashSpaceU - dashUsedSpaceU)} U</span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               );
               break;
 
             case "Weight Capacity":
-              colSpanClass = "lg:col-span-4";
+              colSpanClass = "lg:col-span-6";
               cardContent = (
                 <div className="p-4 flex-1 flex flex-col justify-between space-y-3 font-sans">
                   <div className="flex items-center justify-between">
@@ -1928,6 +2016,48 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <div className="flex justify-between text-[11px] font-semibold text-slate-500 dark:text-zinc-400">
                     <span>Floor Limit: {dashWeightKg} kg</span>
                     <span>Margin: {Math.max(0, dashWeightKg - dashUsedWeightKg)} kg</span>
+                  </div>
+
+                  {/* Pie Chart Section */}
+                  <div className="pt-2 border-t border-slate-100 dark:border-zinc-800/80 flex items-center justify-between gap-2">
+                    <div className="w-16 h-16 shrink-0">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={[
+                              { name: "Used Weight", value: dashUsedWeightKg || 1 },
+                              { name: "Weight Margin", value: Math.max(0, dashWeightKg - dashUsedWeightKg) }
+                            ]}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={14}
+                            outerRadius={28}
+                            paddingAngle={3}
+                            dataKey="value"
+                          >
+                            <Cell key="used" fill="#06b6d4" />
+                            <Cell key="margin" fill="#cbd5e1" />
+                          </Pie>
+                          <Tooltip formatter={(val: any, name: any) => [`${val} kg`, name]} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="flex-1 space-y-1 text-xs">
+                      <div className="flex justify-between items-center text-[11px]">
+                        <span className="flex items-center gap-1.5 text-slate-600 dark:text-zinc-400 font-medium">
+                          <span className="w-2 h-2 rounded-full bg-cyan-500 inline-block" />
+                          Current Weight:
+                        </span>
+                        <span className="font-bold text-cyan-600 dark:text-cyan-400">{dashUsedWeightKg} kg</span>
+                      </div>
+                      <div className="flex justify-between items-center text-[11px]">
+                        <span className="flex items-center gap-1.5 text-slate-600 dark:text-zinc-400 font-medium">
+                          <span className="w-2 h-2 rounded-full bg-slate-300 dark:bg-zinc-600 inline-block" />
+                          Safety Margin:
+                        </span>
+                        <span className="font-bold text-slate-700 dark:text-zinc-300">{Math.max(0, dashWeightKg - dashUsedWeightKg)} kg</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               );
@@ -1981,23 +2111,61 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
             case "Component Health Summary":
               colSpanClass = "lg:col-span-6";
+
+              const targetHealthServer = selectedHealthServerIp !== "All"
+                ? servers.find((s: any) => (s.bmcIp || s.ip || s.id) === selectedHealthServerIp)
+                : null;
+
+              const nodeStatusObj = targetHealthServer
+                ? (serverStatuses?.[targetHealthServer.id] || serverStatuses?.[targetHealthServer.bmcIp] || {})
+                : null;
+
+              const isOffline = nodeStatusObj?.status === "Offline";
+              const isWarning = nodeStatusObj?.status === "Warning";
+              const isCritical = nodeStatusObj?.status === "Critical";
+
+              const cpuStatus = isCritical ? "Critical" : isWarning ? "Warning" : isOffline ? "Offline" : "OK";
+              const memStatus = isCritical ? "Degraded" : isWarning ? "Warning" : isOffline ? "Offline" : "OK";
+              const psuStatus = isCritical ? "Warning" : isOffline ? "Offline" : "OK";
+              const fanStatus = isWarning ? "Warning" : isOffline ? "Offline" : "OK";
+
+              const getBadge = (status: string) => {
+                if (status === "OK") {
+                  return <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px] font-bold rounded">OK</span>;
+                } else if (status === "Warning" || status === "Degraded") {
+                  return <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 text-[10px] font-bold rounded">{status}</span>;
+                } else if (status === "Critical") {
+                  return <span className="px-1.5 py-0.5 bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300 text-[10px] font-bold rounded">CRITICAL</span>;
+                } else {
+                  return <span className="px-1.5 py-0.5 bg-slate-100 text-slate-600 dark:bg-zinc-800 dark:text-zinc-400 text-[10px] font-bold rounded">OFFLINE</span>;
+                }
+              };
+
               cardContent = (
-                <div className="p-4 flex-1 grid grid-cols-2 gap-2 font-sans text-xs">
-                  <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700">
-                    <span className="font-bold text-slate-700 dark:text-zinc-300">CPUs</span>
-                    <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px] font-bold rounded">OK</span>
-                  </div>
-                  <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700">
-                    <span className="font-bold text-slate-700 dark:text-zinc-300">Memory</span>
-                    <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px] font-bold rounded">OK</span>
-                  </div>
-                  <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700">
-                    <span className="font-bold text-slate-700 dark:text-zinc-300">PSUs</span>
-                    <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px] font-bold rounded">OK</span>
-                  </div>
-                  <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700">
-                    <span className="font-bold text-slate-700 dark:text-zinc-300">Fans</span>
-                    <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px] font-bold rounded">OK</span>
+                <div className="p-3.5 flex-1 flex flex-col justify-between space-y-2.5 font-sans text-xs">
+                  {targetHealthServer && (
+                    <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 dark:text-zinc-400 pb-1.5 border-b border-slate-100 dark:border-zinc-800">
+                      <span>Node: <strong className="text-slate-800 dark:text-zinc-200">{targetHealthServer.name || targetHealthServer.bmcIp}</strong></span>
+                      <span className="font-mono text-[10px] bg-slate-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded border border-slate-200 dark:border-zinc-700">{targetHealthServer.bmcIp}</span>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700">
+                      <span className="font-bold text-slate-700 dark:text-zinc-300">CPUs</span>
+                      {getBadge(cpuStatus)}
+                    </div>
+                    <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700">
+                      <span className="font-bold text-slate-700 dark:text-zinc-300">Memory</span>
+                      {getBadge(memStatus)}
+                    </div>
+                    <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700">
+                      <span className="font-bold text-slate-700 dark:text-zinc-300">PSUs</span>
+                      {getBadge(psuStatus)}
+                    </div>
+                    <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-zinc-800/60 rounded border border-slate-200 dark:border-zinc-700">
+                      <span className="font-bold text-slate-700 dark:text-zinc-300">Fans</span>
+                      {getBadge(fanStatus)}
+                    </div>
                   </div>
                 </div>
               );
@@ -2057,6 +2225,27 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     ) : (
                       <span className="text-[10px] font-medium text-slate-500 dark:text-zinc-400 italic">No Racks Present</span>
                     )}
+                  </div>
+                )}
+                {gadgetName === "Component Health Summary" && (
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-[10px] font-bold text-slate-700 dark:text-zinc-300 normal-case tracking-normal">Server:</label>
+                    <select
+                      value={selectedHealthServerIp}
+                      onChange={(e) => setSelectedHealthServerIp(e.target.value)}
+                      className="px-1.5 py-0.5 bg-white dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded font-bold text-slate-800 dark:text-white focus:outline-none text-[10px] cursor-pointer max-w-[160px] truncate"
+                    >
+                      <option value="All">All Servers ({servers.length})</option>
+                      {servers.map((s: any) => {
+                        const ip = s.bmcIp || s.ip || s.id;
+                        const name = s.name || ip;
+                        return (
+                          <option key={s.id || ip} value={ip}>
+                            {name} ({ip})
+                          </option>
+                        );
+                      })}
+                    </select>
                   </div>
                 )}
                 {gadgetName === "Device Statistics" && (

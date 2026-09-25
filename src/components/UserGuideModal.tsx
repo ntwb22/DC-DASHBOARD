@@ -27,7 +27,7 @@ export function UserGuideModal({ isOpen, onClose }: UserGuideModalProps) {
         <div className="bg-[#680505] text-white px-4 py-2.5 flex items-center justify-between select-none border-b border-[#4d0000]">
           <div className="flex items-center gap-2">
             <BookOpen className="w-4 h-4 text-red-200" />
-            <h2 className="text-sm font-bold tracking-wide">Tyrone TCM User Guide & Documentation</h2>
+            <h2 className="text-sm font-bold tracking-wide">Tyrone Core Console User Guide & Documentation</h2>
           </div>
           <button
             onClick={onClose}
@@ -82,7 +82,7 @@ export function UserGuideModal({ isOpen, onClose }: UserGuideModalProps) {
                   1. Dashboard Overview
                 </h3>
                 <p className="text-slate-700 mb-2">
-                  Tyrone Data Center Manager (TCM) provides unified fleet management, real-time Redfish sensor telemetry, rack hierarchy visualization, and AI-driven predictive anomaly detection for enterprise data centers.
+                  Tyrone Core Console provides unified fleet management, real-time Redfish sensor telemetry, rack hierarchy visualization, and AI-driven predictive anomaly detection for enterprise data centers.
                 </p>
                 <ul className="list-disc pl-5 space-y-1 text-slate-600">
                   <li><strong>Global Navigation Bar:</strong> Top quick search, user profile, logout, and Help menu.</li>
@@ -98,7 +98,7 @@ export function UserGuideModal({ isOpen, onClose }: UserGuideModalProps) {
                   2. Server Management & BMC Discovery
                 </h3>
                 <p className="text-slate-700 mb-2">
-                  Add server nodes by specifying BMC IPv4 addresses or hostname credentials. TCM automatically queries standard Redfish endpoints.
+                  Add server nodes by specifying BMC IPv4 addresses or hostname credentials. Tyrone Core Console automatically queries standard Redfish endpoints.
                 </p>
                 <div className="bg-slate-50 border border-slate-200 p-3 rounded space-y-1 text-slate-700">
                   <div className="font-semibold text-slate-800">Supported Power Actions:</div>
@@ -115,7 +115,7 @@ export function UserGuideModal({ isOpen, onClose }: UserGuideModalProps) {
                   3. Redfish Telemetry & Hardware Health
                 </h3>
                 <p className="text-slate-700 mb-2">
-                  TCM polls chassis temperatures, fan RPM, voltage rails, CPU/RAM utilization, and storage disk SMART statuses every 5 seconds.
+                  Tyrone Core Console polls chassis temperatures, fan RPM, voltage rails, CPU/RAM utilization, and storage disk SMART statuses every 5 seconds.
                 </p>
                 <p className="text-slate-600">
                   Thermal warnings are highlighted in orange (&gt; 75°C) and critical alerts in red (&gt; 85°C).

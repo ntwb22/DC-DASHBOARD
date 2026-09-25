@@ -613,7 +613,7 @@ export function DataCenter3D({
                       >
                         {/* Door handle latch and logo stamp */}
                         <div className="absolute right-1 top-1/2 -translate-y-1/2 w-1 h-8 bg-zinc-800 border border-zinc-700 rounded-sm shadow" />
-                        <div className="absolute left-1 bottom-1.5 text-[5px] text-purple-400/50 font-mono scale-[0.8] tracking-widest font-black uppercase">TCM-3D</div>
+                        <div className="absolute left-1 bottom-1.5 text-[5px] text-purple-400/50 font-mono scale-[0.8] tracking-widest font-black uppercase">CoreConsole-3D</div>
                       </div>
                     </div>
                   </div>

@@ -368,6 +368,27 @@ async function startServer() {
     res.json([]);
   });
 
+  app.get(["/api/user-ip", "/api/client-ip"], (req, res) => {
+    const forwarded = req.headers["x-forwarded-for"];
+    let ip = typeof forwarded === "string" ? forwarded.split(",")[0].trim() : req.socket.remoteAddress || req.ip || "127.0.0.1";
+    if (ip === "::1" || ip === "::ffff:127.0.0.1" || ip === "127.0.0.1" || ip === "localhost") {
+      const os = require("os");
+      const interfaces = os.networkInterfaces();
+      let foundIp = "";
+      for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name] || []) {
+          if (iface.family === "IPv4" && !iface.internal) {
+            foundIp = iface.address;
+            break;
+          }
+        }
+        if (foundIp) break;
+      }
+      ip = foundIp || "127.0.0.1";
+    }
+    res.json({ ip, username: "admin" });
+  });
+
   // --- LOCAL DATA API (For Offline/Standalone Mode using SQL SQLite) ---
   app.get("/api/local/fleet", (req, res) => {
     db.all("SELECT * FROM fleet", (err: any, rows: any[]) => {

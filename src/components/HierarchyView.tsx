@@ -81,6 +81,67 @@ export interface HierarchyViewProps {
   onEditServer?: (server: ServerProfile) => void;
 }
 
+// 1. React.memo: Navigation Tree Node Component for Left Sidebar Tree
+export const NavigationServerItem = React.memo(function NavigationServerItem({
+  sId,
+  sName,
+  isActive,
+  onSelect
+}: {
+  sId: string;
+  sName: string;
+  isActive: boolean;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div
+      onClick={() => onSelect(sId)}
+      className={`px-3 py-1.5 rounded cursor-pointer font-medium flex items-center justify-between gap-2 transition-all virtual-table-row ${
+        isActive ? "bg-[#7a0c0c] text-white font-bold shadow-sm" : "hover:bg-slate-200/70 text-slate-700"
+      }`}
+    >
+      <div className="flex items-center gap-2 truncate">
+        <Server className="w-3.5 h-3.5 shrink-0 opacity-80" />
+        <span className="truncate">{sName}</span>
+      </div>
+      {isActive && <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" title="Active Server" />}
+    </div>
+  );
+});
+
+// 2. React.memo: Navigation Device Card Node Component for Layout Graph Grid
+export const NavigationDeviceCard = React.memo(function NavigationDeviceCard({
+  srv,
+  isActive,
+  onSelect
+}: {
+  srv: ServerProfile;
+  isActive: boolean;
+  onSelect: (id: string, srv: ServerProfile) => void;
+}) {
+  const isPowerOn = (srv as any).powerState !== "Off";
+  return (
+    <div
+      onClick={() => onSelect(srv.id, srv)}
+      className={`p-2 rounded border border-slate-300 bg-white hover:border-[#7a0c0c] cursor-pointer shadow-xs transition-all flex items-center justify-between virtual-card-item ${
+        isActive ? "ring-2 ring-[#7a0c0c] bg-red-50/70 font-bold" : ""
+      }`}
+    >
+      <div className="flex items-center gap-2 truncate">
+        <Cpu className="w-3.5 h-3.5 text-slate-700 shrink-0" />
+        <div className="flex flex-col truncate">
+          <span className="font-bold text-slate-900 truncate">{srv.name}</span>
+          <span className="font-mono text-[10px] text-blue-600 truncate">{srv.bmcIp}</span>
+        </div>
+      </div>
+      <span
+        className={`w-2.5 h-2.5 rounded-full shrink-0 ${isPowerOn ? "bg-emerald-500" : "bg-slate-400"}`}
+        title={isPowerOn ? "Power On" : "Power Off"}
+      />
+    </div>
+  );
+});
+
 export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServer, onOpenInventoryDetails, selectedServerId, alerts = [], onEditServer }: HierarchyViewProps) {
   const [topTab, setTopTab] = useState<"datacenter" | "layout" | "capacity">("datacenter");
   const [selectedDC, setSelectedDC] = useState<string>("DC1");
@@ -100,9 +161,9 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
   const [treeSearchQuery, setTreeSearchQuery] = useState<string>("");
   const [selectedInspectNode, setSelectedInspectNode] = useState<{ type: string; name: string; id: string; bmcIp?: string; power?: string; server?: any } | null>(null);
 
-  const toggleTreeNode = (id: string) => {
+  const toggleTreeNode = React.useCallback((id: string) => {
     setExpandedTreeNodes(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
-  };
+  }, []);
   const [inventoryCategory, setInventoryCategory] = useState<"summary" | "processor" | "memory" | "storage" | "hba" | "virtual_media" | "host_nic" | "fan" | "sensors" | "logs" | "firmware" | "peripheral">("processor");
   const [selectedSubItem, setSelectedSubItem] = useState<string>("CPU 1");
   const [selectedSubItemIndex, setSelectedSubItemIndex] = useState<number>(0);
@@ -119,6 +180,8 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
   const [showFlightRecorderModal, setShowFlightRecorderModal] = useState<boolean>(false);
   const [statusFilterCategory, setStatusFilterCategory] = useState<"all" | "on" | "off" | "unknown" | "conn_lost" | "unmonitored">("all");
   const [inspectSubsystem, setInspectSubsystem] = useState<any | null>(null);
+  const [tempModalSearch, setTempModalSearch] = useState<string>("");
+  const [tempModalFilter, setTempModalFilter] = useState<"all" | "normal" | "warning" | "critical">("all");
 
   // Table header sorting states
   const [unaddedSortCol, setUnaddedSortCol] = useState<string | null>(null);
@@ -1649,6 +1712,8 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
       const procs = await service.getProcessors(sysUri).catch(() => []);
       const mem = await service.getMemory(sysUri).catch(() => []);
       const storage = await service.getStorageDetails(sysUri).catch(() => []);
+      const hbas = await service.getHBAs(sysUri).catch(() => []);
+      const pcieDevs = await service.getPCIeDevices(sysUri).catch(() => []);
       const nics = await service.getEthernetInterfaces(sysUri).catch(() => []);
       const chassisUri = await service.resolveChassisId();
       const thermal = await service.getThermal(chassisUri).catch(() => null);
@@ -1658,7 +1723,15 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
       const managers = await service.getManagers().catch(() => []);
       const fetchedLogs = await service.getEventLogs(sysUri).catch(() => []);
       if (Array.isArray(fetchedLogs) && fetchedLogs.length > 0) {
-        setRealFetchedEvents(fetchedLogs);
+        const normalizedEvents = fetchedLogs.map((evt: any, idx: number) => ({
+          ip: evt.server || evt.ip || bmcIp,
+          code: evt.code || evt.Code || evt.Id || evt.MessageId || `EVT-${idx + 1}`,
+          detail: evt.detail || evt.Message || evt.Description || evt.Name || "System Event Log entry recorded out-of-band",
+          timestamp: evt.timestamp || (evt.Created ? evt.Created.replace("T", " ").slice(0, 19) : new Date().toISOString().replace("T", " ").slice(0, 19)),
+          severity: evt.severity || evt.Severity || "OK",
+          count: evt.count || 1
+        }));
+        setRealFetchedEvents(normalizedEvents);
       }
       const managerObj = managers.length > 0 ? managers[0] : null;
 
@@ -1755,8 +1828,8 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
         processors: procs,
         memory: mem,
         storage: storage,
-        hbas: [],
-        pcieDevices: [],
+        hbas: hbas.length > 0 ? hbas : (storage.flatMap((s: any) => s.ControllerDetails || s.StorageControllers || []).filter(Boolean)),
+        pcieDevices: pcieDevs,
         pcieSlots: [],
         nics: nics,
         fans: thermal?.Fans || [],
@@ -1805,10 +1878,17 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [showHighTempModal]);
 
-  const handleServerClick = (id: string) => {
+  const [isPendingSelection, startTransition] = React.useTransition();
+
+  const handleServerClick = React.useCallback((id: string) => {
+    // 1. Instant local optimistic highlight state update (zero-lag UI response)
     setActiveServerId(id);
-    onSelectServer(id);
-  };
+
+    // 2. Non-blocking transition for heavy parent telemetry & server status fetches
+    startTransition(() => {
+      onSelectServer(id);
+    });
+  }, [onSelectServer]);
 
   return (
     <div className="flex-1 flex flex-col overflow-y-auto bg-[#dce1e7] text-slate-800 text-xs select-none p-2 space-y-2 w-full h-full">
@@ -2297,21 +2377,16 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
                       return rackServers.map(server => {
                         if (!server) return null;
-                        const sId = server.id || server.bmcIp || server.ip || `srv-${Math.random()}`;
+                        const sId = server.id || server.bmcIp || (server as any).ip || "srv";
                         const sName = server.name || server.bmcIp || sId;
                         return (
-                          <div
+                          <NavigationServerItem
                             key={sId}
-                            onClick={() => handleServerClick(sId)}
-                            className={`px-3 py-1.5 rounded cursor-pointer font-medium flex items-center justify-between gap-2 transition-all ${activeServerId === sId ? "bg-[#7a0c0c] text-white font-bold shadow-sm" : "hover:bg-slate-200/70 text-slate-700"
-                              }`}
-                          >
-                            <div className="flex items-center gap-2 truncate">
-                              <Server className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                              <span className="truncate">{sName}</span>
-                            </div>
-                            {activeServerId === sId && <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" title="Active Server" />}
-                          </div>
+                            sId={sId}
+                            sName={sName}
+                            isActive={activeServerId === sId}
+                            onSelect={handleServerClick}
+                          />
                         );
                       });
                     })()}
@@ -3458,17 +3533,35 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                           ];
                         }
 
-                        // 4. STORAGE
+                        // 4. STORAGE & RAID CONTROLLERS
                         if (activeCat === "storage") {
                           const stgs = telemetry.storage || [];
+                          const hbaList = telemetry.hbas || [];
                           const activeDrv = stgs[activeSubIndex - 1] || stgs[0] || {};
                           const capGb = activeDrv.CapacityBytes ? (activeDrv.CapacityBytes / (1000 * 1000 * 1000)).toFixed(0) : (activeDrv.CapacityGB || 0);
+
+                          let raidName = "Integrated NVMe / SATA Controller";
+                          let raidFw = "Active";
+                          let raidStatus = "OK";
+
+                          if (hbaList.length > 0 && hbaList[0]) {
+                            raidName = hbaList[0].Name || hbaList[0].Model || "RAID Storage Controller";
+                            raidFw = hbaList[0].FirmwareVersion || hbaList[0].Firmware || "Active";
+                            raidStatus = hbaList[0].Status?.Health || hbaList[0].Status?.State || "OK";
+                          } else if (stgs.length > 0 && stgs[0]?.StorageControllers?.[0]) {
+                            const ctrl = stgs[0].StorageControllers[0];
+                            raidName = ctrl.Name || ctrl.Model || "Integrated RAID Controller";
+                            raidFw = ctrl.FirmwareVersion || "Active";
+                            raidStatus = ctrl.Status?.Health || "OK";
+                          }
 
                           if (activeSubLabel === "Summary") {
                             return [
                               { label: "Drive Count", value: stgs.length },
                               { label: "Health", value: stgs.length > 0 ? "OK" : "N/A" },
-                              { label: "Storage Controller", value: stgs.length > 0 ? "Integrated NVMe / SATA" : "N/A" },
+                              { label: "RAID / Storage Controller", value: raidName },
+                              { label: "RAID Controller Firmware", value: raidFw },
+                              { label: "Controller Health", value: raidStatus },
                               { label: "Total Capacity (GB)", value: stgs.reduce((a: number, s: any) => a + (s.CapacityBytes ? Math.round(s.CapacityBytes / 1e9) : (s.CapacityGB || 0)), 0) },
                               { label: "Type", value: stgs.length > 0 ? (stgs[0]?.MediaType || "SSD/NVMe") : "N/A" }
                             ];
@@ -3747,13 +3840,13 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                     {(() => {
                       const getCategoryHealth = (categoryKey: string, categoryName: string) => {
                         if (!hasActiveDevice) {
-                          return { status: "Normal", isFault: false };
+                          return { status: "No Device Connected", isFault: false, extra: null };
                         }
                         if (telemetry.loading) {
-                          return { status: "Normal", isFault: false };
+                          return { status: "Fetching Telemetry...", isFault: false, extra: null };
                         }
 
-                        // Check realFetchedEvents
+                        // 1. Check realFetchedEvents for active critical/warning events
                         const matchingEvent = realFetchedEvents.find(e => {
                           const isError = e.severity === "Critical" || e.severity === "Warning" || e.severity === "Error" || e.severity === "High";
                           if (!isError) return false;
@@ -3774,16 +3867,144 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                           const detailStr = matchingEvent.detail || `${categoryName} issue detected`;
                           return {
                             status: `Fault: ${codeStr}:${detailStr}`,
-                            isFault: true
+                            isFault: true,
+                            extra: null
                           };
                         }
 
-                        return { status: "Normal", isFault: false };
+                        // 2. Check fetched Redfish telemetry data for real subsystem health
+                        if (categoryKey === "system") {
+                          const sysHealth = telemetry.system?.Status?.Health || telemetry.chassis?.Status?.Health;
+                          if (sysHealth && sysHealth !== "OK" && sysHealth !== "Normal") {
+                            return { status: `Warning (${sysHealth})`, isFault: true, extra: null };
+                          }
+                        }
+
+                        if (categoryKey === "storage") {
+                          const stgArr = telemetry.storage || [];
+                          const hasStorage = Array.isArray(stgArr) && stgArr.length > 0;
+                          let faultFound = false;
+                          if (hasStorage) {
+                            stgArr.forEach((s: any) => {
+                              if (s.Status?.Health && s.Status?.Health !== "OK" && s.Status?.Health !== "Normal") {
+                                faultFound = true;
+                              }
+                            });
+                            if (faultFound) {
+                              return { status: "Fault: Storage Degraded", isFault: true, extra: null };
+                            }
+                            return { status: "Normal", isFault: false, extra: `Storage Controller: OK (${stgArr.length})` };
+                          }
+                          return { status: "Normal", isFault: false, extra: null };
+                        }
+
+                        if (categoryKey === "power") {
+                          const psuArr = telemetry.power?.PowerSupplies || [];
+                          const psuSensors = (telemetry.sensors || []).filter((s: any) =>
+                            s.type === "Power Supply" || s.name?.toLowerCase().includes("psu")
+                          );
+                          let faultFound = false;
+                          psuArr.forEach((p: any) => {
+                            if (p.Status?.Health && p.Status?.Health !== "OK" && p.Status?.Health !== "Normal") {
+                              faultFound = true;
+                            }
+                          });
+                          psuSensors.forEach((s: any) => {
+                            if (s.status && s.status !== "OK" && s.status !== "Normal" && s.status !== "Enabled") {
+                              faultFound = true;
+                            }
+                          });
+                          if (faultFound) {
+                            return { status: "Fault: PSU Issue Detected", isFault: true, extra: null };
+                          }
+                          const extraInfo = psuArr.length > 0 ? `PSU: ${psuArr.length} Unit(s) OK` : null;
+                          return { status: "Normal", isFault: false, extra: extraInfo };
+                        }
+
+                        if (categoryKey === "voltage") {
+                          const voltSensors = (telemetry.sensors || []).filter((s: any) =>
+                            s.type === "Voltage" || s.name?.toLowerCase().includes("voltage") || s.name?.toLowerCase().includes("volts")
+                          );
+                          let faultFound = false;
+                          voltSensors.forEach((s: any) => {
+                            if (s.status && s.status !== "OK" && s.status !== "Normal" && s.status !== "Enabled") {
+                              faultFound = true;
+                            }
+                          });
+                          if (faultFound) {
+                            return { status: "Fault: Voltage Out of Range", isFault: true, extra: null };
+                          }
+                        }
+
+                        if (categoryKey === "fan") {
+                          const fanArr = telemetry.thermal?.Fans || telemetry.fans || [];
+                          const fanSensors = (telemetry.sensors || []).filter((s: any) =>
+                            s.type === "Fan Speed" || s.type === "Fan" || s.name?.toLowerCase().includes("fan")
+                          );
+                          let faultFound = false;
+                          fanArr.forEach((f: any) => {
+                            if (f.Status?.Health && f.Status?.Health !== "OK" && f.Status?.Health !== "Normal") {
+                              faultFound = true;
+                            }
+                          });
+                          fanSensors.forEach((s: any) => {
+                            if (s.status && s.status !== "OK" && s.status !== "Normal" && s.status !== "Enabled") {
+                              faultFound = true;
+                            }
+                          });
+                          if (faultFound) {
+                            return { status: "Fault: Fan Degraded", isFault: true, extra: null };
+                          }
+                        }
+
+                        if (categoryKey === "sensors") {
+                          const tempSensors = (telemetry.sensors || []).filter((s: any) =>
+                            s.type === "Temperature" || s.name?.toLowerCase().includes("temp")
+                          );
+                          let faultFound = false;
+                          tempSensors.forEach((s: any) => {
+                            if (s.status && s.status !== "OK" && s.status !== "Normal" && s.status !== "Enabled") {
+                              faultFound = true;
+                            }
+                          });
+                          if (faultFound) {
+                            return { status: "Fault: Thermal Warning", isFault: true, extra: null };
+                          }
+                        }
+
+                        if (categoryKey === "memory") {
+                          const memArr = telemetry.memory || [];
+                          let faultFound = false;
+                          memArr.forEach((m: any) => {
+                            if (m.Status?.Health && m.Status?.Health !== "OK" && m.Status?.Health !== "Normal") {
+                              faultFound = true;
+                            }
+                          });
+                          if (faultFound) {
+                            return { status: "Fault: Memory Error", isFault: true, extra: null };
+                          }
+                        }
+
+                        if (categoryKey === "processor") {
+                          const procArr = telemetry.processors || [];
+                          let faultFound = false;
+                          procArr.forEach((p: any) => {
+                            if (p.Status?.Health && p.Status?.Health !== "OK" && p.Status?.Health !== "Normal") {
+                              faultFound = true;
+                            }
+                          });
+                          if (faultFound) {
+                            return { status: "Fault: Processor Error", isFault: true, extra: null };
+                          }
+                        }
+
+                        return { status: "Normal", isFault: false, extra: null };
                       };
 
                       const categoryDefs = [
                         { name: "System", categoryKey: "system" },
-                        { name: "Storage", categoryKey: "storage", extra: "Storage Controller: Unknown" },
+                        { name: "Storage", categoryKey: "storage" },
+                        { name: "PSU", categoryKey: "power" },
                         { name: "Voltage", categoryKey: "voltage" },
                         { name: "Fan", categoryKey: "fan" },
                         { name: "Temperature", categoryKey: "sensors" },
@@ -3798,7 +4019,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                           name: def.name,
                           status: health.status,
                           isFault: health.isFault,
-                          extra: (def as any).extra,
+                          extra: health.extra || (def as any).extra || null,
                           categoryKey: def.categoryKey
                         };
                       });
@@ -3979,73 +4200,83 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
                 {/* Events & Logs for Selected Server */}
                 <div className="bg-white border border-slate-300 rounded p-4 shadow-sm space-y-3">
-                  <div className="font-bold text-slate-800 border-b border-slate-200 pb-2 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <ShieldAlert className="w-4 h-4 text-red-700" />
-                      <span>Events & Logs for {activeServer?.name || "Server"} ({activeServer?.bmcIp || "NA"})</span>
-                    </div>
-                    <span className="text-[10px] bg-red-50 text-red-700 font-bold px-2 py-0.5 rounded border border-red-200">
-                      {alerts.filter(a =>
-                        a.server === activeServer?.bmcIp ||
-                        a.server === activeServer?.id ||
-                        a.server === activeServer?.name ||
-                        (a.server && activeServer?.bmcIp && a.server.toLowerCase().includes(activeServer.bmcIp.toLowerCase()))
-                      ).length} Event(s) Recorded
-                    </span>
-                  </div>
+                  {(() => {
+                    const activeIp = (activeServer?.bmcIp || (activeServer as any)?.ip || "").toLowerCase().trim();
+                    const activeName = (activeServer?.name || "").toLowerCase().trim();
 
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse text-xs">
-                      <thead>
-                        <tr className="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold text-[11px]">
-                          <th className="p-2 border-r border-slate-200">Severity</th>
-                          <th className="p-2 border-r border-slate-200">Category</th>
-                          <th className="p-2 border-r border-slate-200">Event Type</th>
-                          <th className="p-2 border-r border-slate-200">Description</th>
-                          <th className="p-2">Timestamp</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
-                        {(() => {
-                          const serverEvents = alerts.filter(a =>
-                            activeServer && (
-                              a.server === activeServer.bmcIp ||
-                              a.server === activeServer.id ||
-                              a.server === activeServer.name ||
-                              (a.server && activeServer.bmcIp && a.server.toLowerCase().includes(activeServer.bmcIp.toLowerCase()))
-                            )
-                          );
+                    const combinedLogs = [...(realFetchedEvents || []), ...(alerts || [])];
 
-                          if (serverEvents.length === 0) {
-                            return (
-                              <tr>
-                                <td colSpan={5} className="p-4 text-center text-slate-500 font-medium">
-                                  No hardware event logs recorded for server node {activeServer?.name || "Server"} ({activeServer?.bmcIp || "NA"}).
-                                </td>
+                    const serverEvents = combinedLogs.filter((e: any) => {
+                      if (!activeServer) return true;
+                      const sIp = (e.server || e.ip || "").toLowerCase().trim();
+                      if (activeIp && sIp.includes(activeIp)) return true;
+                      if (activeName && sIp.includes(activeName)) return true;
+                      if (!e.server && !e.ip) return true;
+                      return false;
+                    }).map((e: any, idx: number) => ({
+                      id: e.id || e.Id || `evt-${idx}`,
+                      severity: e.severity || e.Severity || "OK",
+                      category: e.category || e.SensorType || e.log_type || "System Health",
+                      type: e.type || e.code || e.Code || e.Id || "BMC Event",
+                      message: e.message || e.detail || e.Message || e.Description || "System Event Log recorded out-of-band",
+                      timestamp: e.timestamp || (e.Created ? e.Created.replace("T", " ").slice(0, 19) : new Date().toISOString().replace("T", " ").slice(0, 19))
+                    }));
+
+                    return (
+                      <>
+                        <div className="font-bold text-slate-800 border-b border-slate-200 pb-2 flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <ShieldAlert className="w-4 h-4 text-red-700" />
+                            <span>Events & Logs for {activeServer?.name || "Server"} ({activeServer?.bmcIp || "NA"})</span>
+                          </div>
+                          <span className="text-[10px] bg-red-50 text-red-700 font-bold px-2 py-0.5 rounded border border-red-200">
+                            {serverEvents.length} Event(s) Recorded
+                          </span>
+                        </div>
+
+                        <div className="overflow-x-auto max-h-72">
+                          <table className="w-full text-left border-collapse text-xs">
+                            <thead className="sticky top-0 bg-slate-100 z-10">
+                              <tr className="border-b border-slate-200 text-slate-600 font-bold text-[11px]">
+                                <th className="p-2 border-r border-slate-200">Severity</th>
+                                <th className="p-2 border-r border-slate-200">Category</th>
+                                <th className="p-2 border-r border-slate-200">Event Type</th>
+                                <th className="p-2 border-r border-slate-200">Description</th>
+                                <th className="p-2">Timestamp</th>
                               </tr>
-                            );
-                          }
-
-                          return serverEvents.map((evt, idx) => (
-                            <tr key={evt.id + "-" + idx} className="hover:bg-slate-50">
-                              <td className="p-2 border-r border-slate-200 font-bold">
-                                <span className={`px-2 py-0.5 rounded text-[10px] ${evt.severity === "Critical" ? "bg-red-100 text-red-700 font-black" : evt.severity === "Warning" ? "bg-amber-100 text-amber-800 font-bold" : "bg-emerald-100 text-emerald-800 font-bold"
-                                  }`}>
-                                  {evt.severity}
-                                </span>
-                              </td>
-                              <td className="p-2 border-r border-slate-200">DC Health</td>
-                              <td className="p-2 border-r border-slate-200 font-bold text-slate-800">{evt.type}</td>
-                              <td className="p-2 border-r border-slate-200 text-slate-700" title={evt.message}>
-                                {evt.message}
-                              </td>
-                              <td className="p-2 font-mono text-slate-500">{evt.timestamp}</td>
-                            </tr>
-                          ));
-                        })()}
-                      </tbody>
-                    </table>
-                  </div>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
+                              {serverEvents.length === 0 ? (
+                                <tr>
+                                  <td colSpan={5} className="p-4 text-center text-slate-500 font-medium">
+                                    No hardware event logs recorded for server node {activeServer?.name || "Server"} ({activeServer?.bmcIp || "NA"}).
+                                  </td>
+                                </tr>
+                              ) : (
+                                serverEvents.map((evt, idx) => (
+                                  <tr key={evt.id + "-" + idx} className="hover:bg-slate-50">
+                                    <td className="p-2 border-r border-slate-200 font-bold">
+                                      <span className={`px-2 py-0.5 rounded text-[10px] ${
+                                        evt.severity === "Critical" ? "bg-red-100 text-red-700 font-black" : (evt.severity === "Warning" ? "bg-amber-100 text-amber-800 font-bold" : "bg-emerald-100 text-emerald-800 font-bold")
+                                      }`}>
+                                        {evt.severity}
+                                      </span>
+                                    </td>
+                                    <td className="p-2 border-r border-slate-200">{evt.category}</td>
+                                    <td className="p-2 border-r border-slate-200 font-bold text-slate-800">{evt.type}</td>
+                                    <td className="p-2 border-r border-slate-200 text-slate-700" title={evt.message}>
+                                      {evt.message}
+                                    </td>
+                                    <td className="p-2 font-mono text-slate-500">{evt.timestamp}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             );
@@ -4235,30 +4466,17 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                                                     {/* Level 5: Server Devices */}
                                                     {isRkExpanded && (
                                                       <div className="ml-6 pl-4 border-l-2 border-slate-300 grid grid-cols-2 gap-2 pt-1">
-                                                        {rkServers.map(srv => {
-                                                          const isPowerOn = (srv as any).powerState !== "Off";
-
-                                                          return (
-                                                            <div
-                                                              key={srv.id}
-                                                              onClick={() => {
-                                                                handleServerClick(srv.id);
-                                                                setSelectedInspectNode({ type: "Server Device", name: srv.name, id: srv.id, bmcIp: srv.bmcIp, server: srv });
-                                                              }}
-                                                              className={`p-2 rounded border border-slate-300 bg-white hover:border-[#7a0c0c] cursor-pointer shadow-xs transition-all flex items-center justify-between ${activeServerId === srv.id ? "ring-2 ring-[#7a0c0c] bg-red-50/50" : ""
-                                                                }`}
-                                                            >
-                                                              <div className="flex items-center gap-2 truncate">
-                                                                <Cpu className="w-3.5 h-3.5 text-slate-700 shrink-0" />
-                                                                <div className="flex flex-col truncate">
-                                                                  <span className="font-bold text-slate-900 truncate">{srv.name}</span>
-                                                                  <span className="font-mono text-[10px] text-blue-600 truncate">{srv.bmcIp}</span>
-                                                                </div>
-                                                              </div>
-                                                              <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isPowerOn ? "bg-emerald-500" : "bg-slate-400"}`} title={isPowerOn ? "Power On" : "Power Off"} />
-                                                            </div>
-                                                          );
-                                                        })}
+                                                        {rkServers.map(srv => (
+                                                          <NavigationDeviceCard
+                                                            key={srv.id}
+                                                            srv={srv}
+                                                            isActive={activeServerId === srv.id}
+                                                            onSelect={(id, targetSrv) => {
+                                                              handleServerClick(id);
+                                                              setSelectedInspectNode({ type: "Server Device", name: targetSrv.name, id: targetSrv.id, bmcIp: targetSrv.bmcIp, server: targetSrv });
+                                                            }}
+                                                          />
+                                                        ))}
                                                         {rkServers.length === 0 && (
                                                           <div className="col-span-2 text-slate-400 italic text-[11px]">No servers in {rkName}</div>
                                                         )}
@@ -5398,6 +5616,215 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
         </div>
       )}
 
+      {/* High Temperature / All Server Temperatures Modal */}
+      {showHighTempModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-2xl border border-slate-300 max-w-4xl w-full overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95 duration-150 text-xs text-slate-800 font-sans">
+            {/* Modal Header */}
+            <div className="bg-[#7a0c0c] text-white px-5 py-3 flex items-center justify-between font-bold text-sm tracking-wide shrink-0">
+              <div className="flex items-center gap-2.5">
+                <Thermometer className="w-5 h-5 text-red-300 animate-pulse" />
+                <span>All Servers Temperature Telemetry</span>
+                <span className="text-xs font-normal text-red-200 bg-red-950/60 px-2 py-0.5 rounded border border-red-500/30">
+                  {serversWithTemp.length} Monitored Endpoints
+                </span>
+              </div>
+              <button
+                onClick={() => setShowHighTempModal(false)}
+                className="text-white/80 hover:text-white text-base cursor-pointer p-0.5 rounded hover:bg-white/10"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 space-y-4 overflow-y-auto flex-1">
+              {/* Summary Cards Row */}
+              <div className="grid grid-cols-4 gap-3 text-xs">
+                <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Total Fleet Nodes</span>
+                  <span className="text-xl font-extrabold text-slate-800">{serversWithTemp.length}</span>
+                </div>
+                <div className="bg-red-50 border border-red-200 p-3 rounded-lg">
+                  <span className="text-[10px] font-bold text-red-600 uppercase tracking-wider block">Highest Temperature</span>
+                  <span className="text-xl font-extrabold text-red-700">
+                    {serversWithTemp[0]?.tempVal > 0 ? `${serversWithTemp[0].tempVal.toFixed(1)} °C` : "N/A"}
+                  </span>
+                  <span className="text-[10px] font-mono text-red-500 block truncate">{serversWithTemp[0]?.bmcIp || serversWithTemp[0]?.name || "-"}</span>
+                </div>
+                <div className="bg-emerald-50 border border-emerald-200 p-3 rounded-lg">
+                  <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider block">Healthy / Normal (&lt;65°C)</span>
+                  <span className="text-xl font-extrabold text-emerald-700">
+                    {serversWithTemp.filter(s => s.tempVal > 0 && s.tempVal < 65).length}
+                  </span>
+                </div>
+                <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg">
+                  <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wider block">Elevated / Warning (&ge;65°C)</span>
+                  <span className="text-xl font-extrabold text-amber-800">
+                    {serversWithTemp.filter(s => s.tempVal >= 65).length}
+                  </span>
+                </div>
+              </div>
+
+              {/* Filters & Search Toolbar */}
+              <div className="flex items-center justify-between gap-3 bg-slate-100 p-2.5 rounded-lg border border-slate-200">
+                <div className="flex items-center gap-2 flex-1">
+                  <Search className="w-4 h-4 text-slate-400 shrink-0" />
+                  <input
+                    type="text"
+                    value={tempModalSearch}
+                    onChange={(e) => setTempModalSearch(e.target.value)}
+                    placeholder="Search by server name, BMC IP, or rack..."
+                    className="w-full bg-white border border-slate-300 rounded px-2.5 py-1 text-xs text-slate-800 focus:outline-none focus:border-red-600"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="text-[11px] font-bold text-slate-500 uppercase mr-1">Filter:</span>
+                  {(["all", "normal", "warning", "critical"] as const).map((filterOpt) => (
+                    <button
+                      key={filterOpt}
+                      onClick={() => setTempModalFilter(filterOpt)}
+                      className={`px-2.5 py-1 rounded text-[11px] font-bold uppercase transition-colors cursor-pointer ${
+                        tempModalFilter === filterOpt
+                          ? "bg-[#7a0c0c] text-white"
+                          : "bg-white text-slate-600 border border-slate-300 hover:bg-slate-200"
+                      }`}
+                    >
+                      {filterOpt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Server Temperatures Data Table */}
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-slate-100 text-slate-700 font-bold text-[11px] border-b border-slate-200 uppercase tracking-wider">
+                    <tr>
+                      <th className="p-2.5">Server Identifier</th>
+                      <th className="p-2.5">BMC IP Address</th>
+                      <th className="p-2.5">Rack Location</th>
+                      <th className="p-2.5">Power State</th>
+                      <th className="p-2.5 text-center">Temperature (°C)</th>
+                      <th className="p-2.5 text-center">Thermal Status</th>
+                      <th className="p-2.5 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 font-sans">
+                    {(() => {
+                      let filtered = serversWithTemp.filter((srv) => {
+                        const q = tempModalSearch.trim().toLowerCase();
+                        if (q) {
+                          const nameMatch = (srv.name || "").toLowerCase().includes(q);
+                          const ipMatch = (srv.bmcIp || "").toLowerCase().includes(q);
+                          const rackMatch = (srv.rack || "").toLowerCase().includes(q);
+                          if (!nameMatch && !ipMatch && !rackMatch) return false;
+                        }
+                        if (tempModalFilter === "normal") return srv.tempVal > 0 && srv.tempVal < 65;
+                        if (tempModalFilter === "warning") return srv.tempVal >= 65 && srv.tempVal < 75;
+                        if (tempModalFilter === "critical") return srv.tempVal >= 75;
+                        return true;
+                      });
+
+                      if (filtered.length === 0) {
+                        return (
+                          <tr>
+                            <td colSpan={7} className="p-8 text-center text-slate-400 italic">
+                              No server temperature telemetry matching the selected filters.
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      return filtered.map((srv) => {
+                        const stObj = (serverStatuses[srv.id] || serverStatuses[srv.bmcIp]) as any;
+                        const pState = String((srv as any).powerState || (srv as any).power || stObj?.powerState || "On");
+                        const val = srv.tempVal;
+
+                        const isCritical = val >= 75;
+                        const isWarning = val >= 65 && val < 75;
+                        const isNormal = val > 0 && val < 65;
+
+                        return (
+                          <tr key={srv.id} className="hover:bg-slate-50 transition-colors">
+                            <td className="p-2.5 font-bold text-slate-800">
+                              {srv.name}
+                            </td>
+                            <td className="p-2.5 font-mono text-blue-600 font-bold">
+                              {srv.bmcIp || "N/A"}
+                            </td>
+                            <td className="p-2.5 text-slate-600">
+                              {srv.rack || "Rack 1"}
+                            </td>
+                            <td className="p-2.5 font-medium text-slate-700">
+                              {pState}
+                            </td>
+                            <td className="p-2.5 text-center font-mono text-sm font-black">
+                              {val > 0 ? (
+                                <span className={isCritical ? "text-red-600" : isWarning ? "text-amber-600" : "text-emerald-700"}>
+                                  {val.toFixed(1)} °C
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 font-normal text-xs">N/A</span>
+                              )}
+                            </td>
+                            <td className="p-2.5 text-center">
+                              {isCritical ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300 animate-pulse">
+                                  CRITICAL (&gt;75°C)
+                                </span>
+                              ) : isWarning ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                                  WARNING (&ge;65°C)
+                                </span>
+                              ) : isNormal ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                  NORMAL
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-300">
+                                  UNMONITORED
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-2.5 text-right">
+                              <button
+                                onClick={() => {
+                                  setActiveServerId(srv.id);
+                                  if (onSelectServer) onSelectServer(srv.id);
+                                  setShowHighTempModal(false);
+                                }}
+                                className="px-3 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-[11px] transition-colors cursor-pointer"
+                              >
+                                Select Node
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      });
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="bg-slate-100 px-5 py-3 border-t border-slate-200 flex items-center justify-between shrink-0">
+              <span className="text-[11px] text-slate-500 font-medium">
+                Live Sensor Telemetry automatically refreshed every 5 seconds.
+              </span>
+              <button
+                onClick={() => setShowHighTempModal(false)}
+                className="px-5 py-1.5 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Provisioning Modal */}
       <ProvisioningModal
         isOpen={showProvisioningModal}
@@ -5926,7 +6353,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                 }
 
                 // General Sensors Table (Power, Fans, Thermal, Telemetry)
-                const categorySensors = name.includes("Power")
+                const categorySensors = (name.includes("Power") || name.includes("PSU"))
                   ? sensorsArr.filter((s: any) => s.type === "Power Supply" || s.type === "Voltage" || s.type === "Power" || s.name?.toLowerCase().includes("psu") || s.name?.toLowerCase().includes("power"))
                   : (name.includes("Fan")
                     ? sensorsArr.filter((s: any) => s.type === "Fan" || s.name?.toLowerCase().includes("fan"))

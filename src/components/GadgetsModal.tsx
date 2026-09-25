@@ -2,19 +2,19 @@ import React, { useState, useEffect } from "react";
 import { X, RotateCcw } from "lucide-react";
 
 export const ALL_GADGETS = [
-  "Error Alert System",
-  "Network Port Monitoring",
   "Temperature",
   "Temperature Trending in a Day",
-  "Power Trending in a Day",
+  "Summary of Hierarchy",
   "Power",
+  "Power Trending in a Day",
+  "Device Statistics",
+  "Error Alert System",
+  "Network Port Monitoring",
   "Events",
   "Power Capacity",
   "Space Capacity",
   "Weight Capacity",
-  "Summary of Hierarchy",
   "Power Data Summary",
-  "Device Statistics",
   "Device Health Summary",
   "Component Health Summary",
   "Recent Inventory Changes"

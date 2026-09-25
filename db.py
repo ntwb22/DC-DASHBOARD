@@ -105,7 +105,19 @@ class PostgresDatabase:
                         network_json JSONB NOT NULL,
                         fetched_at TIMESTAMPTZ DEFAULT NOW()
                     );
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_inv_server_id ON raw_inventory (server_id);
                     CREATE INDEX IF NOT EXISTS idx_raw_inv_gin ON raw_inventory USING gin (inventory_json);
+                """)
+
+                # 3. Server Inventory Table
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS server_inventory (
+                        server_id VARCHAR(64) PRIMARY KEY,
+                        vendor VARCHAR(16) NOT NULL,
+                        inventory_data JSONB NOT NULL,
+                        raw_payload JSONB NOT NULL,
+                        updated_at TIMESTAMPTZ DEFAULT NOW()
+                    );
                 """)
 
                 # 3. Time-series Event Logs Table with Occurrences Throttling
@@ -273,6 +285,40 @@ class PostgresDatabase:
             "network_json": network_json,
             "fetched_at": datetime.now().isoformat()
         })
+
+    async def upsert_server_inventory(self, server_id: str, vendor: str, inventory_data: dict, raw_payload: dict = None):
+        """
+        Upserts server inventory and hardware details into PostgreSQL.
+        """
+        inv_json = json.dumps(inventory_data)
+        raw_json = json.dumps(raw_payload or {})
+
+        if self.pool:
+            try:
+                async with self.pool.acquire() as connection:
+                    await connection.execute(
+                        """
+                        INSERT INTO server_inventory (server_id, vendor, inventory_data, raw_payload, updated_at)
+                        VALUES ($1, $2, $3::jsonb, $4::jsonb, NOW())
+                        ON CONFLICT (server_id) 
+                        DO UPDATE SET 
+                            vendor = EXCLUDED.vendor,
+                            inventory_data = EXCLUDED.inventory_data,
+                            raw_payload = EXCLUDED.raw_payload,
+                            updated_at = NOW();
+                        """,
+                        server_id,
+                        vendor,
+                        inv_json,
+                        raw_json
+                    )
+                await self.save_raw_inventory(server_id, vendor, inventory_data, raw_payload or {})
+                return
+            except Exception as e:
+                logger.error(f"Failed to upsert server_inventory JSONB: {e}")
+
+        # Fallback store
+        await self.save_raw_inventory(server_id, vendor, inventory_data, raw_payload or {})
 
     async def record_event_log(self, server_id: str, event_type: str, severity: str, message: str) -> Dict[str, Any]:
         """

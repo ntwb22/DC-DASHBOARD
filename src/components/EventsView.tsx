@@ -90,7 +90,7 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
               type: l.type || l.SensorType || l.EntryType || "Power",
               message: l.message || l.Message || l.Name || `BMC System Event Log: Event on ${server.name || server.bmcIp}`,
               severity: l.severity === "Critical" ? "Critical" : (l.severity === "Warning" ? "Warning" : "OK"),
-              timestamp: l.timestamp ? l.timestamp.replace("T", " ").slice(0, 19) : new Date().toISOString().replace("T", " ").slice(0, 19),
+              timestamp: l.timestamp ? l.timestamp.replace("T", " ").slice(0, 19) : (l.Created ? l.Created.replace("T", " ").slice(0, 19) : (l.EntryTime ? l.EntryTime.replace("T", " ").slice(0, 19) : new Date().toISOString().replace("T", " ").slice(0, 19))),
               server: server.bmcIp
             }));
             return (fetchFullHistory || pullFull) ? mapped : mapped.slice(0, 20);
@@ -747,7 +747,7 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
                     <tr 
                       key={item.id || idx} 
                       onClick={() => setSelectedEventModal(item)}
-                      className="hover:bg-slate-50/90 cursor-pointer transition-colors"
+                      className="hover:bg-slate-50/90 cursor-pointer transition-colors virtual-log-row"
                     >
                       <td className="p-2.5 border-r border-slate-200 font-bold">
                         {item.severity === "Critical" ? (

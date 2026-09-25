@@ -802,11 +802,38 @@ export class RedfishService {
       const resolvedSysId = await this.resolveSystemId();
       const chassisId = await this.resolveChassisId().catch(() => "/redfish/v1/Chassis/1");
 
-      // Optimization: Fetch system and chassis details using Redfish $expand to collapse 8 separate HTTP requests into 2
-      const [sysExpandedRes, chassisExpandedRes] = await Promise.all([
-        this.proxyRequest(`${resolvedSysId}?$expand=*($levels=1)`).catch(() => null),
-        this.proxyRequest(`${chassisId}?$expand=*($levels=1)`).catch(() => null)
+      const sysIdExpanded = `${resolvedSysId}?$expand=*($levels=1)`;
+      const chassisIdExpanded = `${chassisId}?$expand=*($levels=1)`;
+      const procsPath = `${resolvedSysId}/Processors`;
+      const memPath = `${resolvedSysId}/Memory`;
+      const storagePath = `${resolvedSysId}/Storage`;
+      const ethPath = `${resolvedSysId}/EthernetInterfaces`;
+      const pciePath = `${resolvedSysId}/PCIeDevices`;
+      const thermalPath = `${chassisId}/Thermal`;
+      const powerPath = `${chassisId}/Power`;
+
+      // Single round-trip batch call to backend consolidating sub-paths into 1 network request
+      const batchResponses = await this.batchRequest([
+        resolvedSysId,
+        sysIdExpanded,
+        chassisId,
+        chassisIdExpanded,
+        procsPath,
+        memPath,
+        storagePath,
+        ethPath,
+        pciePath,
+        thermalPath,
+        powerPath
       ]);
+
+      const sysExpandedRes = (batchResponses[sysIdExpanded] && !batchResponses[sysIdExpanded].error)
+        ? batchResponses[sysIdExpanded]
+        : ((batchResponses[resolvedSysId] && !batchResponses[resolvedSysId].error) ? batchResponses[resolvedSysId] : null);
+
+      const chassisExpandedRes = (batchResponses[chassisIdExpanded] && !batchResponses[chassisIdExpanded].error)
+        ? batchResponses[chassisIdExpanded]
+        : ((batchResponses[chassisId] && !batchResponses[chassisId].error) ? batchResponses[chassisId] : null);
 
       const details = sysExpandedRes ? await this.getSystemDetails(resolvedSysId).catch(() => sysExpandedRes) : await this.getSystemDetails(resolvedSysId).catch(() => null);
 
@@ -993,6 +1020,107 @@ export class RedfishService {
 
   isDemoMode() {
     return false;
+  }
+
+  /**
+   * Consolidates multiple Redfish sub-paths into a single backend HTTP round-trip (POST /api/redfish/batch).
+   * Automatically populates RedfishService's local GET cache with all retrieved responses
+   * to guarantee zero duplicate network traffic when individual components query sub-paths.
+   */
+  async batchRequest(paths: string[]): Promise<Record<string, any>> {
+    if (!paths || paths.length === 0) return {};
+    if (!this.config.url) {
+      throw new Error("No Redfish endpoint configured.");
+    }
+
+    let baseUrl = this.config.url.replace(/\/+$/, "");
+    if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+      baseUrl = `https://${baseUrl}`;
+    }
+
+    const token = await this.createSession().catch(() => null);
+    const headers: Record<string, string> = {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    };
+    if (token) {
+      headers["X-Auth-Token"] = token;
+    } else {
+      headers["Authorization"] = `Basic ${btoa(`${this.config.username}:${this.config.password}`)}`;
+    }
+
+    try {
+      const response = await axios.post("/api/redfish/batch", {
+        url: baseUrl,
+        username: this.config.username,
+        password: this.config.password,
+        redfishConfig: {
+          url: baseUrl,
+          username: this.config.username,
+          password: this.config.password
+        },
+        headers,
+        paths
+      }, { timeout: 35000 });
+
+      const resData = response.data || {};
+      const responses: Record<string, any> = resData.responses || {};
+
+      // Seed local GET cache for each returned endpoint
+      Object.entries(responses).forEach(([path, data]) => {
+        if (data && typeof data === "object" && !data.error) {
+          const cacheKey = `${this.config.url}::${path}`;
+          RedfishService.getCache.set(cacheKey, Promise.resolve(data));
+          setTimeout(() => {
+            RedfishService.getCache.delete(cacheKey);
+          }, 15000);
+        }
+      });
+
+      return responses;
+    } catch (err: any) {
+      console.warn("Batch Redfish API call failed, falling back to concurrent proxy requests:", err.message);
+      const fallbackMap: Record<string, any> = {};
+      await Promise.all(paths.map(async (p) => {
+        try {
+          fallbackMap[p] = await this.proxyRequest(p);
+        } catch (e: any) {
+          fallbackMap[p] = { error: e.message, status_code: 500 };
+        }
+      }));
+      return fallbackMap;
+    }
+  }
+
+  /**
+   * Fetches full consolidated server hardware telemetry in 1 round-trip via POST /api/redfish/server-summary.
+   */
+  async getServerSummary(): Promise<any> {
+    if (!this.config.url) {
+      throw new Error("No Redfish endpoint configured.");
+    }
+    let baseUrl = this.config.url.replace(/\/+$/, "");
+    if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+      baseUrl = `https://${baseUrl}`;
+    }
+
+    try {
+      const response = await axios.post("/api/redfish/server-summary", {
+        url: baseUrl,
+        username: this.config.username,
+        password: this.config.password,
+        redfishConfig: {
+          url: baseUrl,
+          username: this.config.username,
+          password: this.config.password
+        }
+      }, { timeout: 35000 });
+
+      return response.data?.summary || response.data;
+    } catch (err: any) {
+      console.warn("Server summary endpoint failed, falling back to fetchTelemetrySummary:", err.message);
+      return this.fetchTelemetrySummary();
+    }
   }
 
   async proxyRequest(path: string, method: string = "GET", data?: any) {
@@ -2043,7 +2171,9 @@ export class RedfishService {
                 try {
                   const mUri = typeof m === "string" ? m : m["@odata.id"];
                   const stgObj = mUri ? await this.proxyRequest(mUri) : null;
-                  if (stgObj && Array.isArray(stgObj.Drives) && stgObj.Drives.length > 0) {
+                  if (!stgObj) return null;
+
+                  if (Array.isArray(stgObj.Drives) && stgObj.Drives.length > 0) {
                     const driveDetails = await Promise.all(
                       stgObj.Drives.map(async (d: any) => {
                         try {
@@ -2054,6 +2184,34 @@ export class RedfishService {
                     );
                     stgObj.DriveDetails = driveDetails.filter(Boolean);
                   }
+
+                  if (stgObj.Volumes) {
+                    const volsArr = Array.isArray(stgObj.Volumes.Members) ? stgObj.Volumes.Members : (Array.isArray(stgObj.Volumes) ? stgObj.Volumes : []);
+                    if (volsArr.length > 0) {
+                      const volumeDetails = await Promise.all(
+                        volsArr.map(async (v: any) => {
+                          try {
+                            const vUri = typeof v === "string" ? v : v["@odata.id"];
+                            return vUri ? await this.proxyRequest(vUri) : v;
+                          } catch (_) { return v; }
+                        })
+                      );
+                      stgObj.VolumeDetails = volumeDetails.filter(Boolean);
+                    }
+                  }
+
+                  if (Array.isArray(stgObj.StorageControllers) && stgObj.StorageControllers.length > 0) {
+                    const ctrlDetails = await Promise.all(
+                      stgObj.StorageControllers.map(async (c: any) => {
+                        try {
+                          const cUri = typeof c === "string" ? c : c["@odata.id"];
+                          return (cUri && typeof cUri === "string" && cUri.startsWith("/redfish")) ? await this.proxyRequest(cUri) : c;
+                        } catch (_) { return c; }
+                      })
+                    );
+                    stgObj.ControllerDetails = ctrlDetails.filter(Boolean);
+                  }
+
                   return stgObj;
                 } catch {
                   return null;

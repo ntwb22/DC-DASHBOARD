@@ -41,7 +41,7 @@ export function AboutModal({ isOpen, onClose, serverCount = 12 }: AboutModalProp
     setReleaseStatus(null);
     setTimeout(() => {
       setCheckingRelease(false);
-      setReleaseStatus("You are currently running the latest version of Tyrone TCM (6.2.0.bc154458).");
+      setReleaseStatus("You are currently running the latest version of Tyrone Core Console (6.2.0.bc154458).");
     }, 1200);
   };
 
@@ -101,7 +101,7 @@ export function AboutModal({ isOpen, onClose, serverCount = 12 }: AboutModalProp
                       : "text-white hover:bg-[#520000]"
                   }`}
                 >
-                  <span>About TCM</span>
+                  <span>About Core Console</span>
                 </button>
 
                 <button
@@ -166,7 +166,7 @@ export function AboutModal({ isOpen, onClose, serverCount = 12 }: AboutModalProp
           {/* Right Content Area */}
           <div className="flex-1 bg-white p-6 overflow-y-auto flex flex-col justify-between">
             <div>
-              {/* TAB 1: About TCM */}
+              {/* TAB 1: About Core Console */}
               {activeTab === "about_tcm" && (
                 <div className="space-y-6 animate-fade-in">
                   {/* Version Information Section */}
@@ -181,7 +181,7 @@ export function AboutModal({ isOpen, onClose, serverCount = 12 }: AboutModalProp
                           Product Name
                         </div>
                         <div className="col-span-7 text-slate-700 font-medium">
-                          Tyrone Data Center Manager (TCM)
+                          Tyrone Core Console
                         </div>
                       </div>
 
@@ -316,7 +316,7 @@ export function AboutModal({ isOpen, onClose, serverCount = 12 }: AboutModalProp
                     <form onSubmit={handleApplyKey} className="flex items-center gap-2">
                       <input
                         type="text"
-                        placeholder="Enter Key (e.g. TYR-TCM-DC-2027-8899)"
+                        placeholder="Enter Key (e.g. TYR-CORE-DC-2027-8899)"
                         value={inputKey}
                         onChange={(e) => setInputKey(e.target.value)}
                         className="flex-1 px-3 py-1.5 border border-slate-300 rounded font-mono text-xs focus:ring-1 focus:ring-[#680505] focus:outline-none bg-white uppercase"
@@ -433,7 +433,7 @@ export function AboutModal({ isOpen, onClose, serverCount = 12 }: AboutModalProp
               {activeTab === "license_types" && (
                 <div className="space-y-4 animate-fade-in text-xs">
                   <h3 className="text-sm font-bold text-slate-800 border-b border-slate-300 pb-1 mb-3">
-                    Available TCM Enterprise Editions
+                    Available Tyrone Core Console Enterprise Editions
                   </h3>
 
                   {keyMessage && (
@@ -446,7 +446,7 @@ export function AboutModal({ isOpen, onClose, serverCount = 12 }: AboutModalProp
                   <div className="grid grid-cols-3 gap-3">
                     {/* Standard Edition Card */}
                     <div
-                      onClick={() => handleApplyKey("TYR-TCM-STD-2027-1001")}
+                      onClick={() => handleApplyKey("TYR-CORE-STD-2027-1001")}
                       className={`border rounded-lg p-3 flex flex-col justify-between cursor-pointer transition-all duration-200 relative ${
                         license.edition === "Standard"
                           ? "border-2 border-[#680505] bg-red-50/30 shadow-md"
@@ -478,7 +478,7 @@ export function AboutModal({ isOpen, onClose, serverCount = 12 }: AboutModalProp
 
                     {/* Enterprise Edition Card */}
                     <div
-                      onClick={() => handleApplyKey("TYR-TCM-ENT-2028-9902")}
+                      onClick={() => handleApplyKey("TYR-CORE-ENT-2028-9902")}
                       className={`border-2 rounded-lg p-3 flex flex-col justify-between cursor-pointer transition-all duration-200 relative ${
                         license.edition === "Enterprise"
                           ? "border-[#680505] bg-red-50/30 shadow-md"
@@ -502,7 +502,7 @@ export function AboutModal({ isOpen, onClose, serverCount = 12 }: AboutModalProp
                           <li>• REST & SNMP Integration</li>
                         </ul>
                       </div>
-                      <div className="mt-3 pt-2 border-t border-red-200/60 flex items-center justify-between">
+                      <div className="mt-[#680505] mt-3 pt-2 border-t border-red-200/60 flex items-center justify-between">
                         <span className="text-[#680505] text-[11px] font-bold">
                           {license.edition === "Enterprise" ? "Currently Active" : "Activate Enterprise →"}
                         </span>
@@ -511,7 +511,7 @@ export function AboutModal({ isOpen, onClose, serverCount = 12 }: AboutModalProp
 
                     {/* Datacenter Edition Card */}
                     <div
-                      onClick={() => handleApplyKey("TYR-TCM-DC-2030-9999")}
+                      onClick={() => handleApplyKey("TYR-CORE-DC-2030-9999")}
                       className={`border rounded-lg p-3 flex flex-col justify-between cursor-pointer transition-all duration-200 relative ${
                         license.edition === "Datacenter"
                           ? "border-2 border-[#680505] bg-red-50/30 shadow-md"

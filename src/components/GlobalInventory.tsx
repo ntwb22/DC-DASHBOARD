@@ -731,7 +731,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
                   return (
                     <tr 
                       key={server.id}
-                      className={`hover:bg-slate-50 ${isSelected ? "bg-red-50/60" : ""}`}
+                      className={`hover:bg-slate-50 virtual-table-row ${isSelected ? "bg-red-50/60" : ""}`}
                     >
                       <td className="p-2 border-r border-slate-200 text-center">
                         <input 

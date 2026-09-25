@@ -16,7 +16,7 @@ export function ReleaseNotesModal({ isOpen, onClose }: ReleaseNotesModalProps) {
         <div className="bg-[#680505] text-white px-4 py-2.5 flex items-center justify-between select-none border-b border-[#4d0000]">
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-amber-300" />
-            <h2 className="text-sm font-bold tracking-wide">Tyrone TCM Release Notes</h2>
+            <h2 className="text-sm font-bold tracking-wide">Tyrone Core Console Release Notes</h2>
           </div>
           <button
             onClick={onClose}

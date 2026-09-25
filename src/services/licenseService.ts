@@ -13,7 +13,7 @@ export interface LicenseData {
 }
 
 const DEFAULT_ENTERPRISE_LICENSE: LicenseData = {
-  serialKey: "TYR-TCM-ENT-2026-9902",
+  serialKey: "TYR-CORE-ENT-2026-9902",
   edition: "Enterprise",
   status: "Active",
   expirationDate: "2028-12-31",
@@ -60,7 +60,7 @@ export const licenseService = {
     const trimmed = keyString.trim().toUpperCase();
     
     if (!trimmed || trimmed.length < 10) {
-      return { valid: false, message: "Invalid key format. License keys must follow format TYR-TCM-XXXX-XXXX-XXXX." };
+      return { valid: false, message: "Invalid key format. License keys must follow format TYR-CORE-XXXX-XXXX-XXXX or TYR-TCM-XXXX-XXXX-XXXX." };
     }
 
     if (trimmed.includes("DC") || trimmed.includes("DATACENTER")) {
@@ -82,7 +82,7 @@ export const licenseService = {
         },
         message: "Datacenter Edition License key validated successfully."
       };
-    } else if (trimmed.includes("ENT") || trimmed.includes("ENTERPRISE") || trimmed.startsWith("TYR-TCM")) {
+    } else if (trimmed.includes("ENT") || trimmed.includes("ENTERPRISE") || trimmed.startsWith("TYR-CORE") || trimmed.startsWith("TYR-TCM")) {
       return {
         valid: true,
         data: {
@@ -161,7 +161,7 @@ export const licenseService = {
 
   generateLicenseRequestFile(company: string, email: string, nodes: number): void {
     const payload = {
-      product: "Tyrone Data Center Manager (TCM)",
+      product: "Tyrone Core Console",
       version: "6.2.0.bc154458",
       hardwareMac: "00:15:5D:8A:12:34",
       requestedNodes: nodes,
@@ -175,7 +175,7 @@ export const licenseService = {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Tyrone_TCM_License_Request_${Date.now()}.req`;
+    a.download = `Tyrone_Core_Console_License_Request_${Date.now()}.req`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

@@ -8,21 +8,58 @@ This repository contains everything you need to run, bridge, and deploy your Tyr
 
 ---
 
-## 🚀 Local Development Setup
+## 📦 Prerequisites & Dependencies
 
-Follow these steps to initialize and run the dashboard server and physical hardware relay bridge natively on your local machine.
+### Python Backend Dependencies (`requirements.txt`)
+* `fastapi` - High-performance async REST API framework
+* `uvicorn` - ASGI web server implementation
+* `aiohttp` - Async HTTP client/server for asyncio
+* `httpx` - Next-generation HTTP client
+* `asyncpg` - Async PostgreSQL database driver
+* `cryptography` - Encryption and token security
+* `pydantic` - Data validation and settings management
+* `urllib3` - HTTP client for Python
+* `requests` - Standard HTTP client library
+* `websockets` - Async WebSocket client and server library
 
-**Prerequisites:** * Node.js (v18 or higher recommended) installed locally.
-
-### 1. Install Dependencies
-
-Initialize the node modules folder and download required networking packages (`ws`, `axios`, `ssh2`):
-```bash
-npm install
-npm run dev 
-```
+### Node.js & React Dependencies (`package.json`)
+* **Core & UI**: React 19, Lucide React (Icons), Recharts, Motion (Framer Motion)
+* **Networking & Transport**: Axios, WebSockets (`ws`), SSH2, Express, Nodemailer
+* **Database & Utilities**: SQLite3, Date-fns, UUID, Dotenv, JS-PDF
 
 ---
+
+## 🚀 Local Development Setup
+
+Follow these steps to initialize, install all dependencies, and run both backend & frontend concurrently on your local machine.
+
+### 1. Download & Install Dependencies
+
+Run the following commands in the project root directory:
+
+```bash
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Install Node.js dependencies
+npm install
+```
+
+### 2. Start All Services (Backend + Frontend)
+
+To launch both the FastAPI Redfish Engine (`redfish_backend.py`) and Vite React Frontend concurrently with full hot-reloading:
+
+```bash
+npm run start:all
+```
+*Or simply:*
+```bash
+npm start
+```
+
+* Backend running at: `http://localhost:8000`
+* Frontend running at: `http://localhost:3000`
+
 
 ## 🌐 Production & OS Deployment with Caddy
 
