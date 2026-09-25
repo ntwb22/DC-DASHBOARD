@@ -114,6 +114,52 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
   });
   const [loadingDetails, setLoadingDetails] = useState<boolean>(false);
 
+  // Dynamic Server Rack Mapping from LocalStorage
+  const serverRacks = React.useMemo(() => {
+    try {
+      const saved = localStorage.getItem("tyrone_server_racks");
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  }, [servers]);
+
+  const getRoomForServer = (server: ServerProfile): string => {
+    if ((server as any).room && String((server as any).room).trim() && (server as any).room !== "N/A") {
+      return (server as any).room;
+    }
+
+    const rackName = serverRacks[server.id] || server.rack;
+
+    try {
+      const savedRacks = localStorage.getItem("tyrone_hierarchy_racks");
+      const savedRows = localStorage.getItem("tyrone_hierarchy_rows");
+      const rks = savedRacks ? JSON.parse(savedRacks) : {};
+      const rws = savedRows ? JSON.parse(savedRows) : {};
+
+      if (rackName) {
+        let foundRowKey: string | null = null;
+        for (const [rowKey, rackList] of Object.entries(rks)) {
+          if (Array.isArray(rackList) && rackList.some((rk: any) => (rk.name || rk.id || rk) === rackName)) {
+            foundRowKey = rowKey;
+            break;
+          }
+        }
+
+        if (foundRowKey) {
+          for (const [roomKey, rowList] of Object.entries(rws)) {
+            if (Array.isArray(rowList) && rowList.some((rw: any) => (rw.name || rw.id || rw) === foundRowKey)) {
+              return roomKey;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    return "Room 1";
+  };
+
+
   useEffect(() => {
     let isMounted = true;
     const fetchAllServerDetails = async () => {
@@ -562,9 +608,11 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
         return <span>{displayWeight}</span>;
       }
       case "room":
-        return <span>{(server as any).room || "N/A"}</span>;
-      case "rack":
-        return <span>{(server.rack && server.rack !== "Rack 1") ? server.rack : "N/A"}</span>;
+        return <span>{getRoomForServer(server)}</span>;
+      case "rack": {
+        const resolvedRack = serverRacks[server.id] || server.rack || "1st RACK";
+        return <span>{resolvedRack}</span>;
+      }
       case "bmcVersion":
         return <span className="font-mono">{detail?.bmcVersion || (server as any)?.bmcFw || (server as any)?.bmcVersion || (loadingDetails ? "Fetching..." : "v2.04.12")}</span>;
       case "biosVersion":

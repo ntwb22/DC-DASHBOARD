@@ -15,7 +15,7 @@ import logging
 import time
 from db import db, encrypt_credentials, decrypt_credentials
 from normalizer import normalize_inventory
-from async_collector import SESSION_TOKEN_CACHE
+from redfish_monitor import SESSION_TOKEN_CACHE
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TestPipeline")

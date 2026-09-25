@@ -3846,11 +3846,21 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                           return { status: "Fetching Telemetry...", isFault: false, extra: null };
                         }
 
-                        // 1. Check realFetchedEvents for active critical/warning events
+                        // 1. Check realFetchedEvents for active critical/warning events targeting THIS specific server
                         const matchingEvent = realFetchedEvents.find(e => {
                           const isError = e.severity === "Critical" || e.severity === "Warning" || e.severity === "Error" || e.severity === "High";
                           if (!isError) return false;
-                          const txt = `${e.code || ''} ${e.detail || ''}`.toLowerCase();
+
+                          const isForThisServer = activeServer && (
+                            !e.server || 
+                            e.server === activeServer.id || 
+                            e.server === activeServer.bmcIp || 
+                            e.server === activeServer.name ||
+                            (e.ip && e.ip === activeServer.bmcIp)
+                          );
+                          if (!isForThisServer) return false;
+
+                          const txt = `${e.code || ''} ${e.detail || ''} ${e.message || ''}`.toLowerCase();
                           if (categoryKey === "power" && (txt.includes("power") || txt.includes("psu") || txt.includes("ac_lost") || txt.includes("supply"))) return true;
                           if (categoryKey === "storage" && (txt.includes("storage") || txt.includes("drive") || txt.includes("disk") || txt.includes("raid") || txt.includes("hba"))) return true;
                           if (categoryKey === "voltage" && (txt.includes("voltage") || txt.includes("volts") || txt.includes("v1.") || txt.includes("v12") || txt.includes("v5"))) return true;
@@ -3863,10 +3873,17 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                         });
 
                         if (matchingEvent) {
-                          const codeStr = matchingEvent.code || "FAULT";
-                          const detailStr = matchingEvent.detail || `${categoryName} issue detected`;
+                          let customStatus = `Fault: ${matchingEvent.code || matchingEvent.detail || matchingEvent.message || categoryName + " Issue"}`;
+                          if (categoryKey === "power") customStatus = "Fault: PSU Issue Detected";
+                          else if (categoryKey === "voltage") customStatus = "Fault: Voltage Out of Range";
+                          else if (categoryKey === "fan") customStatus = "Fault: Fan Degraded";
+                          else if (categoryKey === "sensors") customStatus = "Fault: Thermal Warning";
+                          else if (categoryKey === "storage") customStatus = "Fault: Storage Controller Failure";
+                          else if (categoryKey === "memory") customStatus = "Fault: Memory ECC Error";
+                          else if (categoryKey === "processor") customStatus = "Fault: CPU Thermal Throttling";
+
                           return {
-                            status: `Fault: ${codeStr}:${detailStr}`,
+                            status: customStatus,
                             isFault: true,
                             extra: null
                           };
