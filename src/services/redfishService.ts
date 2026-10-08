@@ -2,6 +2,37 @@ import { ConnectionConfig, RedfishSystem, RedfishEventLogEntry, FleetAlert, Flee
 
 import axios from "axios";
 
+export function sanitizeRedfishUrl(baseUrl: string, path: string = ""): string {
+  if (!baseUrl) return "";
+  let base = baseUrl.trim();
+  if (!base.startsWith("http://") && !base.startsWith("https://")) {
+    base = `https://${base}`;
+  }
+  base = base.replace(/\/+$/, "");
+
+  if (!path) {
+    return base.replace(/\/redfish\/v1(\/redfish\/v1)+/gi, "/redfish/v1");
+  }
+
+  if (path.startsWith("http://") || path.startsWith("https://")) {
+    return path.replace(/\/redfish\/v1(\/redfish\/v1)+/gi, "/redfish/v1");
+  }
+
+  let cleanPath = path.trim();
+  if (!cleanPath.startsWith("/")) {
+    cleanPath = `/${cleanPath}`;
+  }
+
+  if (base.toLowerCase().endsWith("/redfish/v1") && cleanPath.toLowerCase().startsWith("/redfish/v1")) {
+    cleanPath = cleanPath.substring(11);
+  } else if (base.toLowerCase().includes("/redfish/v1") && cleanPath.toLowerCase().startsWith("/redfish/v1")) {
+    base = base.replace(/\/redfish\/v1.*$/i, "");
+  }
+
+  let full = `${base}${cleanPath}`;
+  return full.replace(/\/redfish\/v1(\/redfish\/v1)+/gi, "/redfish/v1");
+}
+
 export const validateBmcCredentials = async (
   ip: string, 
   user: string, 
@@ -117,7 +148,6 @@ export const fetchServerDetailsForAddition = async (
     };
   } catch (err) {
     console.warn("Failed to fetch rich details on server addition:", err);
-    return null;
   }
 };
 
@@ -202,9 +232,9 @@ export class RedfishService {
         return token;
       }
     } catch (e: any) {
-      // Cache BASIC_AUTH_ONLY marker so subsequent telemetry requests use Basic Auth directly without spamming SessionLimitExceeded
+      // Cache BASIC_AUTH_ONLY marker so subsequent requests use Basic Auth directly without spamming BMC session limits
       RedfishService.sessionCache.set(cacheKey, { token: "BASIC_AUTH_ONLY", createdAt: now });
-      console.warn(`[Redfish Session] Target BMC session limit reached for ${this.config.url}. Using Basic Auth fallback mode.`);
+      console.debug(`[Redfish Session] Using Basic Auth fallback mode for ${this.config.url}`);
     }
     return null;
   }
@@ -244,12 +274,11 @@ export class RedfishService {
       }
     } catch (_) { }
 
-    // 2. Test candidate URIs (/redfish/v1/Systems/Self first, then /redfish/v1/Systems/1)
+    // 2. Test candidate URIs (/redfish/v1/Systems/1 first, then /redfish/v1/Systems/Self)
     const candidateUris = [
       preferredId && preferredId.startsWith("/") ? preferredId : "",
-      "/redfish/v1/Systems/System_0",
-      "/redfish/v1/Systems/Self",
       "/redfish/v1/Systems/1",
+      "/redfish/v1/Systems/Self",
       "/redfish/v1/Systems/System.Embedded.1"
     ].filter(Boolean);
 
@@ -562,10 +591,9 @@ export class RedfishService {
             password: node.bmcPassword || node.password || ""
           });
 
-          // Single expanded system query to fetch system details & direct expansions in one trip
+          // Direct system query to fetch system details in lightweight single request
           const sysId = await nodeService.resolveSystemId();
-          const sysExpanded = await nodeService.proxyRequest(`${sysId}?$expand=*($levels=1)`).catch(() => null);
-          const details = sysExpanded || await nodeService.getSystemDetails(sysId);
+          const details = await nodeService.getSystemDetails(sysId).catch(() => null);
           const health = details.Status?.Health || "OK";
 
           let processors: any[] = [];
@@ -802,8 +830,6 @@ export class RedfishService {
       const resolvedSysId = await this.resolveSystemId();
       const chassisId = await this.resolveChassisId().catch(() => "/redfish/v1/Chassis/1");
 
-      const sysIdExpanded = `${resolvedSysId}?$expand=*($levels=1)`;
-      const chassisIdExpanded = `${chassisId}?$expand=*($levels=1)`;
       const procsPath = `${resolvedSysId}/Processors`;
       const memPath = `${resolvedSysId}/Memory`;
       const storagePath = `${resolvedSysId}/Storage`;
@@ -815,9 +841,7 @@ export class RedfishService {
       // Single round-trip batch call to backend consolidating sub-paths into 1 network request
       const batchResponses = await this.batchRequest([
         resolvedSysId,
-        sysIdExpanded,
         chassisId,
-        chassisIdExpanded,
         procsPath,
         memPath,
         storagePath,
@@ -827,13 +851,8 @@ export class RedfishService {
         powerPath
       ]);
 
-      const sysExpandedRes = (batchResponses[sysIdExpanded] && !batchResponses[sysIdExpanded].error)
-        ? batchResponses[sysIdExpanded]
-        : ((batchResponses[resolvedSysId] && !batchResponses[resolvedSysId].error) ? batchResponses[resolvedSysId] : null);
-
-      const chassisExpandedRes = (batchResponses[chassisIdExpanded] && !batchResponses[chassisIdExpanded].error)
-        ? batchResponses[chassisIdExpanded]
-        : ((batchResponses[chassisId] && !batchResponses[chassisId].error) ? batchResponses[chassisId] : null);
+      const sysExpandedRes = (batchResponses[resolvedSysId] && !batchResponses[resolvedSysId].error) ? batchResponses[resolvedSysId] : null;
+      const chassisExpandedRes = (batchResponses[chassisId] && !batchResponses[chassisId].error) ? batchResponses[chassisId] : null;
 
       const details = sysExpandedRes ? await this.getSystemDetails(resolvedSysId).catch(() => sysExpandedRes) : await this.getSystemDetails(resolvedSysId).catch(() => null);
 
@@ -1123,17 +1142,26 @@ export class RedfishService {
     }
   }
 
+
+
   async proxyRequest(path: string, method: string = "GET", data?: any) {
     if (!path.startsWith("/") && !path.startsWith("http")) {
-      path = `/redfish/v1/Systems/${path}`;
+      if (path.startsWith("Systems/") || path.startsWith("Chassis/") || path.startsWith("Managers/") || path.startsWith("UpdateService/") || path.startsWith("EventService/")) {
+        path = `/redfish/v1/${path}`;
+      } else {
+        path = `/redfish/v1/Systems/${path}`;
+      }
     }
 
     if (!this.config.url) {
       throw new Error("No Redfish endpoint configured.");
     }
 
+    // Normalize base URL so cache keys are uniform across all components & tabs
+    const normBase = this.config.url.replace(/\/+$/, "").replace(/\/redfish\/v1$/i, "");
+
     if (method === "GET") {
-      const cacheKey = `${this.config.url}::${path}`;
+      const cacheKey = `${normBase}::${path}`;
       if (RedfishService.getCache.has(cacheKey)) {
         return RedfishService.getCache.get(cacheKey)!;
       }
@@ -1141,30 +1169,18 @@ export class RedfishService {
       RedfishService.getCache.set(cacheKey, promise);
       setTimeout(() => {
         RedfishService.getCache.delete(cacheKey);
-      }, 15000);
+      }, 10000);
       promise.catch(() => {
         RedfishService.getCache.delete(cacheKey);
       });
       return promise;
     }
 
-
     return this.executeProxyRequest(path, method, data);
   }
 
   private async executeProxyRequest(path: string, method: string = "GET", data?: any) {
-    let baseUrl = this.config.url.replace(/\/+$/, "");
-    if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
-      baseUrl = `https://${baseUrl}`;
-    }
-    let fullUrl: string;
-
-    if (path.startsWith('http://') || path.startsWith('https://')) {
-      fullUrl = path;
-    } else {
-      const cleanPath = path.replace(/^\/+/, "");
-      fullUrl = `${baseUrl}/${cleanPath}`;
-    }
+    const fullUrl = sanitizeRedfishUrl(this.config.url, path);
 
     const headers: Record<string, string> = {
       "Accept": "application/json",
@@ -1181,7 +1197,7 @@ export class RedfishService {
     }
 
     try {
-      const timeoutMs = method.toUpperCase() === "GET" ? 25000 : 350000;
+      const timeoutMs = method.toUpperCase() === "GET" ? 45000 : 350000;
       const response = await axios.post("/api/redfish/proxy", {
         url: fullUrl,
         method,
@@ -1202,6 +1218,28 @@ export class RedfishService {
       const responseData = error.response?.data;
       const status = error.response?.status;
       const errMsg = (typeof responseData === 'object' && responseData ? responseData.error : null) || error.message || "";
+
+      // Automatic session re-authentication on 401 Unauthorized
+      if (status === 401 || String(errMsg).includes("401") || String(errMsg).includes("Unauthorized")) {
+        const cacheKey = `${this.config.url}::${this.config.username}`;
+        RedfishService.sessionCache.delete(cacheKey);
+        const newToken = await this.createSession().catch(() => null);
+        if (newToken && newToken !== "BASIC_AUTH_ONLY") {
+          headers["X-Auth-Token"] = newToken;
+          delete headers["Authorization"];
+        } else {
+          headers["Authorization"] = `Basic ${btoa(`${this.config.username}:${this.config.password}`)}`;
+        }
+        try {
+          const retryRes = await axios.post("/api/redfish/proxy", {
+            url: fullUrl,
+            method,
+            data,
+            headers,
+          }, { timeout: method.toUpperCase() === "GET" ? 45000 : 350000 });
+          return retryRes.data;
+        } catch (_) { }
+      }
 
       if (!errMsg.includes("Relay Agent") && !errMsg.includes("NO_RELAY_AGENTS")) {
         console.warn(`Proxy request failed for ${path}:`, errMsg);
@@ -2480,14 +2518,18 @@ export class RedfishService {
         system?.PCIeDevices?.["@odata.id"],
         `${sysId}/PCIeDevices`,
         chassis?.PCIeDevices?.["@odata.id"],
-        chassisId ? `${chassisId}/PCIeDevices` : ""
+        chassisId ? `${chassisId}/PCIeDevices` : "",
+        "/redfish/v1/Chassis/1/PCIeDevices",
+        "/redfish/v1/Chassis/Self/PCIeDevices"
       ].filter(Boolean);
+
+      let foundDevices: any[] = [];
 
       for (const uri of Array.from(new Set(targetUris))) {
         try {
           const res = await this.proxyRequest(uri as string);
           if (res && Array.isArray(res.Members) && res.Members.length > 0) {
-            return await Promise.all(
+            const list = await Promise.all(
               res.Members.map(async (m: any) => {
                 try {
                   const devUri = typeof m === "string" ? m : m["@odata.id"];
@@ -2515,14 +2557,64 @@ export class RedfishService {
                   return null;
                 }
               })
-            ).then(list => list.filter(Boolean));
+            );
+            foundDevices = list.filter(Boolean);
+            if (foundDevices.length > 0) return foundDevices;
           }
         } catch (_) {}
       }
-      return [];
+
+      // Direct candidate device endpoints fallback (e.g., /redfish/v1/Chassis/1/PCIeDevices/NIC1, GPU1, etc.)
+      const directCandidates = [
+        "/redfish/v1/Chassis/1/PCIeDevices/NIC1",
+        "/redfish/v1/Chassis/1/PCIeDevices/NIC2",
+        "/redfish/v1/Chassis/1/PCIeDevices/NIC3",
+        "/redfish/v1/Chassis/1/PCIeDevices/NIC4",
+        "/redfish/v1/Chassis/1/PCIeDevices/GPU1",
+        "/redfish/v1/Chassis/1/PCIeDevices/GPU2",
+        "/redfish/v1/Chassis/1/PCIeDevices/AOC1",
+        "/redfish/v1/Chassis/1/PCIeDevices/AOC2",
+        "/redfish/v1/Chassis/Self/PCIeDevices/NIC1",
+        "/redfish/v1/Chassis/Self/PCIeDevices/NIC2",
+        "/redfish/v1/Chassis/Self/PCIeDevices/GPU1",
+        chassisId ? `${chassisId}/PCIeDevices/NIC1` : "",
+        chassisId ? `${chassisId}/PCIeDevices/NIC2` : "",
+        chassisId ? `${chassisId}/PCIeDevices/AOC1` : ""
+      ].filter(Boolean);
+
+      const probedDevices = await Promise.all(
+        directCandidates.map(async (ep) => {
+          try {
+            const dev = await this.proxyRequest(ep);
+            return (dev && (dev.Id || dev.Name || dev.Model)) ? dev : null;
+          } catch { return null; }
+        })
+      );
+      return probedDevices.filter(Boolean);
     } catch (_) {
       return [];
     }
+  }
+
+  async getBackendHardwareInventory(): Promise<any> {
+    try {
+      const res = await fetch("/api/redfish/hardware-inventory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bmc_ip: this.config.url,
+          username: this.config.username,
+          password: this.config.password
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success && data.inventory) {
+          return data.inventory;
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 
   async getPCIeDevice(deviceId: string = "GPU1", chassisId: string = "1") {
@@ -2930,5 +3022,29 @@ export class RedfishService {
     }
 
     return updateResult;
+  }
+
+  async triggerOsInstall(isoUrl: string, username?: string, password?: string, rebootToIso: boolean = true) {
+    try {
+      const res = await fetch("/api/redfish/os-install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bmc_ip: this.config.url,
+          username: username || this.config.username,
+          password: password || this.config.password,
+          iso_url: isoUrl
+        })
+      });
+      if (res.ok) {
+        return await res.json();
+      }
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.message || errData.error || "OS Install triggering failed.");
+    } catch (err: any) {
+      const fullIso = isoUrl.startsWith("http") ? isoUrl : `http://172.16.0.1:8080/isos/${isoUrl.replace(/^\/+/, "")}`;
+      const mountRes = await this.mountVirtualMediaIso(fullIso, username, password, rebootToIso);
+      return { success: true, message: "Initiated OS deployment via fallback mode.", details: mountRes };
+    }
   }
 }

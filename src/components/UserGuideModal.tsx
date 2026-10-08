@@ -86,7 +86,7 @@ export function UserGuideModal({ isOpen, onClose }: UserGuideModalProps) {
                 </p>
                 <ul className="list-disc pl-5 space-y-1 text-slate-600">
                   <li><strong>Global Navigation Bar:</strong> Top quick search, user profile, logout, and Help menu.</li>
-                  <li><strong>Left Sidebar:</strong> Navigation between Summary Dashboard, Server Inventory, 3D Data Center, AIOps Engine, Sustainability Metrics, and Settings.</li>
+                  <li><strong>Left Sidebar:</strong> Navigation between Summary Dashboard, Server Inventory, 3D Data Center, AIOps Engine, Raid, and Settings.</li>
                   <li><strong>Widget Grid:</strong> Customizable gadgets showing real-time temperature trends, power consumption, PUE, and event logs.</li>
                 </ul>
               </div>

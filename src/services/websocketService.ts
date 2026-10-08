@@ -8,9 +8,9 @@
 
 class TelemetryWebSocketService {
   private socket: WebSocket | null = null;
-  private url: string = "ws://127.0.0.1:8000/ws/events";
   private isConnected: boolean = false;
-  private reconnectIntervalMs: number = 3000;
+  private reconnectIntervalMs: number = 2000;
+  private maxReconnectIntervalMs: number = 10000;
   private reconnectTimer: any = null;
 
   // Throttled SSE Event Buffer (300ms window)
@@ -18,17 +18,29 @@ class TelemetryWebSocketService {
   private throttleTimer: any = null;
   private THROTTLE_INTERVAL_MS: number = 300;
 
+  private getWebSocketUrl(): string {
+    try {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const hostname = window.location.hostname || "127.0.0.1";
+      return `${protocol}//${hostname}:8000/ws/events`;
+    } catch (_) {}
+    return "ws://127.0.0.1:8000/ws/events";
+  }
+
   public connect() {
     if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
       return;
     }
 
+    const wsUrl = this.getWebSocketUrl();
+
     try {
-      this.socket = new WebSocket(this.url);
+      this.socket = new WebSocket(wsUrl);
 
       this.socket.onopen = () => {
         this.isConnected = true;
-        console.log("⚡ [WebSocket] Connected to Tyrone Python Backend (ws://127.0.0.1:8000/ws/events)");
+        this.reconnectIntervalMs = 2000; // Reset backoff interval on successful connection
+        console.log(`⚡ [WebSocket] Connected to Tyrone Engine (${wsUrl})`);
         if (this.reconnectTimer) {
           clearTimeout(this.reconnectTimer);
           this.reconnectTimer = null;
@@ -38,7 +50,6 @@ class TelemetryWebSocketService {
       this.socket.onmessage = (event: MessageEvent) => {
         try {
           const data = JSON.parse(event.data);
-          
           if (data.type === "REDFISH_EVENT" || data.type === "INVENTORY_UPDATED") {
             this.bufferEvent(data);
           }
@@ -48,16 +59,15 @@ class TelemetryWebSocketService {
       };
 
       this.socket.onerror = (error) => {
-        console.warn("[WebSocket] Error connecting to Python backend:", error);
+        // Quiet warning on initial startup or reconnect
+        console.debug("[WebSocket] Socket connection notice:", error);
       };
 
       this.socket.onclose = () => {
         this.isConnected = false;
-        console.log("[WebSocket] Connection closed. Retrying connection in 3s...");
         this.scheduleReconnect();
       };
     } catch (e) {
-      console.warn("[WebSocket] Connection attempt failed:", e);
       this.scheduleReconnect();
     }
   }

@@ -1,0 +1,13 @@
+# Caddyfile - Tyrone Dashboard Reverse Proxy & ISO Storage Server for Rocky Linux
+
+# Reverse Proxy for Dashboard Web Console and WebSockets
+:80 {
+    encode gzip
+    reverse_proxy 127.0.0.1:3000
+}
+
+# Plain HTTP Port for Redfish Virtual Media ISO serving
+:8080 {
+    root * public
+    file_server browse
+}

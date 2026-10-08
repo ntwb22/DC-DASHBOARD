@@ -101,14 +101,57 @@ async def test_all():
     SESSION_TOKEN_CACHE["https://172.16.12.50"] = "mock-x-auth-token-12345"
     assert SESSION_TOKEN_CACHE.get("https://172.16.12.50") == "mock-x-auth-token-12345"
 
-    # Test server deletion check for sse_engine
+    logger.info("=== STEP 6: Dynamic Path Discovery, Per-BMC Semaphores, Read-Through Buffer & Bulk Upserts ===")
+    # 1. Test Dynamic Path Discovery Persistence & Lookup
+    await db.save_server("server-dyn-1", "Dynamic Path Node", "172.16.12.99", "SM", "admin", clear_pass, "Rack 3")
+    mock_paths = {"systems": "/redfish/v1/Systems/Self", "chassis": "/redfish/v1/Chassis/Self", "managers": "/redfish/v1/Managers/1"}
+    await db.save_resolved_paths("server-dyn-1", mock_paths)
+    fetched_paths = await db.get_resolved_paths("server-dyn-1")
+    assert fetched_paths.get("systems") == "/redfish/v1/Systems/Self", "Resolved path lookup failed!"
+    logger.info(f"Dynamic Path Discovery lookup verified: {fetched_paths}")
+
+    # 2. Test Read-Through Buffer
+    await db.save_raw_inventory("server-dyn-1", "SM", mock_sm_sys, mock_sm_net)
+    static_buf = await db.get_static_inventory("server-dyn-1")
+    assert static_buf is not None and static_buf.get("Model") == "SYS-220U-TNR", "Read-Through Buffer failed!"
+    logger.info(f"Read-Through Buffer verified for model '{static_buf.get('Model')}'")
+
+    # 3. Test Single Transaction Bulk Upserts
+    bulk_items = [
+        {"server_id": "server-dyn-1", "vendor": "SM", "inventory_data": mock_sm_sys, "raw_payload": mock_sm_net},
+    ]
+    bulk_res = await db.bulk_upsert_server_inventory(bulk_items)
+    assert bulk_res == True, "Bulk upsert transaction failed!"
+    logger.info("Single transaction bulk inventory upsert verified successfully.")
+
+    await db.delete_server("server-dyn-1")
+    post_del_servers = await db.get_all_servers()
+    assert not any(s["id"] == "server-dyn-1" or s["ip"] == "172.16.12.99" for s in post_del_servers), "Server still exists in PostgreSQL after deletion!"
+    logger.info("Server deletion and PostgreSQL DB validation check verified successfully.")
+
+    logger.info("=== STEP 7: Thread-Safe Background Task Registry & Device Deletion Termination ===")
+    from redfish_backend import register_server_task, cancel_server_tasks, SERVER_TASK_REGISTRY
+
+    async def dummy_bg_loop():
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            pass
+
+    dummy_task = asyncio.create_task(dummy_bg_loop())
+    register_server_task("172.16.12.99", dummy_task)
+    assert dummy_task in SERVER_TASK_REGISTRY.get("172.16.12.99", set()), "Task registration failed!"
+    logger.info("Task registered in SERVER_TASK_REGISTRY successfully.")
+
+    await cancel_server_tasks("172.16.12.99")
+    await asyncio.sleep(0.1)
+    assert dummy_task.done(), "Task was not cancelled upon server deletion!"
+    assert "172.16.12.99" not in SERVER_TASK_REGISTRY, "Registry cleanup failed!"
+    # Clean up test nodes to prevent lingering in database
     await db.delete_server("server-sm-1")
     await db.delete_server("server-as-1")
-    remaining = await db.get_all_servers()
-    assert not any(s["id"] in ("server-sm-1", "server-as-1") for s in remaining), "Server deletion failed!"
-    logger.info("Server deletion and DB validation check verified successfully.")
 
-    logger.info(" ALL 5 BACKEND REFACTORING REQUIREMENTS VERIFIED SUCCESSFULLY!")
+    logger.info(" ALL REFACTORING & OPTIMIZATION REQUIREMENTS VERIFIED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     asyncio.run(test_all())

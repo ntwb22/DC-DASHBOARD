@@ -17,6 +17,8 @@ export interface ServerStatus {
   status: "OK" | "Warning" | "Critical" | "Offline" | "Loading";
   model?: string;
   manufacturer?: string;
+  storage?: any[];
+  firmware?: { bmc?: string; bios?: string };
 }
 
 export interface ReliabilityViewProps {

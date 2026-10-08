@@ -221,7 +221,7 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
   useEffect(() => {
     if (activeTab === "sse_stream") {
       fetchSseStatus();
-      const timer = setInterval(fetchSseStatus, 5000);
+      const timer = setInterval(fetchSseStatus, 30000);
       return () => clearInterval(timer);
     }
   }, [activeTab]);

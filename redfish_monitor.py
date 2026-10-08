@@ -147,103 +147,158 @@ class CircuitBreaker:
 
 # ============================================================================
 # 3. Tier 1: Low-Frequency Inventory Caching ($expand Optimization)
-# ============================================================================
+MONITOR_BMC_SEMAPHORES: Dict[str, asyncio.Semaphore] = {}
+
+def get_monitor_bmc_semaphore(bmc_ip: str) -> asyncio.Semaphore:
+    """Enforces per-BMC target concurrency semaphore limit."""
+    clean = bmc_ip.lstrip("http://").lstrip("https://").strip().split("/")[0].split(":")[0]
+    if clean not in MONITOR_BMC_SEMAPHORES:
+        MONITOR_BMC_SEMAPHORES[clean] = asyncio.Semaphore(2)
+    return MONITOR_BMC_SEMAPHORES[clean]
+
 async def fetch_and_cache_inventory(
     server_id: str,
     bmc_ip: str,
     username: str,
     password: str,
-    vendor: str = "SM"
+    vendor: str = "SM",
+    force_refresh: bool = False
 ) -> Dict[str, Any]:
     """
     Low-Frequency System Inventory Fetcher:
-    - Uses Redfish $expand query parameters (?$expand=*($levels=1)) to fetch system, chassis,
-      CPUs, memory, power, thermal, and storage in <3 HTTP requests.
-    - Stores/upserts normalized results in database JSONB cache.
-    - Executed ONLY when:
-        1. A server is added
-        2. Manually refreshed by user
-        3. On 24-hour background schedule
+    - Dynamic Path Discovery & Normalization (System, Chassis, Manager URIs resolved via /redfish/v1/).
+    - Enforces per-BMC target asyncio.Semaphore concurrency limit.
+    - Uses Read-Through Buffer in PostgreSQL for static attributes.
     """
     clean_ip = bmc_ip.lstrip("http://").lstrip("https://").strip()
-    base_url = f"https://{clean_ip}"
-    client = http_pool.get_client()
+    sem = get_monitor_bmc_semaphore(clean_ip)
 
-    token = await get_or_acquire_session_token(client, clean_ip, username, password)
-    headers = {"Accept": "application/json"}
-    if token:
-        headers["X-Auth-Token"] = token
-    auth = None if token else (username, password)
+    async with sem:
+        # Read-Through Buffer Check
+        static_cached = None
+        if not force_refresh:
+            static_cached = await db.get_static_inventory(clean_ip)
 
-    inventory_data: Dict[str, Any] = {
-        "server_id": server_id,
-        "bmc_ip": clean_ip,
-        "fetched_at": datetime.now().isoformat(),
-        "http_requests": 0,
-        "system": {},
-        "chassis": {},
-        "processors": [],
-        "memory": [],
-        "storage": [],
-        "power": {},
-        "thermal": {},
-        "firmware": {}
-    }
+        # Dynamic Path Resolution Lookup
+        resolved_paths = await db.get_resolved_paths(clean_ip)
+        if not resolved_paths or "systems" not in resolved_paths:
+            resolved_paths = {"systems": "/redfish/v1/Systems/1", "chassis": "/redfish/v1/Chassis/1"}
+            # Discover dynamically from /redfish/v1/
+            base_url = f"https://{clean_ip}"
+            client = http_pool.get_client()
+            token = await get_or_acquire_session_token(client, clean_ip, username, password)
+            headers = {"Accept": "application/json"}
+            if token:
+                headers["X-Auth-Token"] = token
+            auth = None if token else (username, password)
+            try:
+                r_root = await client.get(f"{base_url}/redfish/v1/", headers=headers, auth=auth)
+                if r_root.status_code == 200:
+                    root_json = r_root.json()
+                    sys_ref = root_json.get("Systems", {}).get("@odata.id", "/redfish/v1/Systems")
+                    r_sys = await client.get(f"{base_url}{sys_ref}", headers=headers, auth=auth)
+                    if r_sys.status_code == 200 and r_sys.json().get("Members"):
+                        resolved_paths["systems"] = r_sys.json()["Members"][0].get("@odata.id", "/redfish/v1/Systems/1")
 
-    # Query 1: Bulk System Inventory using $expand
-    sys_expand_url = f"{base_url}/redfish/v1/Systems/1?$expand=*($levels=1)"
-    try:
-        inventory_data["http_requests"] += 1
-        resp = await client.get(sys_expand_url, headers=headers, auth=auth)
-        if resp.status_code == 200:
-            sys_data = resp.json()
-            inventory_data["system"] = sys_data
-            if "Processors" in sys_data and isinstance(sys_data["Processors"], dict):
-                inventory_data["processors"] = sys_data["Processors"].get("Members", [])
-            if "Memory" in sys_data and isinstance(sys_data["Memory"], dict):
-                inventory_data["memory"] = sys_data["Memory"].get("Members", [])
-            if "Storage" in sys_data and isinstance(sys_data["Storage"], dict):
-                inventory_data["storage"] = sys_data["Storage"].get("Members", [])
-        else:
-            # Fallback to plain GET if $expand not supported by legacy BMC
+                    ch_ref = root_json.get("Chassis", {}).get("@odata.id", "/redfish/v1/Chassis")
+                    r_ch = await client.get(f"{base_url}{ch_ref}", headers=headers, auth=auth)
+                    if r_ch.status_code == 200 and r_ch.json().get("Members"):
+                        resolved_paths["chassis"] = r_ch.json()["Members"][0].get("@odata.id", "/redfish/v1/Chassis/1")
+
+                    await db.save_resolved_paths(clean_ip, resolved_paths)
+            except Exception as e:
+                logger.debug(f"[Path Discovery] Dynamic discovery notice for {clean_ip}: {e}")
+
+        s_path = resolved_paths.get("systems", "/redfish/v1/Systems/1")
+        c_path = resolved_paths.get("chassis", "/redfish/v1/Chassis/1")
+        base_url = f"https://{clean_ip}"
+        client = http_pool.get_client()
+
+        token = await get_or_acquire_session_token(client, clean_ip, username, password)
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["X-Auth-Token"] = token
+        auth = None if token else (username, password)
+
+        inventory_data: Dict[str, Any] = {
+            "server_id": server_id,
+            "bmc_ip": clean_ip,
+            "fetched_at": datetime.now().isoformat(),
+            "http_requests": 0,
+            "system": {},
+            "chassis": {},
+            "processors": [],
+            "memory": [],
+            "storage": [],
+            "power": {},
+            "thermal": {},
+            "firmware": {}
+        }
+
+        # Query 1: Lightweight System Inventory
+        sys_url = f"{base_url}{s_path}"
+        try:
             inventory_data["http_requests"] += 1
-            resp_plain = await client.get(f"{base_url}/redfish/v1/Systems/1", headers=headers, auth=auth)
-            if resp_plain.status_code == 200:
-                inventory_data["system"] = resp_plain.json()
-    except Exception as e:
-        logger.warning(f"[Inventory] System fetch error for {clean_ip}: {e}")
+            resp = await client.get(sys_url, headers=headers, auth=auth)
+            if resp.status_code in (401, 403):
+                SESSION_TOKEN_CACHE.pop(clean_ip, None)
+                token = await get_or_acquire_session_token(client, clean_ip, username, password)
+                if token:
+                    headers["X-Auth-Token"] = token
+                    auth = None
+                resp = await client.get(sys_url, headers=headers, auth=auth)
 
-    # Query 2: Bulk Chassis (Thermal, Power, Fans) using $expand
-    chassis_expand_url = f"{base_url}/redfish/v1/Chassis/1?$expand=*($levels=1)"
-    try:
-        inventory_data["http_requests"] += 1
-        resp_c = await client.get(chassis_expand_url, headers=headers, auth=auth)
-        if resp_c.status_code == 200:
-            c_data = resp_c.json()
-            inventory_data["chassis"] = c_data
-            inventory_data["thermal"] = c_data.get("Thermal", {})
-            inventory_data["power"] = c_data.get("Power", {})
-        else:
+            if resp.status_code == 200:
+                sys_data = resp.json()
+                inventory_data["system"] = sys_data
+                if "Processors" in sys_data and isinstance(sys_data["Processors"], dict):
+                    inventory_data["processors"] = sys_data["Processors"].get("Members", [])
+                if "Memory" in sys_data and isinstance(sys_data["Memory"], dict):
+                    inventory_data["memory"] = sys_data["Memory"].get("Members", [])
+                if "Storage" in sys_data and isinstance(sys_data["Storage"], dict):
+                    inventory_data["storage"] = sys_data["Storage"].get("Members", [])
+        except Exception as e:
+            logger.warning(f"[Inventory] System fetch error for {clean_ip} on {s_path}: {e}")
+
+        # Query 2: Lightweight Chassis Inventory
+        chassis_url = f"{base_url}{c_path}"
+        try:
             inventory_data["http_requests"] += 1
-            resp_th = await client.get(f"{base_url}/redfish/v1/Chassis/1/Thermal", headers=headers, auth=auth)
-            if resp_th.status_code == 200:
-                inventory_data["thermal"] = resp_th.json()
-    except Exception as e:
-        logger.warning(f"[Inventory] Chassis fetch error for {clean_ip}: {e}")
+            resp_c = await client.get(chassis_url, headers=headers, auth=auth)
+            if resp_c.status_code == 200:
+                c_data = resp_c.json()
+                inventory_data["chassis"] = c_data
+                inventory_data["thermal"] = c_data.get("Thermal", {})
+                inventory_data["power"] = c_data.get("Power", {})
+            else:
+                resp_th = await client.get(f"{base_url}{c_path}/Thermal", headers=headers, auth=auth)
+                if resp_th.status_code == 200:
+                    inventory_data["thermal"] = resp_th.json()
+        except Exception as e:
+            logger.warning(f"[Inventory] Chassis fetch error for {clean_ip} on {c_path}: {e}")
 
-    # Persist in Database JSONB Cache
-    await db.upsert_server_inventory(server_id, vendor, inventory_data, {})
-    try:
-        from sse_engine import broadcast_event
-        await broadcast_event({
-            "type": "INVENTORY_UPDATED",
-            "serverId": server_id,
-            "ip": clean_ip,
-            "timestamp": datetime.now().isoformat(),
-            "inventory": inventory_data
-        })
-    except Exception:
-        pass
+        # If static attributes were retrieved from read-through buffer, merge them if live call was partial
+        if static_cached and not force_refresh:
+            if not inventory_data["system"].get("Model") and static_cached.get("Model"):
+                inventory_data["system"]["Model"] = static_cached.get("Model")
+            if not inventory_data["system"].get("Manufacturer") and static_cached.get("Manufacturer"):
+                inventory_data["system"]["Manufacturer"] = static_cached.get("Manufacturer")
+
+        # Persist in Database JSONB Cache
+        await db.upsert_server_inventory(server_id, vendor, inventory_data, {})
+        try:
+            from sse_engine import broadcast_event
+            await broadcast_event({
+                "type": "INVENTORY_UPDATED",
+                "serverId": server_id,
+                "ip": clean_ip,
+                "timestamp": datetime.now().isoformat(),
+                "inventory": inventory_data
+            })
+        except Exception:
+            pass
+
+        return inventory_data
     logger.info(f"[Tier 1 Inventory] Successfully fetched & cached inventory for {server_id} ({clean_ip}) in {inventory_data['http_requests']} requests.")
     return inventory_data
 
@@ -273,6 +328,7 @@ class SSERedfishDaemonWorker:
         self.last_seen: float = time.time()
         self.last_event_id: Optional[str] = None
         self.status: str = "OK"
+        self.sse_supported: bool = True
 
     async def start(self):
         if self.running:
@@ -299,7 +355,10 @@ class SSERedfishDaemonWorker:
         event_service_url = f"{base_url}/redfish/v1/EventService"
         try:
             resp = await client.get(event_service_url, headers=headers, auth=auth, timeout=4.0)
-            if resp.status_code == 200:
+            if resp.status_code in (401, 403):
+                logger.warning(f"[SSE Auth] 401/403 on EventService discovery for {self.bmc_ip}. Evicting cached token...")
+                SESSION_TOKEN_CACHE.pop(self.bmc_ip, None)
+            elif resp.status_code == 200:
                 data = resp.json()
                 sse_uri = data.get("ServerSentEventUri")
                 if sse_uri:
@@ -323,13 +382,17 @@ class SSERedfishDaemonWorker:
 
         sel_urls = [
             f"{base_url}/redfish/v1/Systems/1/LogServices/EventLog/Entries",
-            f"{base_url}/redfish/v1/Managers/1/LogServices/SEL/Entries"
+            f"{base_url}/redfish/v1/Systems/Self/LogServices/EventLog/Entries",
+            f"{base_url}/redfish/v1/Managers/1/LogServices/SEL/Entries",
+            f"{base_url}/redfish/v1/Managers/Self/LogServices/SEL/Entries"
         ]
         entries = []
         for url in sel_urls:
             try:
                 resp = await client.get(url, headers=headers, auth=auth, timeout=5.0)
-                if resp.status_code == 200:
+                if resp.status_code in (401, 403):
+                    SESSION_TOKEN_CACHE.pop(self.bmc_ip, None)
+                elif resp.status_code == 200:
                     data = resp.json()
                     entries = data.get("Members", [])
                     if entries:
@@ -343,6 +406,10 @@ class SSERedfishDaemonWorker:
         base_url = f"https://{self.bmc_ip}"
 
         while self.running:
+            if not self.sse_supported:
+                await asyncio.sleep(3600.0)
+                continue
+
             if not self.circuit_breaker.can_execute():
                 await asyncio.sleep(1.0)
                 continue
@@ -364,7 +431,7 @@ class SSERedfishDaemonWorker:
                 sse_timeout = httpx.Timeout(connect=5.0, read=None, write=5.0, pool=10.0)
                 async with client.stream("GET", sse_endpoint, auth=auth, headers=headers, timeout=sse_timeout) as response:
                     if response.status_code in (401, 403):
-                        logger.warning(f"[SSE 401] Expired session token on {self.bmc_ip}. Forcing re-auth...")
+                        logger.warning(f"[SSE {response.status_code}] Invalid or expired session token on {self.bmc_ip}. Evicting token and retrying re-auth...")
                         SESSION_TOKEN_CACHE.pop(self.bmc_ip, None)
                         self.circuit_breaker.record_failure()
 
@@ -372,6 +439,10 @@ class SSERedfishDaemonWorker:
                         self.circuit_breaker.record_success()
                         await self.update_last_seen()
                         await self._parse_sse_stream(response)
+                    elif response.status_code in (400, 404, 405, 501):
+                        logger.info(f"[SSE Disabled] Server {self.server_id} ({self.bmc_ip}): BMC returned HTTP {response.status_code} for SSE endpoint. SSE live streaming is not supported on this node. Disabling SSE worker.")
+                        self.sse_supported = False
+                        self.circuit_breaker.record_success()
                     else:
                         logger.warning(f"[SSE HTTP {response.status_code}] Stream rejected by {self.bmc_ip}")
                         self.circuit_breaker.record_failure()
@@ -489,7 +560,7 @@ class RedfishMonitoringManager:
       3. Circuit breaker & backoff handling
       4. Silent BMC detection watchdog
     """
-    def __init__(self, inventory_interval: float = 86400.0): # 24 hours
+    def __init__(self, inventory_interval: float = 180.0): # 3 minutes
         self.inventory_interval = inventory_interval
         self.workers: Dict[str, SSERedfishDaemonWorker] = {}
         self.watchdog = SilentBMCWatchdog(self.workers, check_interval=30.0, silent_timeout=300.0)
@@ -497,7 +568,7 @@ class RedfishMonitoringManager:
         self.inventory_task: Optional[asyncio.Task] = None
 
     async def start(self):
-        """Initializes storage layer, starts background 24h scheduler and watchdog."""
+        """Initializes storage layer, starts background 3-minute scheduler and watchdog."""
         if self.running:
             return
         self.running = True
@@ -507,7 +578,9 @@ class RedfishMonitoringManager:
 
         servers = await db.get_all_servers()
         await self.sync_servers(servers)
-        logger.info(f"🚀 RedfishMonitoringManager operational. Monitoring {len(servers)} registered servers.")
+        # Schedule immediate background inventory poll for all registered servers
+        asyncio.create_task(self.on_manual_refresh())
+        logger.info(f"🚀 RedfishMonitoringManager operational. Monitoring & background polling {len(servers)} registered servers (interval: {self.inventory_interval}s).")
 
     async def stop(self):
         self.running = False

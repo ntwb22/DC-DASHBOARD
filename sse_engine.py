@@ -115,6 +115,9 @@ class SSERedfishReceiver:
                         elif response.status_code == 200:
                             self.backoff_seconds = 1.0 # Reset backoff on successful connection
                             await self._process_stream(response)
+                        elif response.status_code in (400, 404, 405, 501):
+                            logger.info(f"[SSE Notice] BMC at {self.bmc_ip} returned HTTP {response.status_code}. SSE stream not supported/enabled on this node.")
+                            self.backoff_seconds = 600.0
                         else:
                             logger.warning(f"[SSE] Unexpected HTTP {response.status_code} from {self.bmc_ip}")
 

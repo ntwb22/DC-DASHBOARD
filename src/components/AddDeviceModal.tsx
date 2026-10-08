@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { X, Plus, Server, ArrowLeft, RefreshCw, Eye, EyeOff } from "lucide-react";
+import { X, Plus, Server, ArrowLeft, RefreshCw, Eye, EyeOff, Layers, CheckCircle2 } from "lucide-react";
 import { validateBmcCredentials, fetchServerDetailsForAddition } from "../services/redfishService";
 
 export interface AddDeviceModalProps {
@@ -9,15 +9,47 @@ export interface AddDeviceModalProps {
   onBackToDevicesNotInHierarchy?: () => void;
 }
 
+export function parseIpList(raw: string): string[] {
+  if (!raw || !raw.trim()) return [];
+  const results: string[] = [];
+
+  // Match IP ranges like 172.16.12.50-60 or 172.16.12.50-172.16.12.60 or range: 172.16.12.50-60
+  const rangeRegex = /(\d{1,3}\.\d{1,3}\.\d{1,3}\.)(\d{1,3})\s*(?:-|to)\s*(?:(\d{1,3}\.\d{1,3}\.\d{1,3}\.)?(\d{1,3}))/gi;
+
+  const processedStr = raw.replace(rangeRegex, (fullMatch, prefix, startStr, endPrefix, endStr) => {
+    const start = parseInt(startStr, 10);
+    const end = parseInt(endStr, 10);
+    if (!isNaN(start) && !isNaN(end) && start <= end && end - start <= 255) {
+      for (let i = start; i <= end; i++) {
+        results.push(`${prefix}${i}`);
+      }
+    }
+    return " ";
+  });
+
+  // Extract all remaining standalone IPv4 addresses
+  const ipRegex = /\b(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g;
+  const singleIps = processedStr.match(ipRegex) || [];
+  for (const ip of singleIps) {
+    results.push(ip);
+  }
+
+  return Array.from(new Set(results));
+}
+
 export function AddDeviceModal({
   isOpen,
   onClose,
   onAddDevice,
   onBackToDevicesNotInHierarchy
 }: AddDeviceModalProps) {
+  // Mode selection: 'single' | 'bulk'
+  const [mode, setMode] = useState<"single" | "bulk">("single");
+
   // Required Device Info
   const [name, setName] = useState("");
   const [ipAddress, setIpAddress] = useState("");
+  const [bulkIps, setBulkIps] = useState("172.16.12.50\n172.16.12.51\n172.16.12.52");
   const [category, setCategory] = useState<"SM" | "AS">("SM");
   const [deviceType, setDeviceType] = useState("Server");
   const [rack, setRack] = useState("");
@@ -44,161 +76,243 @@ export function AddDeviceModal({
 
   if (!isOpen) return null;
 
+  const parsedBulkIps = parseIpList(bulkIps);
+
+  const handleSwitchMode = (newMode: "single" | "bulk") => {
+    setMode(newMode);
+    if (newMode === "bulk" && !bulkIps.trim()) {
+      setBulkIps("172.16.12.50\n172.16.12.51\n172.16.12.52");
+    }
+  };
+
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
-    const trimmedName = name.trim();
-    const trimmedIp = ipAddress.trim();
-
-    if (!trimmedName && !trimmedIp) {
-      setFormError("Please enter a Device Name or IP Address.");
-      return;
-    }
-
-    const deviceIp = trimmedIp || `172.16.12.${Math.floor(Math.random() * 150) + 10}`;
-    const deviceName = trimmedName || `Tyrone Node (${deviceIp})`;
     const userStr = ipmiUsername.trim() || "admin";
     const passStr = ipmiPassword.trim() || "netweb@123";
 
-    setIsSubmitting(true);
-    let fetchedInfo: any = null;
-    try {
-      await validateBmcCredentials(deviceIp, userStr, passStr, category);
-      fetchedInfo = await fetchServerDetailsForAddition(deviceIp, userStr, passStr, category);
-    } catch (err: any) {
-      console.warn("BMC ping/connection returned warning, creating device profile:", err);
-    }
-    setIsSubmitting(false);
+    if (mode === "single") {
+      const trimmedName = name.trim();
+      const trimmedIp = ipAddress.trim();
 
-    const generatedSerial = serialNumber.trim() || fetchedInfo?.serialNumber || undefined;
-    const modelName = fetchedInfo?.model || "RH21XM";
-    const manufacturerName = vendor.trim() !== "Tyrone Systems" ? vendor.trim() : (fetchedInfo?.manufacturer || "Tyrone Systems");
-
-    const newDevice = {
-      id: `server-${Date.now()}`,
-      name: deviceName,
-      bmcIp: deviceIp,
-      bmcUsername: userStr,
-      bmcPassword: passStr,
-      category,
-      chassisUri: category === "AS" ? "/redfish/v1/Chassis/Self" : "/redfish/v1/Chassis/1",
-      model: modelName,
-      manufacturer: manufacturerName,
-      serialNumber: generatedSerial,
-      serial: generatedSerial,
-      powerStatus: fetchedInfo?.powerState === "Off" ? "OFF" : "ON",
-      healthStatus: fetchedInfo?.healthStatus || "OK",
-      health: fetchedInfo?.healthStatus || "OK",
-      rack: rack || "Rack 1",
-      deviceType,
-      protocol,
-      ipmiKey,
-      operatingSystem,
-      sizeU: sizeU.trim() || "1",
-      size: sizeU.trim() || "1",
-      deratedPowerW: deratedPowerW.trim() || "400",
-      powerW: deratedPowerW.trim() || "400",
-      weightKg: weightKg.trim() || "15",
-      weight: weightKg.trim() || "15",
-      vendor: manufacturerName,
-      owner,
-      description,
-      specs: {
-        cpu: fetchedInfo?.processorsCount ? `${fetchedInfo.processorsCount} CPUs` : "Multi-Core Processor",
-        cores: fetchedInfo?.processorsCount || 2,
-        memory: fetchedInfo?.memoryGiB ? `${fetchedInfo.memoryGiB} GB` : "N/A",
-        storage: fetchedInfo?.storageCount ? `${fetchedInfo.storageCount} Drives` : "N/A"
+      if (!trimmedName && !trimmedIp) {
+        setFormError("Please enter a Device Name or IP Address.");
+        return;
       }
-    };
 
+      const deviceIp = trimmedIp || `172.16.12.${Math.floor(Math.random() * 150) + 10}`;
+      const deviceName = trimmedName || `Tyrone Node (${deviceIp})`;
 
-    // Remove from deleted keys in localStorage
+      setIsSubmitting(true);
+      let fetchedInfo: any = null;
+      try {
+        await validateBmcCredentials(deviceIp, userStr, passStr, category);
+        fetchedInfo = await fetchServerDetailsForAddition(deviceIp, userStr, passStr, category);
+      } catch (err: any) {
+        console.warn("BMC ping/connection returned warning, creating device profile:", err);
+      }
+      setIsSubmitting(false);
+
+      const generatedSerial = serialNumber.trim() || fetchedInfo?.serialNumber || undefined;
+      const modelName = fetchedInfo?.model || "RH21XM";
+      const manufacturerName = vendor.trim() !== "Tyrone Systems" ? vendor.trim() : (fetchedInfo?.manufacturer || (category === "AS" ? "ASRock" : "Tyrone Systems"));
+
+      const newDevice = {
+        id: `server-${Date.now()}`,
+        name: deviceName,
+        bmcIp: deviceIp,
+        bmcUsername: userStr,
+        bmcPassword: passStr,
+        category,
+        chassisUri: category === "AS" ? "/redfish/v1/Chassis/Self" : "/redfish/v1/Chassis/1",
+        model: modelName,
+        manufacturer: manufacturerName,
+        serialNumber: generatedSerial,
+        serial: generatedSerial,
+        powerStatus: fetchedInfo?.powerState === "Off" ? "OFF" : "ON",
+        healthStatus: fetchedInfo?.healthStatus || "OK",
+        health: fetchedInfo?.healthStatus || "OK",
+        rack: rack || "Rack 1",
+        deviceType,
+        protocol,
+        ipmiKey,
+        operatingSystem,
+        sizeU: sizeU.trim() || "1",
+        size: sizeU.trim() || "1",
+        deratedPowerW: deratedPowerW.trim() || "400",
+        powerW: deratedPowerW.trim() || "400",
+        weightKg: weightKg.trim() || "15",
+        weight: weightKg.trim() || "15",
+        vendor: manufacturerName,
+        owner,
+        description,
+        specs: {
+          cpu: fetchedInfo?.processorsCount ? `${fetchedInfo.processorsCount} CPUs` : "Multi-Core Processor",
+          cores: fetchedInfo?.processorsCount || 2,
+          memory: fetchedInfo?.memoryGiB ? `${fetchedInfo.memoryGiB} GB` : "N/A",
+          storage: fetchedInfo?.storageCount ? `${fetchedInfo.storageCount} Drives` : "N/A"
+        }
+      };
+
+      persistDevicesBatch([newDevice]);
+      onAddDevice(newDevice);
+      onClose();
+    } else {
+      // BULK MODE
+      if (parsedBulkIps.length === 0) {
+        setFormError("Please enter at least one valid IP address or IP range (e.g. 172.16.12.50-60 or 172.16.12.50, 172.16.12.51).");
+        return;
+      }
+
+      setIsSubmitting(true);
+      const namePrefix = name.trim();
+      const createdDevices: any[] = [];
+      const timestamp = Date.now();
+
+      // Probe first IP to see if credentials work
+      const firstIp = parsedBulkIps[0];
+      let firstFetchedInfo: any = null;
+      try {
+        await validateBmcCredentials(firstIp, userStr, passStr, category);
+        firstFetchedInfo = await fetchServerDetailsForAddition(firstIp, userStr, passStr, category);
+      } catch (err: any) {
+        console.warn("First BMC ping warning in bulk add:", err);
+      }
+      setIsSubmitting(false);
+
+      parsedBulkIps.forEach((ip, idx) => {
+        const deviceName = namePrefix
+          ? (parsedBulkIps.length > 1 ? `${namePrefix} (${ip})` : namePrefix)
+          : `Tyrone Node (${ip})`;
+
+        const devId = `server-${timestamp}-${idx}-${Math.floor(Math.random() * 1000)}`;
+
+        const dev = {
+          id: devId,
+          name: deviceName,
+          bmcIp: ip,
+          bmcUsername: userStr,
+          bmcPassword: passStr,
+          category,
+          chassisUri: category === "AS" ? "/redfish/v1/Chassis/Self" : "/redfish/v1/Chassis/1",
+          model: (idx === 0 && firstFetchedInfo?.model) || "RH21XM",
+          manufacturer: vendor.trim() !== "Tyrone Systems" ? vendor.trim() : ((idx === 0 && firstFetchedInfo?.manufacturer) || (category === "AS" ? "ASRock" : "Tyrone Systems")),
+          serialNumber: idx === 0 ? (serialNumber.trim() || firstFetchedInfo?.serialNumber) : undefined,
+          serial: idx === 0 ? (serialNumber.trim() || firstFetchedInfo?.serialNumber) : undefined,
+          powerStatus: (idx === 0 && firstFetchedInfo?.powerState === "Off") ? "OFF" : "ON",
+          healthStatus: "OK",
+          health: "OK",
+          rack: rack || "Rack 1",
+          deviceType,
+          protocol,
+          ipmiKey,
+          operatingSystem,
+          sizeU: sizeU.trim() || "1",
+          size: sizeU.trim() || "1",
+          deratedPowerW: deratedPowerW.trim() || "400",
+          powerW: deratedPowerW.trim() || "400",
+          weightKg: weightKg.trim() || "15",
+          weight: weightKg.trim() || "15",
+          vendor: category === "AS" ? "ASRock" : "Tyrone Systems",
+          owner,
+          description,
+          specs: {
+            cpu: (idx === 0 && firstFetchedInfo?.processorsCount) ? `${firstFetchedInfo.processorsCount} CPUs` : "Multi-Core Processor",
+            cores: (idx === 0 && firstFetchedInfo?.processorsCount) || 2,
+            memory: (idx === 0 && firstFetchedInfo?.memoryGiB) ? `${firstFetchedInfo.memoryGiB} GB` : "N/A",
+            storage: (idx === 0 && firstFetchedInfo?.storageCount) ? `${firstFetchedInfo.storageCount} Drives` : "N/A"
+          }
+        };
+
+        createdDevices.push(dev);
+      });
+
+      persistDevicesBatch(createdDevices);
+
+      // Invoke callback for created devices
+      createdDevices.forEach(dev => onAddDevice(dev));
+      onClose();
+    }
+  };
+
+  const persistDevicesBatch = (devices: any[]) => {
+    // 1. Remove from deleted keys in localStorage
     try {
       const rawDel = localStorage.getItem("tyrone_deleted_keys");
       if (rawDel) {
         const delSet = new Set<string>(JSON.parse(rawDel));
-        const toRemove: string[] = [];
-        delSet.forEach(k => {
-          const lk = String(k).toLowerCase();
-          if (
-            lk === newDevice.id.toLowerCase() ||
-            lk === newDevice.bmcIp.toLowerCase() ||
-            lk === newDevice.name.toLowerCase()
-          ) {
-            toRemove.push(k);
-          }
+        devices.forEach(dev => {
+          delSet.delete(dev.id.toLowerCase());
+          delSet.delete(dev.bmcIp.toLowerCase());
+          delSet.delete(dev.name.toLowerCase());
         });
-        toRemove.forEach(k => delSet.delete(k));
         localStorage.setItem("tyrone_deleted_keys", JSON.stringify(Array.from(delSet)));
       }
     } catch (_) {}
 
-    // Update tyrone_fleet in localStorage
+    // 2. Update tyrone_fleet & tyrone_server_racks in localStorage
     try {
       const saved = localStorage.getItem("tyrone_fleet");
       const currentFleet = saved ? JSON.parse(saved) : [];
-      const updatedFleet = [...currentFleet.filter((s: any) => s.id !== newDevice.id && s.bmcIp !== newDevice.bmcIp), newDevice];
+      const newIps = new Set(devices.map(d => d.bmcIp));
+      const newIds = new Set(devices.map(d => d.id));
+
+      const updatedFleet = [
+        ...currentFleet.filter((s: any) => !newIds.has(s.id) && !newIps.has(s.bmcIp)),
+        ...devices
+      ];
       localStorage.setItem("tyrone_fleet", JSON.stringify(updatedFleet));
 
       const savedRacks = localStorage.getItem("tyrone_server_racks");
       const racksObj = savedRacks ? JSON.parse(savedRacks) : {};
-      racksObj[newDevice.id] = rack || "Rack 1";
+      devices.forEach(dev => {
+        racksObj[dev.id] = dev.rack || "Rack 1";
+        racksObj[dev.bmcIp] = dev.rack || "Rack 1";
+      });
       localStorage.setItem("tyrone_server_racks", JSON.stringify(racksObj));
 
-      // Update global inventory cache with real fetched hardware details
-      try {
-        const cachedRaw = localStorage.getItem("tyrone_global_inv_cache");
-        const cacheObj = cachedRaw ? JSON.parse(cachedRaw) : {};
-        cacheObj[newDevice.id] = {
-          serialNumber: generatedSerial || "N/A",
-          model: modelName,
-          manufacturer: manufacturerName
-        };
-        localStorage.setItem("tyrone_global_inv_cache", JSON.stringify(cacheObj));
-      } catch (_) {}
-
-      // Post to backend database with explicit vendor tag ('SM' or 'AS')
-      fetch("http://127.0.0.1:8000/api/servers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: newDevice.id,
-          name: newDevice.name,
-          ip: newDevice.bmcIp,
-          vendor: category, // 'SM' for Supermicro, 'AS' for ASRock
-          username: newDevice.bmcUsername,
-          password: newDevice.bmcPassword,
-          rack: newDevice.rack
-        })
-      }).catch(() => {
-        // Fallback local express post if main backend server is starting up
-        fetch("/api/local/fleet", {
+      // 3. Backend persistence for each server
+      devices.forEach(dev => {
+        fetch("http://127.0.0.1:8000/api/servers", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(updatedFleet)
-        }).catch(() => {});
+          body: JSON.stringify({
+            id: dev.id,
+            name: dev.name,
+            ip: dev.bmcIp,
+            vendor: dev.category,
+            username: dev.bmcUsername,
+            password: dev.bmcPassword,
+            rack: dev.rack
+          })
+        }).catch(() => {
+          fetch("/api/local/fleet", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(updatedFleet)
+          }).catch(() => {});
+        });
       });
 
-      window.dispatchEvent(new CustomEvent("fleet-updated", { detail: { newDevice } }));
+      // 4. Dispatch events for instant UI update
+      window.dispatchEvent(new CustomEvent("fleet-updated", { detail: { devices } }));
       window.dispatchEvent(new CustomEvent("hierarchy-updated"));
     } catch (err) {
-      console.warn("Error persisting device to localStorage:", err);
+      console.warn("Error persisting batch devices to localStorage:", err);
     }
-
-    onAddDevice(newDevice);
-    onClose();
   };
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center p-2 bg-slate-950/75 backdrop-blur-xs select-none font-sans">
-      <div className="bg-white border border-slate-300 rounded-xl shadow-2xl max-w-3xl w-full my-auto overflow-hidden flex flex-col">
+      <div className="bg-white border border-slate-300 rounded-xl shadow-2xl max-w-3xl w-full my-auto overflow-hidden flex flex-col max-h-[92vh]">
         
         {/* Header Bar - Tyrone Red */}
         <div className="bg-[#680505] text-white px-4 py-2.5 flex items-center justify-between font-sans shrink-0 border-b border-[#4d0000]">
           <div className="flex items-center gap-2">
             <Plus className="w-4 h-4 text-white" />
-            <span className="font-bold text-xs tracking-wide">Add New Device</span>
+            <span className="font-bold text-xs tracking-wide">Add New Device(s)</span>
           </div>
           <button 
             type="button"
@@ -210,18 +324,46 @@ export function AddDeviceModal({
         </div>
 
         {/* Modal Form Body */}
-        <form onSubmit={handleSubmit} className="p-4 space-y-2.5 flex-1">
+        <form onSubmit={handleSubmit} className="p-4 space-y-2.5 flex-1 overflow-y-auto">
           
-          {/* Sub-Tabs & Back Navigation */}
-          <div className="flex items-center justify-between border-b border-slate-200 pb-1.5">
+          {/* Sub-Tabs: Single Device vs Bulk IPs Mode */}
+          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                className="px-3 py-1 text-[11px] font-bold rounded cursor-pointer bg-[#680505] text-white shadow-xs"
+                onClick={() => handleSwitchMode("single")}
+                className={`px-3 py-1 text-[11px] font-bold rounded cursor-pointer transition-all flex items-center gap-1.5 ${
+                  mode === "single"
+                    ? "bg-[#680505] text-white shadow-xs"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                }`}
               >
-                Add New Device
+                <Server className="w-3.5 h-3.5" />
+                <span>Single Device</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSwitchMode("bulk")}
+                className={`px-3 py-1 text-[11px] font-bold rounded cursor-pointer transition-all flex items-center gap-1.5 ${
+                  mode === "bulk"
+                    ? "bg-[#680505] text-white shadow-xs"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Multiple Devices (Bulk IPs)</span>
               </button>
             </div>
+
+            {mode === "bulk" && (
+              <div className="flex items-center gap-1.5 bg-[#680505]/10 border border-[#680505]/30 px-2.5 py-0.5 rounded-full">
+                <CheckCircle2 className="w-3.5 h-3.5 text-[#680505]" />
+                <span className="text-[11px] font-extrabold text-[#680505]">
+                  {parsedBulkIps.length} {parsedBulkIps.length === 1 ? "IP Detected" : "IPs Detected"}
+                </span>
+              </div>
+            )}
           </div>
 
           {formError && (
@@ -232,43 +374,86 @@ export function AddDeviceModal({
           )}
 
           {/* Device Form Container */}
-          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2.5">
             
             <div className="border-b border-[#680505]/20 pb-2 flex items-center justify-between">
               <h4 className="text-xs font-black uppercase text-[#680505] tracking-wider flex items-center gap-1.5">
                 <Server className="w-4 h-4 text-[#680505]" />
-                <span>Device Information</span>
+                <span>{mode === "single" ? "Device Information" : "Bulk Device Configuration"}</span>
               </h4>
               <span className="text-[10px] text-slate-500 font-bold">* Indicates Required Fields</span>
             </div>
 
-            {/* Device Name */}
-            <div className="grid grid-cols-12 items-center gap-4">
-              <label className="col-span-4 text-xs font-bold text-slate-700 text-right">Name *</label>
-              <div className="col-span-8">
-                <input
-                  type="text"
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  placeholder="e.g. Tyrone Primary Node"
-                  className="w-full px-3 py-2 border border-slate-300 rounded text-xs font-medium focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
-                />
-              </div>
-            </div>
+            {/* SINGLE MODE IP vs BULK MODE IP TEXTAREA */}
+            {mode === "single" ? (
+              <>
+                {/* Device Name */}
+                <div className="grid grid-cols-12 items-center gap-4">
+                  <label className="col-span-4 text-xs font-bold text-slate-700 text-right">Name *</label>
+                  <div className="col-span-8">
+                    <input
+                      type="text"
+                      value={name}
+                      onChange={e => setName(e.target.value)}
+                      placeholder="e.g. Tyrone Primary Node"
+                      className="w-full px-3 py-2 border border-slate-300 rounded text-xs font-medium focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
+                    />
+                  </div>
+                </div>
 
-            {/* IP Address */}
-            <div className="grid grid-cols-12 items-center gap-4">
-              <label className="col-span-4 text-xs font-bold text-slate-700 text-right">IP Address for IPMI / BMC *</label>
-              <div className="col-span-8">
-                <input
-                  type="text"
-                  value={ipAddress}
-                  onChange={e => setIpAddress(e.target.value)}
-                  placeholder="e.g. 172.16.12.50"
-                  className="w-full px-3 py-2 border border-slate-300 rounded text-xs font-mono focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
-                />
-              </div>
-            </div>
+                {/* Single IP Address */}
+                <div className="grid grid-cols-12 items-center gap-4">
+                  <label className="col-span-4 text-xs font-bold text-slate-700 text-right">IP Address for IPMI / BMC *</label>
+                  <div className="col-span-8">
+                    <input
+                      type="text"
+                      value={ipAddress}
+                      onChange={e => setIpAddress(e.target.value)}
+                      placeholder="e.g. 172.16.12.50"
+                      className="w-full px-3 py-2 border border-slate-300 rounded text-xs font-mono focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
+                    />
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Bulk IP Input */}
+                <div className="grid grid-cols-12 items-start gap-4">
+                  <div className="col-span-4 text-right pt-1">
+                    <label className="text-xs font-bold text-[#680505] block">Server IPs list *</label>
+                    <span className="text-[10px] text-slate-500 font-medium block leading-tight mt-0.5">
+                      Enter IPs separated by newlines, commas, or IP range (e.g. 172.16.12.50-60)
+                    </span>
+                  </div>
+                  <div className="col-span-8 space-y-1">
+                    <textarea
+                      rows={4}
+                      value={bulkIps}
+                      onChange={e => setBulkIps(e.target.value)}
+                      placeholder={`172.16.12.50
+172.16.12.51
+172.16.12.52
+or range: 172.16.12.50-60`}
+                      className="w-full px-3 py-2 border border-slate-300 rounded text-xs font-mono focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505] bg-white resize-y"
+                    />
+                  </div>
+                </div>
+
+                {/* Optional Name Prefix */}
+                <div className="grid grid-cols-12 items-center gap-4">
+                  <label className="col-span-4 text-xs font-bold text-slate-700 text-right">Name Pattern / Prefix</label>
+                  <div className="col-span-8">
+                    <input
+                      type="text"
+                      value={name}
+                      onChange={e => setName(e.target.value)}
+                      placeholder="e.g. Tyrone Node (Optional - defaults to 'Tyrone Node (IP)')"
+                      className="w-full px-3 py-2 border border-slate-300 rounded text-xs font-medium focus:outline-none focus:border-[#680505] focus:ring-1 focus:ring-[#680505]"
+                    />
+                  </div>
+                </div>
+              </>
+            )}
 
             {/* Server Category (SM vs AS) */}
             <div className="grid grid-cols-12 items-center gap-4 bg-slate-100/80 p-2 rounded border border-slate-200">
@@ -393,9 +578,11 @@ export function AddDeviceModal({
               </div>
             </div>
 
-            {/* BMC Credentials */}
+            {/* Shared BMC Credentials */}
             <div className="grid grid-cols-12 items-center gap-4">
-              <label className="col-span-4 text-xs font-bold text-slate-700 text-right">BMC Username & Password</label>
+              <label className="col-span-4 text-xs font-bold text-slate-700 text-right">
+                BMC Username & Password *
+              </label>
               <div className="col-span-8 grid grid-cols-2 gap-2">
                 <input
                   type="text"
@@ -489,7 +676,13 @@ export function AddDeviceModal({
               ) : (
                 <Plus className="w-4 h-4 text-white" />
               )}
-              <span>{isSubmitting ? "Validating BMC Credentials..." : "Save Device"}</span>
+              <span>
+                {isSubmitting
+                  ? "Validating BMC Credentials..."
+                  : mode === "single"
+                  ? "Save Device"
+                  : `Save ${parsedBulkIps.length || 0} ${parsedBulkIps.length === 1 ? "Device" : "Devices"}`}
+              </span>
             </button>
           </div>
 
@@ -498,3 +691,4 @@ export function AddDeviceModal({
     </div>
   );
 }
+

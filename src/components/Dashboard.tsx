@@ -1556,7 +1556,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
                   {/* Minimalist Area Chart */}
                   <div className="w-full h-[125px] flex-1">
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={100}>
                       <AreaChart data={tempTrendData} margin={{ top: 5, right: 10, left: -25, bottom: 0 }}>
                         <defs>
                           <linearGradient id="tempGradient" x1="0" y1="0" x2="0" y2="1">
@@ -1678,7 +1678,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
                   {/* Minimalist Area Chart */}
                   <div className="w-full h-[125px] flex-1">
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={100}>
                       <AreaChart data={powerTrendData} margin={{ top: 5, right: 10, left: -25, bottom: 0 }}>
                         <defs>
                           <linearGradient id="powerGradient" x1="0" y1="0" x2="0" y2="1">
@@ -1910,7 +1910,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                       </span>
                     </div>
                     <div className="w-full h-14">
-                      <ResponsiveContainer width="100%" height="100%">
+                      <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={100}>
                         <LineChart data={powerTrendData} margin={{ top: 6, right: 6, left: 6, bottom: 4 }}>
                           <Tooltip
                             content={({ active, payload }) => {
@@ -1960,7 +1960,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   {/* Pie Chart Section */}
                   <div className="pt-2 border-t border-slate-100 dark:border-zinc-800/80 flex items-center justify-between gap-2">
                     <div className="w-16 h-16 shrink-0">
-                      <ResponsiveContainer width="100%" height="100%">
+                      <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={100}>
                         <PieChart>
                           <Pie
                             data={[
@@ -2021,7 +2021,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   {/* Pie Chart Section */}
                   <div className="pt-2 border-t border-slate-100 dark:border-zinc-800/80 flex items-center justify-between gap-2">
                     <div className="w-16 h-16 shrink-0">
-                      <ResponsiveContainer width="100%" height="100%">
+                      <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={100}>
                         <PieChart>
                           <Pie
                             data={[

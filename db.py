@@ -1,5 +1,4 @@
 """
-PostgreSQL Storage Layer & Cryptography Suite for Tyrone Pro Server
 ===================================================================
 Handles asyncpg connection pooling, JSONB column operations for raw inventory,
 time-series event logging with throttling support, and AES-256 credential encryption.
@@ -7,6 +6,7 @@ time-series event logging with throttling support, and AES-256 credential encryp
 
 import os
 import sys
+import time
 import json
 import logging
 import asyncio
@@ -78,7 +78,7 @@ class PostgresDatabase:
         try:
             self.pool = await asyncpg.create_pool(self.dsn, min_size=5, max_size=20, timeout=5.0)
             async with self.pool.acquire() as conn:
-                # 1. Servers Table with Vendor tag ('SM' / 'AS')
+                # 1. Servers Table with Vendor tag ('SM' / 'AS') and resolved Redfish paths JSONB
                 await conn.execute("""
                     CREATE TABLE IF NOT EXISTS servers (
                         id VARCHAR(64) PRIMARY KEY,
@@ -90,8 +90,10 @@ class PostgresDatabase:
                         health VARCHAR(32) DEFAULT 'OK',
                         power_state VARCHAR(32) DEFAULT 'ON',
                         rack VARCHAR(64) DEFAULT 'Rack 1',
+                        resolved_paths JSONB DEFAULT '{}'::jsonb,
                         updated_at TIMESTAMPTZ DEFAULT NOW()
                     );
+                    ALTER TABLE servers ADD COLUMN IF NOT EXISTS resolved_paths JSONB DEFAULT '{}'::jsonb;
                     CREATE INDEX IF NOT EXISTS idx_servers_vendor ON servers(vendor);
                 """)
 
@@ -120,7 +122,7 @@ class PostgresDatabase:
                     );
                 """)
 
-                # 3. Time-series Event Logs Table with Occurrences Throttling
+                # 4. Time-series Event Logs Table with Occurrences Throttling
                 await conn.execute("""
                     CREATE TABLE IF NOT EXISTS event_logs (
                         id SERIAL PRIMARY KEY,
@@ -135,6 +137,22 @@ class PostgresDatabase:
                     );
                     CREATE INDEX IF NOT EXISTS idx_event_hash ON event_logs(event_hash);
                 """)
+
+                # 5. Server Telemetry Table with JSONB Raw Metadata
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS server_telemetry (
+                        id SERIAL PRIMARY KEY,
+                        ip VARCHAR(64) UNIQUE NOT NULL,
+                        vendor VARCHAR(32) DEFAULT 'Tyrone',
+                        power_state VARCHAR(32) DEFAULT 'On',
+                        cpu_temp_celsius DOUBLE PRECISION,
+                        ambient_temp_celsius DOUBLE PRECISION,
+                        fan_speed_rpm INT,
+                        raw_metadata JSONB DEFAULT '{}'::jsonb,
+                        updated_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_telemetry_ip ON server_telemetry(ip);
+                """)
             logger.info("Successfully connected to PostgreSQL database and initialized JSONB schemas.")
         except Exception as e:
             logger.warning(f"PostgreSQL pool connection failed ({e}). Defaulting to internal high-performance fallback store.")
@@ -142,36 +160,47 @@ class PostgresDatabase:
 
     async def save_server(self, server_id: str, name: str, ip: str, vendor: str, username: str, password: str, rack: str = "Rack 1") -> bool:
         """Saves or updates a server record with explicit vendor tag and encrypted credentials."""
-        enc_pass = encrypt_credentials(password)
+        clean_ip = ip.lstrip("http://").lstrip("https://").strip().rstrip("/")
+        enc_pass = encrypt_credentials(password) if password else ""
         vendor_tag = vendor.upper() if vendor.upper() in ("SM", "AS") else "SM"
 
         if self.pool:
             try:
                 async with self.pool.acquire() as conn:
-                    await conn.execute("""
-                        INSERT INTO servers (id, name, ip, vendor, username, enc_password, rack, updated_at)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-                        ON CONFLICT (id) DO UPDATE SET
-                            name = EXCLUDED.name,
-                            ip = EXCLUDED.ip,
-                            vendor = EXCLUDED.vendor,
-                            username = EXCLUDED.username,
-                            enc_password = EXCLUDED.enc_password,
-                            rack = EXCLUDED.rack,
-                            updated_at = NOW();
-                    """, server_id, name, ip, vendor_tag, username, enc_pass, rack)
+                    existing = await conn.fetchrow("SELECT id, enc_password FROM servers WHERE id = $1 OR ip = $2;", server_id, clean_ip)
+                    if existing:
+                        final_pass = enc_pass if password else existing["enc_password"]
+                        await conn.execute("""
+                            UPDATE servers
+                            SET name = $1, ip = $2, vendor = $3, username = $4, enc_password = $5, rack = $6, updated_at = NOW()
+                            WHERE id = $7 OR ip = $2;
+                        """, name, clean_ip, vendor_tag, username, final_pass, rack, existing["id"])
+                    else:
+                        await conn.execute("""
+                            INSERT INTO servers (id, name, ip, vendor, username, enc_password, rack, updated_at)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                            ON CONFLICT (id) DO UPDATE SET
+                                name = EXCLUDED.name,
+                                ip = EXCLUDED.ip,
+                                vendor = EXCLUDED.vendor,
+                                username = EXCLUDED.username,
+                                enc_password = CASE WHEN EXCLUDED.enc_password <> '' THEN EXCLUDED.enc_password ELSE servers.enc_password END,
+                                rack = EXCLUDED.rack,
+                                updated_at = NOW();
+                        """, server_id, name, clean_ip, vendor_tag, username, enc_pass, rack)
                 return True
             except Exception as e:
                 logger.error(f"Failed to save server to PostgreSQL: {e}")
 
         # Fallback store
+        existing_fallback_pass = self.in_memory_fallback["servers"].get(server_id, {}).get("enc_password", "")
         self.in_memory_fallback["servers"][server_id] = {
             "id": server_id,
             "name": name,
-            "ip": ip,
+            "ip": clean_ip,
             "vendor": vendor_tag,
             "username": username,
-            "enc_password": enc_pass,
+            "enc_password": enc_pass or existing_fallback_pass,
             "rack": rack,
             "health": "OK",
             "power_state": "On"
@@ -200,59 +229,87 @@ class PostgresDatabase:
         return True
 
     async def get_all_servers(self) -> List[Dict[str, Any]]:
-        """Retrieves list of registered servers with decrypted credentials."""
+        """Retrieves list of registered servers with decrypted credentials (cached for 5 seconds)."""
+        now = time.time()
+        # ponytail: 5s TTL cache avoids redundant SQL queries and Fernet decryption overhead on every proxy call. Upgrade path: invalidate on server mutations.
+        if hasattr(self, "_servers_cache") and (now - getattr(self, "_cache_time", 0) < 5.0):
+            return self._servers_cache
+
+        res = []
         if self.pool:
             try:
                 async with self.pool.acquire() as conn:
                     rows = await conn.fetch("SELECT id, name, ip, vendor, username, enc_password, health, power_state, rack FROM servers;")
-                    result = []
                     for r in rows:
                         d = dict(r)
                         d["password"] = decrypt_credentials(d.pop("enc_password", ""))
-                        result.append(d)
-                    return result
+                        res.append(d)
+                    self._servers_cache = res
+                    self._cache_time = now
+                    return res
             except Exception as e:
                 logger.error(f"Failed to fetch servers from PostgreSQL: {e}")
 
         # Fallback store
-        res = []
         for s in self.in_memory_fallback["servers"].values():
             item = dict(s)
             item["password"] = decrypt_credentials(item.get("enc_password", ""))
             res.append(item)
+        self._servers_cache = res
+        self._cache_time = now
         return res
 
     async def delete_server(self, server_id: str) -> bool:
-        """Deletes a server record by ID or IP address from database and memory registry."""
-        clean_target = server_id.lstrip("http://").lstrip("https://").strip()
+        """Deletes a server record by ID, IP, or URL from PostgreSQL database and memory fallback registry."""
+        if not server_id:
+            return False
+
+        target_str = str(server_id).strip()
+        ip_clean = target_str.replace("https://", "").replace("http://", "").rstrip("/").split(":")[0].strip()
+        srv_id = f"srv-{ip_clean}" if ip_clean and not target_str.startswith("srv-") else target_str
+
+        targets = {target_str, ip_clean, srv_id}
+
         if self.pool:
             try:
                 async with self.pool.acquire() as conn:
-                    await conn.execute("""
-                        DELETE FROM raw_inventory 
-                        WHERE server_id = $1 OR server_id IN (
-                            SELECT id FROM servers WHERE id = $1 OR ip = $1 OR ip = $2
-                        );
-                    """, server_id, clean_target)
-                    await conn.execute("DELETE FROM servers WHERE id = $1 OR ip = $1 OR ip = $2;", server_id, clean_target)
-                return True
-            except Exception as e:
-                logger.error(f"Failed to delete server from PostgreSQL: {e}")
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, ip, name FROM servers 
+                        WHERE id = ANY($1::text[]) OR ip = ANY($1::text[]) OR name = ANY($1::text[]);
+                        """,
+                        list(targets)
+                    )
+                    for r in rows:
+                        if r.get("id"):
+                            targets.add(r["id"])
+                        if r.get("ip"):
+                            targets.add(r["ip"])
+                            clean_r_ip = r["ip"].replace("https://", "").replace("http://", "").rstrip("/").split(":")[0].strip()
+                            targets.add(clean_r_ip)
+                        if r.get("name"):
+                            targets.add(r["name"])
 
-        # Fallback store
-        if server_id in self.in_memory_fallback["servers"]:
-            del self.in_memory_fallback["servers"][server_id]
-        to_del = [
-            k for k, v in self.in_memory_fallback["servers"].items()
-            if v.get("id") == server_id or v.get("ip", "").lstrip("http://").lstrip("https://").strip() == clean_target
-        ]
-        for k in to_del:
-            if k in self.in_memory_fallback["servers"]:
-                del self.in_memory_fallback["servers"][k]
+                    target_list = list(targets)
+
+                    await conn.execute("DELETE FROM raw_inventory WHERE server_id = ANY($1::text[]);", target_list)
+                    await conn.execute("DELETE FROM server_inventory WHERE server_id = ANY($1::text[]);", target_list)
+                    await conn.execute("DELETE FROM event_logs WHERE server_id = ANY($1::text[]);", target_list)
+                    await conn.execute(
+                        "DELETE FROM servers WHERE id = ANY($1::text[]) OR ip = ANY($1::text[]) OR name = ANY($1::text[]);",
+                        target_list
+                    )
+                logger.info(f"Successfully deleted server '{server_id}' (targets: {target_list}) from PostgreSQL database.")
+            except Exception as e:
+                logger.error(f"Failed to delete server '{server_id}' from PostgreSQL: {e}")
+
+        # Always clean up in-memory fallback store as well
+        for t in list(targets):
+            self.in_memory_fallback["servers"].pop(t, None)
 
         self.in_memory_fallback["raw_inventory"] = [
             r for r in self.in_memory_fallback["raw_inventory"]
-            if r.get("server_id") != server_id and r.get("server_id") not in to_del
+            if r.get("server_id") not in targets
         ]
         return True
 
@@ -319,6 +376,132 @@ class PostgresDatabase:
 
         # Fallback store
         await self.save_raw_inventory(server_id, vendor, inventory_data, raw_payload or {})
+
+    async def save_resolved_paths(self, server_id_or_ip: str, paths: Dict[str, Any]) -> bool:
+        """Saves dynamically discovered Redfish URI paths per server IP/ID to PostgreSQL."""
+        clean_target = server_id_or_ip.lstrip("http://").lstrip("https://").strip()
+        paths_json = json.dumps(paths)
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    await conn.execute("""
+                        UPDATE servers
+                        SET resolved_paths = $1::jsonb, updated_at = NOW()
+                        WHERE id = $2 OR ip = $2 OR ip = $3;
+                    """, paths_json, server_id_or_ip, clean_target)
+                return True
+            except Exception as e:
+                logger.error(f"Failed to save resolved_paths to PostgreSQL: {e}")
+
+        for s_id, s_data in self.in_memory_fallback["servers"].items():
+            if s_id == server_id_or_ip or s_data.get("ip") == clean_target:
+                s_data["resolved_paths"] = paths
+        return True
+
+    async def get_resolved_paths(self, server_id_or_ip: str) -> Dict[str, Any]:
+        """Looks up dynamically resolved Redfish URI paths from PostgreSQL per server IP/ID."""
+        clean_target = server_id_or_ip.lstrip("http://").lstrip("https://").strip()
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    row = await conn.fetchrow("""
+                        SELECT resolved_paths FROM servers
+                        WHERE id = $1 OR ip = $1 OR ip = $2;
+                    """, server_id_or_ip, clean_target)
+                    if row and row["resolved_paths"]:
+                        val = row["resolved_paths"]
+                        return json.loads(val) if isinstance(val, str) else val
+            except Exception as e:
+                logger.error(f"Failed to fetch resolved_paths from PostgreSQL: {e}")
+
+        for s_id, s_data in self.in_memory_fallback["servers"].items():
+            if s_id == server_id_or_ip or s_data.get("ip") == clean_target:
+                return s_data.get("resolved_paths", {})
+        return {}
+
+    async def bulk_upsert_server_inventory(self, items: List[Dict[str, Any]]) -> bool:
+        """
+        Performs bulk database upserts of server inventory in a single transaction
+        to eliminate write bottlenecks across the fleet.
+        """
+        if not items:
+            return True
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    async with conn.transaction():
+                        for item in items:
+                            sid = item.get("server_id") or item.get("id")
+                            if not sid:
+                                continue
+                            vendor = item.get("vendor", "SM")
+                            inv_data = item.get("inventory_data") or item.get("inventory_json") or item
+                            raw_data = item.get("raw_payload") or item.get("network_json") or {}
+                            inv_json = json.dumps(inv_data)
+                            raw_json = json.dumps(raw_data)
+
+                            await conn.execute("""
+                                INSERT INTO server_inventory (server_id, vendor, inventory_data, raw_payload, updated_at)
+                                VALUES ($1, $2, $3::jsonb, $4::jsonb, NOW())
+                                ON CONFLICT (server_id) DO UPDATE SET
+                                    vendor = EXCLUDED.vendor,
+                                    inventory_data = EXCLUDED.inventory_data,
+                                    raw_payload = EXCLUDED.raw_payload,
+                                    updated_at = NOW();
+                            """, sid, vendor, inv_json, raw_json)
+
+                            await conn.execute("""
+                                INSERT INTO raw_inventory (server_id, vendor, inventory_json, network_json, fetched_at)
+                                VALUES ($1, $2, $3::jsonb, $4::jsonb, NOW())
+                                ON CONFLICT (server_id) DO UPDATE SET
+                                    vendor = EXCLUDED.vendor,
+                                    inventory_json = EXCLUDED.inventory_json,
+                                    network_json = EXCLUDED.network_json,
+                                    fetched_at = NOW();
+                            """, sid, vendor, inv_json, raw_json)
+                return True
+            except Exception as e:
+                logger.error(f"Failed bulk_upsert_server_inventory in PostgreSQL transaction: {e}")
+
+        # Fallback in-memory store
+        for item in items:
+            sid = item.get("server_id") or item.get("id")
+            if sid:
+                v = item.get("vendor", "SM")
+                inv_data = item.get("inventory_data") or item.get("inventory_json") or item
+                raw_data = item.get("raw_payload") or item.get("network_json") or {}
+                await self.save_raw_inventory(sid, v, inv_data, raw_data)
+        return True
+
+    async def get_static_inventory(self, server_id_or_ip: str) -> Optional[Dict[str, Any]]:
+        """
+        Read-Through Buffer: Retrieves cached static inventory attributes (model, serial, CPUs, RAM)
+        from PostgreSQL to avoid repetitive network roundtrips over BMC HTTP.
+        """
+        clean_target = server_id_or_ip.lstrip("http://").lstrip("https://").strip()
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    row = await conn.fetchrow("""
+                        SELECT r.inventory_json, r.vendor
+                        FROM raw_inventory r
+                        JOIN servers s ON r.server_id = s.id
+                        WHERE s.id = $1 OR s.ip = $1 OR s.ip = $2;
+                    """, server_id_or_ip, clean_target)
+                    if row and row["inventory_json"]:
+                        inv = row["inventory_json"]
+                        inv_dict = json.loads(inv) if isinstance(inv, str) else inv
+                        if inv_dict.get("Model") or inv_dict.get("Manufacturer") or inv_dict.get("SerialNumber"):
+                            return inv_dict
+            except Exception as e:
+                logger.error(f"Failed to fetch static inventory from PostgreSQL: {e}")
+
+        for s_id, s_data in self.in_memory_fallback["servers"].items():
+            if s_id == server_id_or_ip or s_data.get("ip") == clean_target:
+                inv = next((r for r in self.in_memory_fallback["raw_inventory"] if r.get("server_id") == s_id), {})
+                return inv.get("inventory_json")
+        return None
+
 
     async def record_event_log(self, server_id: str, event_type: str, severity: str, message: str) -> Dict[str, Any]:
         """
@@ -493,6 +676,68 @@ class PostgresDatabase:
             normalized_list.append(norm)
 
         return normalized_list
+
+    async def save_telemetry(self, ip: str, vendor: str, power_state: str, cpu_temp: float, ambient_temp: float, fan_speed: int, raw_metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Upserts server telemetry record into PostgreSQL server_telemetry JSONB table."""
+        if raw_metadata is None:
+            raw_metadata = {"source": "Redfish BMC Poll"}
+
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO server_telemetry (ip, vendor, power_state, cpu_temp_celsius, ambient_temp_celsius, fan_speed_rpm, raw_metadata, updated_at)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW())
+                        ON CONFLICT (ip) DO UPDATE
+                        SET vendor = EXCLUDED.vendor,
+                            power_state = EXCLUDED.power_state,
+                            cpu_temp_celsius = EXCLUDED.cpu_temp_celsius,
+                            ambient_temp_celsius = EXCLUDED.ambient_temp_celsius,
+                            fan_speed_rpm = EXCLUDED.fan_speed_rpm,
+                            raw_metadata = EXCLUDED.raw_metadata,
+                            updated_at = NOW();
+                    """, ip, vendor, power_state, cpu_temp, ambient_temp, fan_speed, json.dumps(raw_metadata))
+                    return True
+            except Exception as e:
+                logger.error(f"Error persisting telemetry to DB: {e}")
+
+        # Fallback to in-memory store
+        if "telemetry" not in self.in_memory_fallback:
+            self.in_memory_fallback["telemetry"] = {}
+        self.in_memory_fallback["telemetry"][ip] = {
+            "ip": ip,
+            "vendor": vendor,
+            "power_state": power_state,
+            "cpu_temp_celsius": cpu_temp,
+            "ambient_temp_celsius": ambient_temp,
+            "fan_speed_rpm": fan_speed,
+            "raw_metadata": raw_metadata
+        }
+        return True
+
+    async def get_all_telemetry(self) -> List[Dict[str, Any]]:
+        """Fetches all server telemetry records from PostgreSQL or fallback store."""
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    rows = await conn.fetch("SELECT ip, vendor, power_state, cpu_temp_celsius, ambient_temp_celsius, fan_speed_rpm, raw_metadata FROM server_telemetry ORDER BY updated_at DESC;")
+                    return [
+                        {
+                            "ip": r["ip"],
+                            "vendor": r["vendor"],
+                            "power_state": r["power_state"],
+                            "cpu_temp_celsius": r["cpu_temp_celsius"],
+                            "ambient_temp_celsius": r["ambient_temp_celsius"],
+                            "fan_speed_rpm": r["fan_speed_rpm"],
+                            "raw_metadata": json.loads(r["raw_metadata"]) if isinstance(r["raw_metadata"], str) else (r["raw_metadata"] or {})
+                        }
+                        for r in rows
+                    ]
+            except Exception as e:
+                logger.error(f"Error reading telemetry from DB: {e}")
+
+        telemetry_map = self.in_memory_fallback.get("telemetry", {})
+        return list(telemetry_map.values())
 
 # Global Singleton Database Instance
 db = PostgresDatabase()

@@ -22,11 +22,28 @@ export default defineConfig(({mode}) => {
           target: 'http://127.0.0.1:8000',
           changeOrigin: true,
           secure: false,
+          configure: (proxy, _options) => {
+            proxy.on('error', (err, _req, res) => {
+              if ((err as any).code === 'ECONNREFUSED' || (err as any).code === 'ECONNRESET') {
+                if (res && !res.headersSent && typeof (res as any).writeHead === 'function') {
+                  (res as any).writeHead(503, { 'Content-Type': 'application/json' });
+                  (res as any).end(JSON.stringify({ status: 'backend_starting', message: 'Tyrone Backend Engine is initializing...' }));
+                }
+                return;
+              }
+              console.warn('Vite Proxy Notice:', err.message);
+            });
+          },
         },
         '/ws': {
           target: 'ws://127.0.0.1:8000',
           ws: true,
           changeOrigin: true,
+          configure: (proxy, _options) => {
+            proxy.on('error', (err, _req, _socket) => {
+              // Quietly absorb websocket connection resets during server startup
+            });
+          },
         },
       },
       // HMR is disabled in AI Studio via DISABLE_HMR env var.

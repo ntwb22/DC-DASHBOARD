@@ -2579,7 +2579,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                     </div>
                     <div className="flex items-center justify-between gap-2 my-1">
                       <div className="w-[80px] h-[80px] shrink-0">
-                        <ResponsiveContainer width="100%" height="100%">
+                        <ResponsiveContainer width="100%" height="100%" minWidth={50} minHeight={50}>
                           <PieChart>
                             <Pie
                               data={[
@@ -2627,7 +2627,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                     </div>
                     <div className="flex items-center justify-between gap-2 my-1">
                       <div className="w-[80px] h-[80px] shrink-0">
-                        <ResponsiveContainer width="100%" height="100%">
+                        <ResponsiveContainer width="100%" height="100%" minWidth={50} minHeight={50}>
                           <PieChart>
                             <Pie
                               data={[
@@ -2675,7 +2675,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                     </div>
                     <div className="flex items-center justify-between gap-2 my-1">
                       <div className="w-[80px] h-[80px] shrink-0">
-                        <ResponsiveContainer width="100%" height="100%">
+                        <ResponsiveContainer width="100%" height="100%" minWidth={50} minHeight={50}>
                           <PieChart>
                             <Pie
                               data={[
@@ -2940,7 +2940,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                     </div>
                     {/* Hardware Subsystem Component Breakdown Pie Chart */}
                     <div className="h-44 w-full flex items-center justify-center my-1 relative">
-                      <ResponsiveContainer width="100%" height="100%">
+                      <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={100}>
                         <PieChart>
                           <Pie
                             data={hasActiveDevice ? [
@@ -3601,11 +3601,27 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                             ? activeNic.IPv6Addresses.map((ip: any) => ip.Address).filter(Boolean).join(", ")
                             : (activeNic.IPv6Addresses?.Address || "N/A");
 
+                          const getRealLinkStatus = (nic: any) => {
+                            if (!nic || typeof nic !== "object") return "LinkDown";
+                            const rawLs = (nic.LinkStatus || nic.Status?.LinkStatus || "").toString().trim();
+                            if (rawLs.toLowerCase() === "linkup" || rawLs.toLowerCase() === "up") return "LinkUp";
+                            if (rawLs.toLowerCase() === "linkdown" || rawLs.toLowerCase() === "down" || rawLs.toLowerCase() === "nolink" || rawLs.toLowerCase() === "disconnected") return "LinkDown";
+
+                            const hasIp = Array.isArray(nic.IPv4Addresses)
+                              ? nic.IPv4Addresses.some((ip: any) => ip?.Address && ip.Address !== "0.0.0.0" && ip.Address !== "N/A" && String(ip.Address).trim() !== "")
+                              : Boolean(nic.IPv4Addresses?.Address && nic.IPv4Addresses.Address !== "0.0.0.0" && nic.IPv4Addresses.Address !== "N/A" && String(nic.IPv4Addresses.Address).trim() !== "");
+
+                            const hasSpeed = nic.SpeedMbps && Number(nic.SpeedMbps) > 0;
+
+                            if (hasIp || hasSpeed) return "LinkUp";
+                            return "LinkDown";
+                          };
+
                           return [
                             { label: "Name", value: activeNic.Name || activeNic.Id || activeSubLabel },
                             { label: "Description", value: activeNic.Description || "N/A" },
                             { label: "Health", value: activeNic.Status?.Health || activeNic.Status?.State || "OK" },
-                            { label: "Link Status", value: activeNic.LinkStatus || (activeNic.InterfaceEnabled !== false ? "LinkUp" : "LinkDown") },
+                            { label: "Link Status", value: getRealLinkStatus(activeNic) },
                             { label: "MAC Address", value: activeNic.MACAddress || activeNic.PermanentMACAddress || "N/A" },
                             { label: "Permanent MAC Address", value: activeNic.PermanentMACAddress || activeNic.MACAddress || "N/A" },
                             { label: "Speed (Mbps)", value: activeNic.SpeedMbps !== undefined ? `${activeNic.SpeedMbps}` : "N/A" },

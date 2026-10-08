@@ -13,6 +13,7 @@ export const ALL_COLUMNS: ColumnDefinition[] = [
   // Page 1
   { id: "bmcIp", label: "Address", page: 1, defaultVisible: true },
   { id: "name", label: "Name", page: 1, defaultVisible: true },
+  { id: "osDeploy", label: "OS Deployment", page: 1, defaultVisible: true },
   { id: "serialNumber", label: "Serial Number", page: 1, defaultVisible: true },
   { id: "room", label: "Room", page: 1, defaultVisible: true },
   { id: "rack", label: "Rack", page: 1, defaultVisible: true },

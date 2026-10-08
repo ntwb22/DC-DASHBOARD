@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { 
-  Search, 
-  Settings, 
-  Plus, 
-  Trash2, 
-  Pencil, 
-  Sliders, 
-  ArrowUpDown, 
+import {
+  Search,
+  Settings,
+  Plus,
+  Trash2,
+  Pencil,
+  Sliders,
+  ArrowUpDown,
   ArrowUp,
   ArrowDown,
   RefreshCw,
@@ -15,12 +15,14 @@ import {
   Cpu,
   ShieldCheck,
   CheckCircle2,
-  ExternalLink
+  ExternalLink,
+  Disc
 } from "lucide-react";
 import { SelectColumnsModal, ALL_COLUMNS, ColumnDefinition } from "./SelectColumnsModal";
 import { AddDeviceModal } from "./AddDeviceModal";
 import { ConfirmModal } from "./ConfirmModal";
 import { ProvisioningModal } from "./ProvisioningModal";
+import { OSInstallModal } from "./OSInstallModal";
 import { RedfishService } from "../services/redfishService";
 
 interface ServerProfile {
@@ -56,7 +58,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
 
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  
+
   // Select Columns Modal State with localStorage persistence
   const [showSelectColumnsModal, setShowSelectColumnsModal] = useState<boolean>(false);
   const [visibleColumnIds, setVisibleColumnIds] = useState<string[]>(() => {
@@ -66,13 +68,17 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed.filter((id: string) => id !== "notes");
       }
-    } catch (_) {}
+    } catch (_) { }
     return ALL_COLUMNS.filter(c => c.defaultVisible).map(c => c.id);
   });
 
   // Provisioning Modal State
   const [showProvisioningModal, setShowProvisioningModal] = useState<boolean>(false);
   const [provisioningTargetServer, setProvisioningTargetServer] = useState<ServerProfile | null>(null);
+
+  // OS Install Modal State
+  const [showOSInstallModal, setShowOSInstallModal] = useState<boolean>(false);
+  const [osInstallTargetServer, setOsInstallTargetServer] = useState<ServerProfile | null>(null);
 
   // Add Discovery Task Modal State (matching Image 2)
   const [showDiscoveryModal, setShowDiscoveryModal] = useState<boolean>(false);
@@ -154,97 +160,161 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
           }
         }
       }
-    } catch (_) {}
+    } catch (_) { }
 
     return "Room 1";
   };
 
 
+// Centralized Module-Level In-Memory Inventory Cache Store
+const GLOBAL_INVENTORY_CACHE_STORE: Record<string, { serialNumber: string; model: string; manufacturer?: string; biosVersion?: string; cpuCount?: string; totalMemory?: string; osInfo?: string }> = {};
+
   useEffect(() => {
     let isMounted = true;
+
     const fetchAllServerDetails = async () => {
-      setLoadingDetails(true);
-      const detailsMap: Record<string, { serialNumber: string; model: string; manufacturer?: string; biosVersion?: string; cpuCount?: string; totalMemory?: string; osInfo?: string }> = {};
-
-      await Promise.all(servers.map(async (s) => {
-        const ip = s.bmcIp || s.name;
-        if (!ip || ip.toLowerCase() === "demo" || ip === "DEMO_MODE") {
-          detailsMap[s.id] = { serialNumber: "N/A", model: "N/A" };
-          return;
-        }
-
+      // 1. Check module-level in-memory cache and localStorage first (0ms latency)
+      const cachedLocal = (() => {
         try {
-          const redfish = new RedfishService({
-            url: ip.startsWith("http") ? ip : `https://${ip}`,
-            username: (s.bmcUsername && s.bmcUsername.trim()) ? s.bmcUsername.trim() : "admin",
-            password: (s.bmcPassword && s.bmcPassword.trim()) ? s.bmcPassword.trim() : "netweb@123",
-            category: s.category,
-            chassisUri: s.chassisUri
-          });
+          const raw = localStorage.getItem("tyrone_global_inv_cache");
+          return raw ? JSON.parse(raw) : {};
+        } catch {
+          return {};
+        }
+      })();
 
-          const sysUri = await redfish.resolveSystemId();
-          const sysDetails = await redfish.getSystemDetails(sysUri);
+      const mergedCache = { ...cachedLocal, ...GLOBAL_INVENTORY_CACHE_STORE };
+      const missingServers = servers.filter(s => !mergedCache[s.id] || !mergedCache[s.id].serialNumber);
 
-          let serial = sysDetails?.SerialNumber || sysDetails?.SKU || sysDetails?.Id;
-          if (!serial || serial === "N/A" || serial === "0000000000" || serial === "NA") {
-            try {
-              const chassisUri = await redfish.resolveChassisId();
-              const chassis = await redfish.proxyRequest(chassisUri)
-                .catch(() => redfish.proxyRequest("/redfish/v1/Chassis/1"))
-                .catch(() => redfish.proxyRequest("/redfish/v1/Chassis/Self"))
-                .catch(() => redfish.proxyRequest("/redfish/v1/Chassis/System.Embedded.1"));
-              if (chassis?.SerialNumber && chassis.SerialNumber !== "N/A" && chassis.SerialNumber !== "0000000000") {
-                serial = chassis.SerialNumber;
-              } else if (chassis?.SKU) {
-                serial = chassis.SKU;
+      // If all servers are already cached, populate state instantly without making network requests!
+      if (missingServers.length === 0 && Object.keys(mergedCache).length > 0) {
+        if (isMounted) {
+          setFetchedDetails(mergedCache);
+          setLoadingDetails(false);
+        }
+        return;
+      }
+
+      setLoadingDetails(true);
+
+      // 2. Batched Fleet Inventory Fetch via single backend call to /api/inventory
+      const detailsMap: Record<string, { serialNumber: string; model: string; manufacturer?: string; biosVersion?: string; cpuCount?: string; totalMemory?: string; osInfo?: string }> = { ...mergedCache };
+
+      try {
+        const batchRes = await fetch("/api/inventory").catch(() => null);
+        if (batchRes && batchRes.ok) {
+          const data = await batchRes.json().catch(() => null);
+          if (data && data.status === "READY" && Array.isArray(data.inventory)) {
+            data.inventory.forEach((invItem: any) => {
+              const matchedServer = servers.find(s => s.id === invItem.serverId || s.bmcIp === invItem.ip || s.id === invItem.id);
+              const targetId = matchedServer ? matchedServer.id : (invItem.serverId || invItem.id);
+              if (targetId) {
+                const sys = invItem.system || invItem;
+                const procCount = sys.ProcessorsCount || (Array.isArray(sys.Processors?.Members) ? sys.Processors.Members.length : null);
+
+                detailsMap[targetId] = {
+                  serialNumber: sys.SerialNumber || sys.SKU || sys.serial || "N/A",
+                  model: sys.Model || matchedServer?.model || "RH21XM",
+                  manufacturer: sys.Manufacturer || "Tyrone Systems",
+                  biosVersion: sys.BiosVersion || sys.biosVersion || "N/A",
+                  cpuCount: procCount ? `${procCount} CPU${procCount > 1 ? "s" : ""}` : ((matchedServer as any)?.specs?.cpu || "2 CPUs"),
+                  totalMemory: sys.MemoryGiB ? `${sys.MemoryGiB} GB` : (sys.MemoryTotal ? `${sys.MemoryTotal} GB` : "N/A"),
+                  osInfo: sys.OperatingSystem || "Linux"
+                };
+                GLOBAL_INVENTORY_CACHE_STORE[targetId] = detailsMap[targetId];
               }
-            } catch (_) {}
+            });
           }
-          const resolvedSerial = (typeof serial === "string" && serial.trim() && serial !== "N/A" && serial !== "NA" && serial !== "0000000000" && !serial.startsWith("TYR-"))
-            ? serial.trim()
-            : (s.serialNumber && !s.serialNumber.startsWith("TYR-") && s.serialNumber !== "N/A"
+        }
+      } catch (e) {
+        console.warn("Backend batch inventory fetch notice:", e);
+      }
+
+      // 3. Fallback: Query only uncached missing servers directly
+      const stillMissing = servers.filter(s => !detailsMap[s.id] || !detailsMap[s.id].serialNumber || detailsMap[s.id].serialNumber === "N/A");
+      if (stillMissing.length > 0) {
+        await Promise.all(stillMissing.map(async (s) => {
+          const ip = s.bmcIp || s.name;
+          if (!ip || ip.toLowerCase() === "demo" || ip === "DEMO_MODE") {
+            detailsMap[s.id] = { serialNumber: "N/A", model: "N/A" };
+            return;
+          }
+
+          try {
+            const redfish = new RedfishService({
+              url: ip.startsWith("http") ? ip : `https://${ip}`,
+              username: (s.bmcUsername && s.bmcUsername.trim()) ? s.bmcUsername.trim() : "admin",
+              password: (s.bmcPassword && s.bmcPassword.trim()) ? s.bmcPassword.trim() : "netweb@123",
+              category: s.category,
+              chassisUri: s.chassisUri
+            });
+
+            const sysUri = await redfish.resolveSystemId();
+            const sysDetails = await redfish.getSystemDetails(sysUri);
+
+            let serial = sysDetails?.SerialNumber || sysDetails?.SKU || sysDetails?.Id;
+            if (!serial || serial === "N/A" || serial === "0000000000" || serial === "NA") {
+              try {
+                const chassisUri = await redfish.resolveChassisId();
+                const chassis = await redfish.proxyRequest(chassisUri)
+                  .catch(() => redfish.proxyRequest("/redfish/v1/Chassis/1"))
+                  .catch(() => redfish.proxyRequest("/redfish/v1/Chassis/Self"))
+                  .catch(() => redfish.proxyRequest("/redfish/v1/Chassis/System.Embedded.1"));
+                if (chassis?.SerialNumber && chassis.SerialNumber !== "N/A" && chassis.SerialNumber !== "0000000000") {
+                  serial = chassis.SerialNumber;
+                } else if (chassis?.SKU) {
+                  serial = chassis.SKU;
+                }
+              } catch (_) { }
+            }
+            const resolvedSerial = (typeof serial === "string" && serial.trim() && serial !== "N/A" && serial !== "NA" && serial !== "0000000000" && !serial.startsWith("TYR-"))
+              ? serial.trim()
+              : (s.serialNumber && !s.serialNumber.startsWith("TYR-") && s.serialNumber !== "N/A"
+                ? s.serialNumber
+                : ((s as any).serial && !(s as any).serial.startsWith("TYR-") && (s as any).serial !== "N/A"
+                  ? (s as any).serial
+                  : "N/A"));
+
+            const resolvedBios = sysDetails?.BiosVersion || (sysDetails as any)?.Bios?.Version || (sysDetails as any)?.FirmwareVersion;
+            const procCount = sysDetails?.Processors?.count;
+            const resolvedCpu = procCount ? `${procCount} CPU${procCount > 1 ? "s" : ""}` : undefined;
+            const memGiB = sysDetails?.Memory?.totalGiB;
+            const resolvedMem = memGiB ? `${memGiB} GB` : undefined;
+            const resolvedOs = (sysDetails as any)?.OperatingSystem || (sysDetails as any)?.HostName || (sysDetails as any)?.SystemType;
+
+            detailsMap[s.id] = {
+              serialNumber: resolvedSerial,
+              model: sysDetails?.Model ? sysDetails.Model : (s.model || "N/A"),
+              manufacturer: sysDetails?.Manufacturer || "Tyrone Systems",
+              biosVersion: resolvedBios,
+              cpuCount: resolvedCpu,
+              totalMemory: resolvedMem,
+              osInfo: resolvedOs
+            };
+            GLOBAL_INVENTORY_CACHE_STORE[s.id] = detailsMap[s.id];
+          } catch (err) {
+            const fallbackSerial = (s.serialNumber && !s.serialNumber.startsWith("TYR-") && s.serialNumber !== "N/A")
               ? s.serialNumber
               : ((s as any).serial && !(s as any).serial.startsWith("TYR-") && (s as any).serial !== "N/A"
                 ? (s as any).serial
-                : "N/A"));
+                : "N/A");
 
-          const resolvedBios = sysDetails?.BiosVersion || (sysDetails as any)?.Bios?.Version || (sysDetails as any)?.FirmwareVersion;
-          const procCount = sysDetails?.Processors?.count;
-          const resolvedCpu = procCount ? `${procCount} CPU${procCount > 1 ? "s" : ""}` : undefined;
-          const memGiB = sysDetails?.Memory?.totalGiB;
-          const resolvedMem = memGiB ? `${memGiB} GB` : undefined;
-          const resolvedOs = (sysDetails as any)?.OperatingSystem || (sysDetails as any)?.HostName || (sysDetails as any)?.SystemType;
-
-          detailsMap[s.id] = {
-            serialNumber: resolvedSerial,
-            model: sysDetails?.Model ? sysDetails.Model : (s.model || "N/A"),
-            manufacturer: sysDetails?.Manufacturer || "Tyrone Systems",
-            biosVersion: resolvedBios,
-            cpuCount: resolvedCpu,
-            totalMemory: resolvedMem,
-            osInfo: resolvedOs
-          };
-        } catch (err) {
-          const fallbackSerial = (s.serialNumber && !s.serialNumber.startsWith("TYR-") && s.serialNumber !== "N/A")
-            ? s.serialNumber
-            : ((s as any).serial && !(s as any).serial.startsWith("TYR-") && (s as any).serial !== "N/A"
-              ? (s as any).serial
-              : "N/A");
-
-          detailsMap[s.id] = {
-            serialNumber: fallbackSerial,
-            model: s.model || "N/A",
-            manufacturer: "Tyrone Systems"
-          };
-        }
-      }));
+            detailsMap[s.id] = {
+              serialNumber: fallbackSerial,
+              model: s.model || "N/A",
+              manufacturer: "Tyrone Systems"
+            };
+            GLOBAL_INVENTORY_CACHE_STORE[s.id] = detailsMap[s.id];
+          }
+        }));
+      }
 
       if (isMounted) {
         setFetchedDetails(prev => ({ ...prev, ...detailsMap }));
         setLoadingDetails(false);
         try {
           localStorage.setItem("tyrone_global_inv_cache", JSON.stringify(detailsMap));
-        } catch (_) {}
+        } catch (_) { }
       }
     };
 
@@ -331,7 +401,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
   const handleTriggerSsdpDetect = async () => {
     setIsSsdpDetecting(true);
     setSsdpScanMessage("Broadcasting SSDP M-SEARCH (ST: urn:dmtf-org:service:redfish-rest:1) on 239.255.255.250:1900...");
-    
+
     try {
       const liveDevices = await RedfishService.discoverSsdpDevices();
       if (Array.isArray(liveDevices) && liveDevices.length > 0) {
@@ -423,7 +493,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
     setVisibleColumnIds(cols);
     try {
       localStorage.setItem("tyrone_inventory_columns", JSON.stringify(cols));
-    } catch (_) {}
+    } catch (_) { }
   };
 
   const [sortColumn, setSortColumn] = useState<string | null>(null);
@@ -444,8 +514,8 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
   };
 
   const filteredServers = servers.filter(
-    s => s.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-         s.bmcIp.includes(searchQuery)
+    s => s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      s.bmcIp.includes(searchQuery)
   );
 
   const getSortableValue = (server: ServerProfile, colId: string): string | number => {
@@ -495,7 +565,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
   });
 
   const toggleSelect = (id: string) => {
-    setSelectedIds(prev => 
+    setSelectedIds(prev =>
       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
     );
   };
@@ -539,6 +609,19 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
     setSelectedIds([]);
   };
 
+  const handleOpenOSInstall = (server?: ServerProfile) => {
+    const target = server || (selectedIds.length === 1 ? servers.find(s => s.id === selectedIds[0]) : null);
+    if (target) {
+      setOsInstallTargetServer(target);
+      setShowOSInstallModal(true);
+    }
+  };
+
+  const handleCloseOSInstall = () => {
+    setShowOSInstallModal(false);
+    setOsInstallTargetServer(null);
+  };
+
 
 
   // Helper to render cell value by column ID
@@ -550,7 +633,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
     switch (colId) {
       case "name":
         return (
-          <button 
+          <button
             onClick={() => onSelectServer(server.id)}
             className="text-red-700 font-bold hover:underline text-left cursor-pointer"
           >
@@ -561,7 +644,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
         const ip = server.bmcIp || server.name;
         const bmcUrl = ip.startsWith("http") ? ip : `https://${ip}`;
         return (
-          <a 
+          <a
             href={bmcUrl}
             target="_blank"
             rel="noopener noreferrer"
@@ -575,7 +658,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
       }
       case "serialNumber": {
         const rawS = server.serialNumber || (serverStatuses[server.id] as any)?.serialNumber;
-        
+
         let displaySerial = (detail?.serialNumber && detail.serialNumber !== "N/A" && detail.serialNumber !== "NA" && !detail.serialNumber.startsWith("TYR-"))
           ? detail.serialNumber
           : (rawS && rawS !== "N/A" && rawS !== "Tyrone" && !rawS.startsWith("TYR-") ? rawS : "N/A");
@@ -621,6 +704,20 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
         return <span>{detail?.cpuCount || (loadingDetails ? "Fetching..." : "N/A")}</span>;
       case "totalMemory":
         return <span>{detail?.totalMemory || (loadingDetails ? "Fetching..." : "N/A")}</span>;
+      case "osDeploy":
+        return (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleOpenOSInstall(server);
+            }}
+            className="px-2.5 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white text-[11px] font-bold rounded cursor-pointer shadow-xs inline-flex items-center gap-1 transition-colors"
+            title={`Deploy OS to ${server.name}`}
+          >
+            <Disc className="w-3 h-3 text-red-200" />
+            <span>Deploy OS</span>
+          </button>
+        );
       default:
         return <span>-</span>;
     }
@@ -630,7 +727,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
 
   return (
     <div className="w-full h-full flex-1 flex flex-col min-h-0 select-none text-left font-sans text-xs bg-[#dce1e7] p-2">
-      
+
       {/* Top Sub-Tabs Bar */}
       <div className="flex items-center gap-1 mb-2 overflow-x-auto shrink-0 border-b border-slate-300 pb-0.5">
         {[
@@ -639,11 +736,10 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
           <button
             key={t.id}
             onClick={() => setActiveTab(t.id)}
-            className={`px-4 py-1.5 text-xs font-bold rounded-t border transition-all cursor-pointer whitespace-nowrap ${
-              activeTab === t.id 
-                ? "bg-white text-[#7a0c0c] border-slate-300 border-b-white font-extrabold shadow-sm -mb-px z-10" 
-                : "bg-[#7a0c0c] text-white border-transparent hover:bg-[#520000]"
-            }`}
+            className={`px-4 py-1.5 text-xs font-bold rounded-t border transition-all cursor-pointer whitespace-nowrap ${activeTab === t.id
+              ? "bg-white text-[#7a0c0c] border-slate-300 border-b-white font-extrabold shadow-sm -mb-px z-10"
+              : "bg-[#7a0c0c] text-white border-transparent hover:bg-[#520000]"
+              }`}
           >
             {t.label}
           </button>
@@ -652,11 +748,11 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
 
       {activeTab === "all" ? (
         <div className="flex-1 flex flex-col min-h-0 bg-white border border-slate-300 rounded shadow-sm overflow-hidden">
-          
+
           {/* Section Container Header: Device List */}
           <div className="bg-[#7a0c0c] text-white px-4 py-1.5 text-xs font-bold tracking-wider flex items-center justify-between">
             <span>Device List</span>
-            <button 
+            <button
               onClick={() => setShowSelectColumnsModal(true)}
               className="text-white/90 hover:text-white cursor-pointer p-0.5 rounded hover:bg-white/10 transition-colors"
               title="Click to select visible columns"
@@ -669,26 +765,26 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
           <div className="p-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between flex-wrap gap-3 text-xs">
             {/* Left Search Controls */}
             <div className="flex items-center gap-2">
-              <input 
-                type="text" 
+              <input
+                type="text"
                 placeholder=""
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-48 px-2 py-1 bg-white border border-slate-300 rounded text-xs focus:outline-none focus:border-[#7a0c0c]"
               />
-              <button 
-                onClick={() => {}}
+              <button
+                onClick={() => { }}
                 className="px-4 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs cursor-pointer shadow-sm"
               >
                 Search
               </button>
-              <button 
+              <button
                 onClick={() => setSearchQuery("")}
                 className="px-4 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs cursor-pointer shadow-sm"
               >
                 Clear
               </button>
-              <button 
+              <button
                 className="px-4 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs cursor-pointer shadow-sm"
               >
                 Advanced
@@ -699,22 +795,22 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
             <div className="flex items-center gap-4 text-xs font-medium text-slate-700">
               <div>Selected Devices: <span className="font-bold">{selectedIds.length}</span></div>
               <div>Total Devices: <span className="font-bold">{servers.length}</span></div>
-              
+
               <div className="flex items-center gap-2">
-                <button 
+                <button
                   onClick={onAddServer}
                   className="px-4 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs cursor-pointer shadow-sm"
                 >
                   Add
                 </button>
-                <button 
+                <button
                   onClick={handleDeleteClick}
                   className="px-4 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs cursor-pointer shadow-sm disabled:opacity-50"
                   disabled={selectedIds.length === 0}
                 >
                   Delete
                 </button>
-                <button 
+                <button
                   onClick={handleDeleteAllClick}
                   className="px-4 py-1 bg-red-700 hover:bg-red-800 text-white font-bold rounded text-xs cursor-pointer shadow-sm disabled:opacity-50"
                   disabled={servers.length === 0}
@@ -722,12 +818,21 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
                 >
                   Delete All
                 </button>
-                <button 
+                <button
                   onClick={handleEditClick}
                   className="px-4 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs cursor-pointer shadow-sm disabled:opacity-50"
                   disabled={selectedIds.length !== 1}
                 >
                   Edit
+                </button>
+                <button
+                  onClick={() => handleOpenOSInstall()}
+                  className="px-4 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs cursor-pointer shadow-sm disabled:opacity-50 inline-flex items-center gap-1.5"
+                  disabled={selectedIds.length !== 1}
+                  title="Deploy OS / ISO image to selected server via Redfish Virtual Media"
+                >
+                  <Disc className="w-3.5 h-3.5 text-red-200" />
+                  <span>Deploy OS</span>
                 </button>
 
               </div>
@@ -740,18 +845,18 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
               <thead>
                 <tr className="bg-slate-100 border-b border-slate-300 text-slate-700 font-bold text-[11px]">
                   <th className="p-2 border-r border-slate-200 w-8 text-center">
-                    <input 
-                      type="checkbox" 
+                    <input
+                      type="checkbox"
                       checked={selectedIds.length === sortedServers.length && sortedServers.length > 0}
                       onChange={toggleSelectAll}
-                      className="w-3.5 h-3.5 accent-[#7a0c0c]" 
+                      className="w-3.5 h-3.5 accent-[#7a0c0c]"
                     />
                   </th>
                   {activeColumns.map(col => {
                     const isSorted = sortColumn === col.id;
                     return (
-                      <th 
-                        key={col.id} 
+                      <th
+                        key={col.id}
                         onClick={() => handleHeaderClick(col.id)}
                         className="p-2 border-r border-slate-200 cursor-pointer hover:bg-slate-200 whitespace-nowrap transition-colors select-none"
                       >
@@ -777,16 +882,16 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
                   const isSelected = selectedIds.includes(server.id);
 
                   return (
-                    <tr 
+                    <tr
                       key={server.id}
                       className={`hover:bg-slate-50 virtual-table-row ${isSelected ? "bg-red-50/60" : ""}`}
                     >
                       <td className="p-2 border-r border-slate-200 text-center">
-                        <input 
-                          type="checkbox" 
+                        <input
+                          type="checkbox"
                           checked={isSelected}
                           onChange={() => toggleSelect(server.id)}
-                          className="w-3.5 h-3.5 accent-[#7a0c0c]" 
+                          className="w-3.5 h-3.5 accent-[#7a0c0c]"
                         />
                       </td>
                       {activeColumns.map(col => (
@@ -831,7 +936,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div 
+            <div
               onClick={() => {
                 setProvisioningTargetServer(servers[0] || null);
                 setShowProvisioningModal(true);
@@ -847,7 +952,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
               </p>
             </div>
 
-            <div 
+            <div
               onClick={() => {
                 setProvisioningTargetServer(servers[0] || null);
                 setShowProvisioningModal(true);
@@ -897,9 +1002,9 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
 
                   const activeTasks = allTasks.filter(t => {
                     const idStr = t.server.toLowerCase();
-                    return !deletedKeys.has("172.16.12.50") && !deletedKeys.has("test node a") && 
-                           !deletedKeys.has("172.16.12.55") && !deletedKeys.has("trilok sir") &&
-                           Array.from(deletedKeys).every(k => !idStr.includes(k));
+                    return !deletedKeys.has("172.16.12.50") && !deletedKeys.has("test node a") &&
+                      !deletedKeys.has("172.16.12.55") && !deletedKeys.has("trilok sir") &&
+                      Array.from(deletedKeys).every(k => !idStr.includes(k));
                   });
 
                   if (activeTasks.length === 0 || !servers || servers.length === 0) {
@@ -1292,7 +1397,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(combined)
                       });
-                    } catch (_) {}
+                    } catch (_) { }
 
                     if (onImportServers) {
                       onImportServers(newProfiles);
@@ -1324,6 +1429,17 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
         onConfirm={handleConfirmDelete}
         onCancel={() => setDeleteTargetMode(null)}
       />
+
+      {showOSInstallModal && osInstallTargetServer && (
+        <OSInstallModal
+          isOpen={showOSInstallModal}
+          onClose={handleCloseOSInstall}
+          bmcIp={osInstallTargetServer.bmcIp || osInstallTargetServer.name}
+          serverName={osInstallTargetServer.name}
+          username={osInstallTargetServer.bmcUsername || "admin"}
+          password={osInstallTargetServer.bmcPassword || "password"}
+        />
+      )}
     </div>
   );
 };

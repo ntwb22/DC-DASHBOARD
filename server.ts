@@ -41,6 +41,7 @@ interface CacheEntry {
 }
 const proxyCache = new Map<string, CacheEntry>();
 const inFlightRequests = new Map<string, Promise<any>>();
+const bmcSessionTokenCache = new Map<string, { token: string; createdAt: number }>();
 
 // Tiered Polling TTLs according to data volatility:
 // Fast telemetry (Power, Thermal, Utilization): 3s TTL
@@ -1497,6 +1498,19 @@ async function startServer() {
   app.post(["/api/redfish/proxy", "/api/redfish"], async (req, res) => {
     let { url: rawUrl, ip, username, password, method, data, headers } = req.body || {};
 
+    if (!headers) headers = {};
+
+    // Forward user session authentication headers from incoming HTTP request if missing in payload
+    const incomingAuth = (req.headers.authorization || req.headers.Authorization) as string | undefined;
+    const incomingToken = (req.headers["x-auth-token"] || req.headers["X-Auth-Token"]) as string | undefined;
+
+    if (!headers.Authorization && !headers.authorization && incomingAuth) {
+      headers.Authorization = incomingAuth;
+    }
+    if (!headers["X-Auth-Token"] && !headers["x-auth-token"] && incomingToken) {
+      headers["X-Auth-Token"] = incomingToken;
+    }
+
     if (!rawUrl && ip) {
       const cleanIp = String(ip).trim();
       rawUrl = cleanIp.startsWith("http") ? cleanIp : `https://${cleanIp}`;
@@ -1505,19 +1519,37 @@ async function startServer() {
       }
     }
 
-    if (!headers && username && password) {
-      headers = {
-        Authorization: `Basic ${Buffer.from(`${String(username).trim()}:${String(password).trim()}`).toString("base64")}`
-      };
-    }
-
-    console.log(`[Redfish Proxy Request] Incoming: ${method || "GET"} -> ${rawUrl}`);
-
     if (!rawUrl) {
       return res.status(400).json({ error: "URL or IP is required" });
     }
 
     let url = rawUrl.startsWith("http://") || rawUrl.startsWith("https://") ? rawUrl : `https://${rawUrl}`;
+
+    // Host & DB lookup for credentials if username/password missing
+    const bmcHost = url.replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
+    if ((!username || !password) && bmcHost) {
+      try {
+        const row: any = await new Promise((resolve) => {
+          db.get("SELECT username, password FROM fleet WHERE ip = ? OR ip LIKE ?", [bmcHost, `%${bmcHost}%`], (err, r) => resolve(r));
+        });
+        if (row) {
+          username = username || row.username;
+          password = password || row.password;
+        }
+      } catch (_) {}
+    }
+
+    // Reuse persistent BMC session token if available
+    const cachedTokenObj = bmcSessionTokenCache.get(bmcHost);
+    if (cachedTokenObj && (Date.now() - cachedTokenObj.createdAt < 25 * 60 * 1000)) {
+      headers["X-Auth-Token"] = cachedTokenObj.token;
+      delete headers.Authorization;
+      delete headers.authorization;
+    } else if (!headers.Authorization && !headers.authorization && !headers["X-Auth-Token"] && !headers["x-auth-token"] && username && password) {
+      headers.Authorization = `Basic ${Buffer.from(`${String(username).trim()}:${String(password).trim()}`).toString("base64")}`;
+    }
+
+    console.log(`[Redfish Proxy Request] Incoming: ${method || "GET"} -> ${url}`);
 
     // Rewrite localhost/127.0.0.1 targets to the local FastAPI backend on port 8000
     if (url.includes("127.0.0.1") || url.includes("localhost")) {
@@ -1527,7 +1559,7 @@ async function startServer() {
     const reqStartTime = Date.now();
     const reqMethod = (method || "GET").toUpperCase();
     const isGet = reqMethod === "GET";
-    const authHeader = headers?.Authorization || headers?.authorization || "";
+    const authHeader = headers?.Authorization || headers?.authorization || headers?.["X-Auth-Token"] || headers?.["x-auth-token"] || "";
     const cacheKey = `${url}::${authHeader}`;
     const ttlMs = getTieredCacheTTL(url);
 

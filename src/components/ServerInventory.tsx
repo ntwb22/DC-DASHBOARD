@@ -1710,7 +1710,7 @@ export const ServerInventory: React.FC<ServerInventoryProps> = ({ service, syste
   const isLinkUp = (status: any) => {
     if (!status) return false;
     const s = String(status).trim().toLowerCase();
-    return s === "linkup" || s === "up" || s === "active" || s === "ok" || s === "enabled";
+    return s === "linkup" || s === "up";
   };
 
   const getNICLinkStateFromLogs = (nic: any, logs: any[]) => {
@@ -1751,7 +1751,15 @@ export const ServerInventory: React.FC<ServerInventoryProps> = ({ service, syste
   };
 
   const NICLinkHealthBadge: React.FC<{ nic: any }> = ({ nic }) => {
-    const isUp = isLinkUp(nic.LinkStatus) || (nic.Status?.State && isLinkUp(nic.Status.State));
+    const rawLs = (nic?.LinkStatus || nic?.Status?.LinkStatus || "").toString().trim().toLowerCase();
+    let isUp = rawLs === "linkup" || rawLs === "up";
+    if (!rawLs) {
+      const hasIp = Array.isArray(nic?.IPv4Addresses)
+        ? nic.IPv4Addresses.some((ip: any) => ip?.Address && ip.Address !== "0.0.0.0" && ip.Address !== "N/A" && String(ip.Address).trim() !== "")
+        : Boolean(nic?.IPv4Addresses?.Address && nic.IPv4Addresses.Address !== "0.0.0.0" && nic.IPv4Addresses.Address !== "N/A" && String(nic.IPv4Addresses.Address).trim() !== "");
+      const hasSpeed = nic?.SpeedMbps && Number(nic.SpeedMbps) > 0;
+      isUp = (hasIp || hasSpeed) && nic?.InterfaceEnabled !== false && nic?.Status?.State !== "Disabled" && nic?.Status?.State !== "Absent";
+    }
     const statusText = isUp ? "Link UP" : "Link DOWN";
 
     return (
@@ -2848,9 +2856,9 @@ export const ServerInventory: React.FC<ServerInventoryProps> = ({ service, syste
               <div className="grid grid-cols-2 gap-y-2 text-[10px] border-t border-slate-100 pt-3 mt-1">
                 <span className="text-gray-400 uppercase font-bold">Health / Connection</span>
                 <div className="flex justify-end items-center gap-1.5 font-bold">
-                  <div className={`w-1.5 h-1.5 rounded-full ${aoc.LinkStatus === "LinkUp" || aoc.Status?.Health === "OK" ? "bg-emerald-500" : "bg-rose-500"}`} />
-                  <span className={`text-right font-bold ${aoc.LinkStatus === "LinkUp" || aoc.Status?.Health === "OK" ? "text-emerald-600" : "text-rose-600"}`}>
-                    {aoc.LinkStatus || "LinkUp"}
+                  <div className={`w-1.5 h-1.5 rounded-full ${aoc.LinkStatus === "LinkUp" ? "bg-emerald-500" : "bg-rose-500"}`} />
+                  <span className={`text-right font-bold ${aoc.LinkStatus === "LinkUp" ? "text-emerald-600" : "text-rose-600"}`}>
+                    {aoc.LinkStatus || (aoc.InterfaceEnabled !== false && aoc.Status?.Health === "OK" && aoc.SpeedMbps ? "LinkUp" : "LinkDown")}
                   </span>
                 </div>
                 <span className="text-gray-400 uppercase font-bold">Model Name</span>

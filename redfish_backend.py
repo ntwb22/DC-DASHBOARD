@@ -4,9 +4,11 @@ A production-ready asynchronous Python service for enterprise data center automa
 Author: Principal Infrastructure Software Engineer (specializing in Data Center Automation)
 """
 
+import os
 import time
+import httpx
 from datetime import datetime
-
+from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
 # Global proxy cache
@@ -19,12 +21,19 @@ CACHE_TTL_SECS = 60
 path_blacklist = {}
 BLACKLIST_TTL_SECS = 300  # Remember 404 paths for 5 minutes
 
+import sys
 import asyncio
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
+
 import aiohttp
 import logging
 import ssl
 import urllib3
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple, Set
 import json
 
 # Suppress urllib3 or global SSL warnings for self-signed certificates in test/internal environments
@@ -35,6 +44,423 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("RedfishEngine")
 
+# Global fleet sync status state tracker
+GLOBAL_SYNC_STATE: Dict[str, Any] = {
+    "status": "READY",
+    "progress": 100,
+    "completed_servers": 0,
+    "total_servers": 0,
+    "message": "Fleet inventory loaded from PostgreSQL cache"
+}
+
+def normalize_redfish_url(url_or_ip: str, path: str = "") -> str:
+    """Ensures HTTPS scheme and clean URL path concatenation without double /redfish/v1 prefixes."""
+    if not url_or_ip:
+        return ""
+    clean = url_or_ip.strip()
+    if not clean.startswith("http://") and not clean.startswith("https://"):
+        clean = f"https://{clean}"
+    if clean.startswith("http://"):
+        clean = "https://" + clean[7:]
+
+    clean = clean.rstrip("/")
+    if path:
+        if path.startswith("http://") or path.startswith("https://"):
+            full = path
+        else:
+            path_clean = "/" + path.lstrip("/")
+            if clean.lower().endswith("/redfish/v1") and path_clean.lower().startswith("/redfish/v1"):
+                path_clean = path_clean[11:]
+            elif "/redfish/v1" in clean.lower() and path_clean.lower().startswith("/redfish/v1"):
+                import re
+                clean = re.sub(r"/redfish/v1.*$", "", clean, flags=re.IGNORECASE)
+            full = f"{clean}{path_clean}"
+    else:
+        full = clean
+
+    import re
+    return re.sub(r"/redfish/v1(/redfish/v1)+", "/redfish/v1", full, flags=re.IGNORECASE)
+
+def rewrite_vendor_url(url: str, vendor: str = "SM") -> str:
+    """Applies vendor-specific path transformations."""
+    if not url:
+        return ""
+    return url
+
+def build_clean_url(base_url: str, path: str) -> str:
+    return normalize_redfish_url(base_url, path)
+
+async def fetch_server_inventory(client: Any, server_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Retrieves server inventory from DB cache or returns default structure."""
+    sid = server_dict.get("id")
+    if sid:
+        cached = await db.get_server_inventory(sid)
+        if cached:
+            return cached
+    return {
+        "server_id": server_dict.get("id", ""),
+        "vendor": server_dict.get("vendor", "SM"),
+        "raw_payload": {},
+        "inventory_data": {}
+    }
+
+async def collect_datacenter_inventory(servers: List[Dict[str, Any]], force_refresh: bool = False) -> List[Dict[str, Any]]:
+    """
+    High-Performance Asynchronous Datacenter Inventory Orchestrator:
+    - Runs parallelized collection across registered servers via asyncio.gather.
+    - Uses per-BMC semaphores to prevent microcontroller session limits & timeouts.
+    - Reads static inventory attributes from PostgreSQL read-through buffer.
+    - Performs bulk database upserts in a single transaction.
+    """
+    if not servers:
+        return []
+
+    session_manager = RedfishSessionManager()
+    tasks = []
+
+    for s in servers:
+        bmc_ip = s.get("ip") or s.get("bmc_ip") or ""
+        username = s.get("username", "admin")
+        password = s.get("password", "netweb@123")
+        client = RedfishBMCClient(session_manager, bmc_ip=bmc_ip, username=username, password=password)
+        tasks.append(client.get_system_inventory(force_refresh=force_refresh))
+
+    try:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        parsed_results = []
+        bulk_items = []
+
+        for idx, res in enumerate(results):
+            srv = servers[idx]
+            sid = srv.get("id", f"server-{idx}")
+            vendor = srv.get("vendor", "SM")
+            if isinstance(res, Exception):
+                err_dict = {
+                    "server_id": sid,
+                    "bmc_ip": srv.get("ip"),
+                    "vendor": vendor,
+                    "error": str(res),
+                    "success": False
+                }
+                parsed_results.append(err_dict)
+            else:
+                if isinstance(res, dict):
+                    res["server_id"] = sid
+                    res["vendor"] = vendor
+                parsed_results.append(res)
+                bulk_items.append({
+                    "server_id": sid,
+                    "vendor": vendor,
+                    "inventory_data": res,
+                    "raw_payload": res
+                })
+
+        if bulk_items:
+            await db.bulk_upsert_server_inventory(bulk_items)
+
+        return parsed_results
+    finally:
+        await session_manager.close_all()
+
+
+
+# Global session token & URI caches
+REDFISH_BACKEND_SESSION_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
+RESOLVED_SYSTEM_URI_CACHE: Dict[str, str] = {}
+RESOLVED_CHASSIS_URI_CACHE: Dict[str, str] = {}
+SESSION_BACKEND_LOCK = asyncio.Lock()
+
+# Thread-safe registry dictionary tracking active background tasks & SSE streams per server ID/IP
+SERVER_TASK_REGISTRY: Dict[str, Set[asyncio.Task]] = {}
+SERVER_REGISTRY_LOCK = asyncio.Lock()
+
+def register_server_task(server_id_or_ip: str, task: asyncio.Task):
+    """
+    Registers an active background asyncio.Task mapped to a server ID or IP address
+    and automatically discards it from the registry upon completion.
+    """
+    if not server_id_or_ip or not task:
+        return
+    clean_target = server_id_or_ip.lstrip("http://").lstrip("https://").strip().rstrip("/")
+    if clean_target not in SERVER_TASK_REGISTRY:
+        SERVER_TASK_REGISTRY[clean_target] = set()
+    SERVER_TASK_REGISTRY[clean_target].add(task)
+
+    def _on_done(t):
+        if clean_target in SERVER_TASK_REGISTRY:
+            SERVER_TASK_REGISTRY[clean_target].discard(t)
+            if not SERVER_TASK_REGISTRY[clean_target]:
+                SERVER_TASK_REGISTRY.pop(clean_target, None)
+
+    task.add_done_callback(_on_done)
+
+async def cancel_server_tasks(server_id_or_ip: str):
+    """
+    Explicitly cancels and terminates all active background tasks, inventory monitors,
+    and SSE streams for a specific server ID or IP address before database removal,
+    ensuring deleted servers never trigger subsequent network hits or polling intervals.
+    """
+    if not server_id_or_ip:
+        return
+    clean_target = server_id_or_ip.lstrip("http://").lstrip("https://").strip().rstrip("/")
+    tasks_to_cancel: Set[asyncio.Task] = set()
+
+    async with SERVER_REGISTRY_LOCK:
+        # Match server ID, exact IP, or partial IP substrings in registry keys
+        matching_keys = [
+            k for k in list(SERVER_TASK_REGISTRY.keys())
+            if k == server_id_or_ip or k == clean_target or k in server_id_or_ip or server_id_or_ip in k
+        ]
+        for k in matching_keys:
+            tasks = SERVER_TASK_REGISTRY.pop(k, set())
+            tasks_to_cancel.update(tasks)
+
+    # Cancel all registered asyncio background tasks
+    for task in tasks_to_cancel:
+        if not task.done():
+            task.cancel()
+            logger.info(f"[Task Registry] Cancelled active background task for deleted server '{server_id_or_ip}'.")
+
+    # Stop daemon workers in redfish_manager for target server ID and target IP
+    try:
+        if server_id_or_ip in redfish_manager.workers:
+            w = redfish_manager.workers.pop(server_id_or_ip)
+            await w.stop()
+            logger.info(f"[RedfishMonitor] Terminated daemon worker for '{server_id_or_ip}'.")
+        
+        ip_workers = [sid for sid, w in list(redfish_manager.workers.items()) if w.bmc_ip == clean_target or w.bmc_ip in clean_target]
+        for sid in ip_workers:
+            w = redfish_manager.workers.pop(sid, None)
+            if w:
+                await w.stop()
+                logger.info(f"[RedfishMonitor] Terminated daemon worker for IP '{clean_target}'.")
+    except Exception as e:
+        logger.debug(f"Notice while stopping redfish_manager worker for {server_id_or_ip}: {e}")
+
+    # Stop SSE receivers in sse_manager for target server ID and target IP
+    try:
+        if hasattr(sse_manager, "receivers"):
+            if server_id_or_ip in sse_manager.receivers:
+                r = sse_manager.receivers.pop(server_id_or_ip)
+                await r.stop()
+                logger.info(f"[SSE Engine] Terminated SSE receiver stream for '{server_id_or_ip}'.")
+            
+            ip_receivers = [sid for sid, r in list(sse_manager.receivers.items()) if r.bmc_ip == clean_target or r.bmc_ip in clean_target]
+            for sid in ip_receivers:
+                r = sse_manager.receivers.pop(sid, None)
+                if r:
+                    await r.stop()
+                    logger.info(f"[SSE Engine] Terminated SSE receiver stream for IP '{clean_target}'.")
+    except Exception as e:
+        logger.debug(f"Notice while stopping sse_manager receiver for {server_id_or_ip}: {e}")
+
+    # Evict session token cache, resolved paths, and semaphores
+    try:
+        for key in list(REDFISH_BACKEND_SESSION_CACHE.keys()):
+            if clean_target in key[0]:
+                REDFISH_BACKEND_SESSION_CACHE.pop(key, None)
+        RESOLVED_SYSTEM_URI_CACHE.pop(clean_target, None)
+        RESOLVED_CHASSIS_URI_CACHE.pop(clean_target, None)
+        if clean_target in BMC_SEMAPHORES:
+            BMC_SEMAPHORES.pop(clean_target, None)
+    except Exception:
+        pass
+
+SESSION_LIMIT_COOLDOWN: Dict[str, float] = {}
+
+async def logout_backend_session(session: aiohttp.ClientSession, base_url: str, token_info: Dict[str, Any]):
+    """Cleanly logs out / deletes an active session from the target BMC when evicted."""
+    token = token_info.get("token")
+    location = token_info.get("location")
+    if not token and not location:
+        return
+    try:
+        headers = {"X-Auth-Token": token} if token else {}
+        target_url = location if location else normalize_redfish_url(base_url, "/redfish/v1/SessionService/Sessions")
+        async with session.delete(target_url, headers=headers, timeout=aiohttp.ClientTimeout(total=3.0)) as resp:
+            logger.info(f"[Auth Logout] Closed BMC session for {base_url} (status {resp.status})")
+    except Exception as ex:
+        logger.debug(f"[Auth Logout] Session logout notice for {base_url}: {ex}")
+
+async def get_or_acquire_backend_session(session: aiohttp.ClientSession, base_url: str, username: str, password: str, force_refresh: bool = False) -> Optional[str]:
+    """Acquires or reuses X-Auth-Token via /redfish/v1/SessionService/Sessions for backend poller operations with lock protection."""
+    now = time.time()
+    cache_key = (base_url, username)
+
+    # If BMC previously rejected session creation due to session limit, reuse Basic Auth directly for 5 minutes
+    if SESSION_LIMIT_COOLDOWN.get(base_url, 0) > now:
+        return None
+
+    if not force_refresh:
+        cached = REDFISH_BACKEND_SESSION_CACHE.get(cache_key)
+        if cached and (now - cached["created_at"] < 1500): # 25 minute TTL
+            return cached["token"]
+
+    async with SESSION_BACKEND_LOCK:
+        now = time.time()
+        cached = REDFISH_BACKEND_SESSION_CACHE.get(cache_key)
+        # Even if force_refresh is requested, if token was acquired within the last 15s, reuse it
+        if cached and (now - cached["created_at"] < 15 or (not force_refresh and now - cached["created_at"] < 1500)):
+            return cached["token"]
+
+        # Clean up old session on BMC if forcing refresh
+        if force_refresh and cached:
+            old_info = REDFISH_BACKEND_SESSION_CACHE.pop(cache_key, None)
+            if old_info:
+                asyncio.create_task(logout_backend_session(session, base_url, old_info))
+
+        session_url = normalize_redfish_url(base_url, "/redfish/v1/SessionService/Sessions")
+        payload = {"UserName": username, "Password": password}
+        try:
+            async with session.post(session_url, json=payload, headers={"Content-Type": "application/json"}, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
+                if resp.status in (200, 201):
+                    token = resp.headers.get("X-Auth-Token")
+                    location = resp.headers.get("Location")
+                    if not token:
+                        try:
+                            body = await resp.json()
+                            token = body.get("Token") or body.get("X-Auth-Token") or body.get("SessionToken")
+                        except Exception:
+                            token = None
+                    if token:
+                        REDFISH_BACKEND_SESSION_CACHE[cache_key] = {"token": token, "location": location, "created_at": now}
+                        logger.info(f"[Auth Cache] Acquired & cached X-Auth-Token for BMC {base_url}")
+                        return token
+                elif resp.status in (400, 403, 500, 507):
+                    # BMC session limit reached or session creation disabled - enter 5-minute Basic Auth cooldown
+                    text = await resp.text()
+                    if "session" in text.lower() or "limit" in text.lower() or resp.status in (400, 403):
+                        SESSION_LIMIT_COOLDOWN[base_url] = now + 300.0
+                        logger.info(f"[Auth Cooldown] Session limit reached on {base_url}. Using Basic Auth fallback for 5 min.")
+        except Exception as e:
+            logger.debug(f"[Auth Cache] Session creation notice for {base_url}: {e}")
+        
+        # Return existing cached token if available to prevent hitting BMC session limit
+        if cached and cached.get("token"):
+            return cached["token"]
+
+        return None
+
+class RedfishClient:
+    """
+    Enterprise Async Redfish Client with dynamic System & Chassis URI discovery, session token reuse,
+    and race-condition locking on token refresh.
+    """
+    def __init__(self, base_url: str, username: str, password: str):
+        self.base_url = base_url.rstrip("/")
+        self.username = username
+        self.password = password
+        self.token: Optional[str] = None
+        self.system_uri: Optional[str] = None
+        self.chassis_uri: Optional[str] = None
+        self._lock = asyncio.Lock()
+
+    async def get_system_uri(self, client: httpx.AsyncClient) -> str:
+        """Dynamically discovers and caches the correct system URI to prevent 404 overhead."""
+        if self.system_uri:
+            return self.system_uri
+        
+        candidates = ["/redfish/v1/Systems/1", "/redfish/v1/Systems/Self"]
+        for path in candidates:
+            try:
+                res = await client.get(
+                    f"{self.base_url}{path}", 
+                    headers={"X-Auth-Token": self.token} if self.token else {}
+                )
+                if res.status_code == 200:
+                    self.system_uri = path
+                    return path
+            except Exception:
+                continue
+        
+        # Fallback default
+        self.system_uri = "/redfish/v1/Systems/1"
+        return self.system_uri
+
+    async def get_chassis_uri(self, client: httpx.AsyncClient) -> str:
+        """Dynamically discovers and caches the correct chassis URI to prevent 404 overhead."""
+        if self.chassis_uri:
+            return self.chassis_uri
+        
+        candidates = ["/redfish/v1/Chassis/1", "/redfish/v1/Chassis/Self"]
+        for path in candidates:
+            try:
+                res = await client.get(
+                    f"{self.base_url}{path}", 
+                    headers={"X-Auth-Token": self.token} if self.token else {}
+                )
+                if res.status_code == 200:
+                    self.chassis_uri = path
+                    return path
+            except Exception:
+                continue
+        
+        # Fallback default
+        self.chassis_uri = "/redfish/v1/Chassis/1"
+        return self.chassis_uri
+
+    async def refresh_token(self, client: httpx.AsyncClient, force_refresh: bool = False):
+        """Acquires and strictly caches a fresh session token in global cache with lock protection."""
+        now = time.time()
+        cache_key = (self.base_url, self.username)
+        if not force_refresh:
+            cached = REDFISH_BACKEND_SESSION_CACHE.get(cache_key)
+            if cached and (now - cached["created_at"] < 1500):
+                self.token = cached["token"]
+                return self.token
+
+        async with SESSION_BACKEND_LOCK:
+            now = time.time()
+            cached = REDFISH_BACKEND_SESSION_CACHE.get(cache_key)
+            if cached and (now - cached["created_at"] < 15 or (not force_refresh and now - cached["created_at"] < 1500)):
+                self.token = cached["token"]
+                return self.token
+
+            try:
+                res = await client.post(
+                    f"{self.base_url}/redfish/v1/SessionService/Sessions", 
+                    json={"UserName": self.username, "Password": self.password},
+                    timeout=5.0
+                )
+                if res.status_code in [200, 201]:
+                    tok = res.headers.get("X-Auth-Token") or res.json().get("SessionToken") or res.json().get("Token")
+                    if tok:
+                        self.token = tok
+                        REDFISH_BACKEND_SESSION_CACHE[cache_key] = {"token": tok, "created_at": now}
+                        logger.info(f"[RedfishClient Cache] Acquired & cached X-Auth-Token for BMC {self.base_url}")
+                        return tok
+            except Exception as e:
+                logger.debug(f"[RedfishClient Cache] Failed to acquire token for {self.base_url}: {e}")
+
+            if cached and cached.get("token"):
+                self.token = cached["token"]
+                return self.token
+            return None
+
+    async def request(self, method: str, endpoint: str, client: httpx.AsyncClient, **kwargs) -> httpx.Response:
+        """Executes requests with automatic token management and race-condition locking on 401/403."""
+        if not self.token:
+            async with self._lock:
+                if not self.token:
+                    await self.refresh_token(client)
+
+        headers = kwargs.get("headers", {})
+        if self.token:
+            headers["X-Auth-Token"] = self.token
+        kwargs["headers"] = headers
+
+        response = await client.request(method, f"{self.base_url}{endpoint}", **kwargs)
+
+        # Handle token expiration race conditions safely
+        if response.status_code in [401, 403]:
+            async with self._lock:
+                # Re-authenticate only if token hasn't already been refreshed by another task
+                await self.refresh_token(client, force_refresh=True)
+                if self.token:
+                    kwargs["headers"]["X-Auth-Token"] = self.token
+                response = await client.request(method, f"{self.base_url}{endpoint}", **kwargs)
+
+        return response
 
 class RedfishSessionManager:
     """
@@ -73,9 +499,21 @@ class RedfishSessionManager:
         self.sessions.clear()
 
 
+# Per-BMC target concurrency semaphores to cap concurrent requests and protect embedded microcontrollers
+BMC_SEMAPHORES: Dict[str, asyncio.Semaphore] = {}
+BMC_SEMAPHORE_CONCURRENCY = 6
+
+def get_bmc_semaphore(bmc_ip: str) -> asyncio.Semaphore:
+    """Enforces an asyncio.Semaphore per target BMC IP to cap concurrent requests."""
+    clean = bmc_ip.lstrip("http://").lstrip("https://").strip().split("/")[0].split(":")[0]
+    if clean not in BMC_SEMAPHORES:
+        BMC_SEMAPHORES[clean] = asyncio.Semaphore(BMC_SEMAPHORE_CONCURRENCY)
+    return BMC_SEMAPHORES[clean]
+
 class RedfishBMCClient:
     """
     Asynchronous client wrapper representing orchestration operations targeting a single BMC.
+    Enforces dynamic path discovery, per-BMC semaphores, and read-through inventory buffering.
     """
     def __init__(self, session_manager: RedfishSessionManager, bmc_ip: str, username: str, password: str):
         self.session_manager = session_manager
@@ -83,186 +521,320 @@ class RedfishBMCClient:
         self.base_url = normalize_redfish_url(bmc_ip)
         parsed = urlparse(self.base_url)
         self.bmc_ip = parsed.netloc.split(":")[0] if parsed.netloc else bmc_ip.lstrip("http://").lstrip("https://").split(":")[0]
-        self.auth = aiohttp.BasicAuth(username.strip(), password)
+        self.username = username.strip()
+        self.password = password
+        self.auth = aiohttp.BasicAuth(self.username, password)
 
-    async def _request(self, method: str, path: str, data: Optional[Dict[str, Any]] = None, max_retries: int = 3) -> Dict[str, Any]:
+    async def _request(self, method: str, path: str, data: Optional[Dict[str, Any]] = None, max_retries: int = 1) -> Dict[str, Any]:
         """
-        Internal request helper wrapping HTTP operations with exponential backoff for 503s
-        and rapid short-circuiting for blacklisted 404 paths.
+        Internal request helper wrapping HTTP operations with exponential backoff for 503s,
+        per-BMC semaphore limits, session token reuse across cycles, dynamic Chassis/System URI rewrite, and 401/403 lock protection.
         """
-        req_method = method.upper()
-        is_get = req_method == "GET"
-        
-        url = normalize_redfish_url(self.base_url, path)
-        cache_key = (self.base_url, url, self.auth.login)
-        blacklist_key = (self.base_url, path)
+        sem = get_bmc_semaphore(self.bmc_ip)
+        async with sem:
+            req_method = method.upper()
+            is_get = req_method == "GET"
 
-        # 1. Short-circuit blacklisted 404 paths to eliminate latency
-        if is_get and blacklist_key in path_blacklist:
-            if time.time() - path_blacklist[blacklist_key] < BLACKLIST_TTL_SECS:
-                logger.debug(f"Blacklist HIT for 404 path: {url}. Skipping request.")
-                return {"error": "Endpoint not supported", "status_code": 404}
+            # Apply cached chassis/system URI rewrites to avoid 404 fallback loops
+            if "/Chassis/1" in path or "/Chassis/Self" in path or "/Chassis/self" in path:
+                cached_chassis = RESOLVED_CHASSIS_URI_CACHE.get(self.base_url)
+                if cached_chassis:
+                    path = path.replace("/Chassis/1", cached_chassis).replace("/Chassis/Self", cached_chassis).replace("/Chassis/self", cached_chassis)
+
+            if "/Systems/1" in path or "/Systems/Self" in path or "/Systems/self" in path:
+                cached_system = RESOLVED_SYSTEM_URI_CACHE.get(self.base_url)
+                if cached_system:
+                    path = path.replace("/Systems/1", cached_system).replace("/Systems/Self", cached_system).replace("/Systems/self", cached_system)
+
+            url = normalize_redfish_url(self.base_url, path)
+            cache_key = (self.base_url, url, self.auth.login)
+            blacklist_key = (self.base_url, path)
+
+            # 1. Short-circuit blacklisted 404 paths to eliminate latency
+            if is_get and blacklist_key in path_blacklist:
+                if time.time() - path_blacklist[blacklist_key] < BLACKLIST_TTL_SECS:
+                    logger.debug(f"Blacklist HIT for 404 path: {url}. Skipping request.")
+                    return {"error": "Endpoint not supported", "status_code": 404}
+                else:
+                    del path_blacklist[blacklist_key]
+
+            # 2. Check standard GET cache
+            if is_get:
+                cached = proxy_cache.get(cache_key)
+                if cached and (time.time() - cached[1] < CACHE_TTL_SECS):
+                    logger.info(f"Cache HIT for {url}")
+                    return cached[0]
+
+            session = await self.session_manager.get_session(self.bmc_ip)
+
+            # Loopback bypass handling
+            if "127.0.0.1" in url or "localhost" in url:
+                if not "/api/redfish/proxy" in url:
+                    proxy_endpoint = "http://127.0.0.1:3000/api/redfish/proxy"
+                    try:
+                        import base64
+                        auth_str = f"{self.auth.login}:{self.auth.password}"
+                        encoded_auth = base64.b64encode(auth_str.encode()).decode()
+                        payload = {
+                            "url": url,
+                            "method": req_method,
+                            "data": data,
+                            "headers": {"Authorization": f"Basic {encoded_auth}"}
+                        }
+                        async with session.request("POST", proxy_endpoint, json=payload) as response:
+                            if response.status in (200, 201, 202, 204):
+                                return await response.json()
+                    except Exception as e:
+                        logger.error(f"Failed to route local request to Express mock: {e}")
+
+            req_headers = {}
+            # Session reuse: acquire or retrieve X-Auth-Token
+            token = await get_or_acquire_backend_session(session, self.base_url, self.username, self.password)
+            if token:
+                req_headers["X-Auth-Token"] = token
+                auth_arg = None
             else:
-                del path_blacklist[blacklist_key]
+                auth_arg = self.auth
 
-        # 2. Check standard GET cache
-        if is_get:
-            cached = proxy_cache.get(cache_key)
-            if cached and (time.time() - cached[1] < CACHE_TTL_SECS):
-                logger.info(f"Cache HIT for {url}")
-                return cached[0]
-
-        session = await self.session_manager.get_session(self.bmc_ip)
-
-        # Loopback bypass handling
-        if "127.0.0.1" in url or "localhost" in url:
-            if not "/api/redfish/proxy" in url:
-                proxy_endpoint = "http://127.0.0.1:3000/api/redfish/proxy"
+            if req_method in ("PATCH", "PUT"):
                 try:
-                    import base64
-                    auth_str = f"{self.auth.login}:{self.auth.password}"
-                    encoded_auth = base64.b64encode(auth_str.encode()).decode()
-                    payload = {
-                        "url": url,
-                        "method": req_method,
-                        "data": data,
-                        "headers": {"Authorization": f"Basic {encoded_auth}"}
-                    }
-                    async with session.request("POST", proxy_endpoint, json=payload) as response:
-                        if response.status in (200, 201, 202, 204):
-                            return await response.json()
+                    async with session.request("GET", url, auth=auth_arg, headers=req_headers) as get_response:
+                        if get_response.status == 200:
+                            etag = get_response.headers.get("ETag") or get_response.headers.get("etag")
+                            if etag:
+                                req_headers["If-Match"] = etag
                 except Exception as e:
-                    logger.error(f"Failed to route local request to Express mock: {e}")
+                    logger.warning(f"Could not fetch ETag via GET: {e}")
 
-        req_headers = {}
-        if req_method in ("PATCH", "PUT"):
-            try:
-                async with session.request("GET", url, auth=self.auth) as get_response:
-                    if get_response.status == 200:
-                        etag = get_response.headers.get("ETag") or get_response.headers.get("etag")
-                        if etag:
-                            req_headers["If-Match"] = etag
-            except Exception as e:
-                logger.warning(f"Could not fetch ETag via GET: {e}")
+            # 3. Execute request with Exponential Backoff Retry Strategy for 503s & 401/403 Re-Auth Lock
+            delay = 0.3
+            for attempt in range(max_retries + 1):
+                try:
+                    async with session.request(req_method, url, auth=auth_arg, json=data, headers=req_headers) as response:
+                        # Session validation / Re-auth on 401 / 403 wrapped in lock protection
+                        if response.status in (401, 403) and attempt == 0:
+                            logger.warning(f"[401/403] Session expired or invalid on {self.base_url}. Re-authenticating with lock protection...")
+                            async with SESSION_BACKEND_LOCK:
+                                REDFISH_BACKEND_SESSION_CACHE.pop((self.base_url, self.username), None)
+                                token = await get_or_acquire_backend_session(session, self.base_url, self.username, self.password, force_refresh=True)
+                            if token:
+                                req_headers["X-Auth-Token"] = token
+                                auth_arg = None
+                            else:
+                                auth_arg = self.auth
+                            continue
 
-        # 3. Execute request with Exponential Backoff Retry Strategy for 503s
-        delay = 1.0
-        for attempt in range(max_retries + 1):
-            try:
-                async with session.request(req_method, url, auth=self.auth, json=data, headers=req_headers) as response:
-                    if response.status in (200, 201, 202, 204):
-                        if response.status == 204:
-                            res_data = {"success": True, "status_code": response.status}
+                        if response.status in (200, 201, 202, 204):
+                            if response.status == 204:
+                                res_data = {"success": True, "status_code": response.status}
+                            else:
+                                try:
+                                    res_data = await response.json()
+                                except Exception:
+                                    text = await response.text()
+                                    res_data = {"success": True, "status_code": response.status, "message": text}
+                            
+                            if is_get:
+                                proxy_cache[cache_key] = (res_data, time.time())
+                            else:
+                                logger.info(f"Cache Invalidation for {url}")
+                                keys_to_delete = [k for k in list(proxy_cache.keys()) if k[0] == self.base_url and (k[1] == url or k[1] == path)]
+                                for k in keys_to_delete:
+                                    proxy_cache.pop(k, None)
+                            return res_data
+
+                        elif response.status == 404:
+                            # Dynamic 1 <-> Self fallback for Systems and Chassis endpoints
+                            fallback_path = None
+                            if "/Systems/1" in path:
+                                fallback_path = path.replace("/Systems/1", "/Systems/Self")
+                            elif "/Systems/Self" in path:
+                                fallback_path = path.replace("/Systems/Self", "/Systems/1")
+                            elif "/Systems/self" in path:
+                                fallback_path = path.replace("/Systems/self", "/Systems/1")
+                            elif "/Chassis/1" in path:
+                                fallback_path = path.replace("/Chassis/1", "/Chassis/Self")
+                            elif "/Chassis/Self" in path:
+                                fallback_path = path.replace("/Chassis/Self", "/Chassis/1")
+                            elif "/Chassis/self" in path:
+                                fallback_path = path.replace("/Chassis/self", "/Chassis/1")
+
+                            if fallback_path and fallback_path != path:
+                                logger.info(f"[Redfish 404 Fallback] Endpoint '{path}' returned 404 on BMC {self.bmc_ip}. Attempting fallback path '{fallback_path}'...")
+                                fb_url = normalize_redfish_url(self.base_url, fallback_path)
+                                try:
+                                    async with session.request(req_method, fb_url, auth=auth_arg, json=data, headers=req_headers) as fb_response:
+                                        if fb_response.status in (200, 201, 202, 204):
+                                            # Cache working URI to prevent subsequent 404 fallback loops
+                                            if "/Chassis/" in fallback_path:
+                                                resolved_c = "/redfish/v1/Chassis/Self" if "Chassis/Self" in fallback_path or "Chassis/self" in fallback_path else "/redfish/v1/Chassis/1"
+                                                RESOLVED_CHASSIS_URI_CACHE[self.base_url] = resolved_c
+                                            elif "/Systems/" in fallback_path:
+                                                resolved_s = "/redfish/v1/Systems/Self" if "Systems/Self" in fallback_path or "Systems/self" in fallback_path else "/redfish/v1/Systems/1"
+                                                RESOLVED_SYSTEM_URI_CACHE[self.base_url] = resolved_s
+
+                                            res_data = await fb_response.json() if fb_response.status != 204 else {"success": True, "status_code": 204}
+                                            if is_get:
+                                                proxy_cache[cache_key] = (res_data, time.time())
+                                            return res_data
+                                except Exception as fb_ex:
+                                    logger.debug(f"Fallback request to {fallback_path} failed: {fb_ex}")
+
+                            # Blacklist the 404 endpoint if fallback also fails
+                            if is_get:
+                                path_blacklist[blacklist_key] = time.time()
+                            return {"error": "Not Found", "status_code": 404}
+
+                        elif response.status == 503 and attempt < max_retries:
+                            logger.warning(f"BMC overloaded (503) at {url}. Retrying in {delay}s (Attempt {attempt+1}/{max_retries})...")
+                            await asyncio.sleep(delay)
+                            delay *= 2  # Exponential backoff
+                            continue
+
+                        elif response.status == 401:
+                            return {"error": "Authentication Failed", "status_code": response.status, "message": "Incorrect credentials"}
                         else:
                             try:
-                                res_data = await response.json()
+                                err_payload = await response.json()
+                                return {"error": f"HTTP {response.status}", "status_code": response.status, "details": err_payload}
                             except Exception:
-                                text = await response.text()
-                                res_data = {"success": True, "status_code": response.status, "message": text}
-                        
-                        if is_get:
-                            proxy_cache[cache_key] = (res_data, time.time())
-                        else:
-                            logger.info(f"Cache Invalidation for {url}")
-                            keys_to_delete = [k for k in list(proxy_cache.keys()) if k[0] == self.base_url and (k[1] == url or k[1] == path)]
-                            for k in keys_to_delete:
-                                proxy_cache.pop(k, None)
-                        return res_data
+                                return {"error": f"HTTP {response.status}", "status_code": response.status}
 
-                    elif response.status == 404:
-                        # Blacklist the 404 endpoint to prevent future polling delays on unsupported features
-                        if is_get:
-                            path_blacklist[blacklist_key] = time.time()
-                        return {"error": "Not Found", "status_code": 404}
-
-                    elif response.status == 503 and attempt < max_retries:
-                        logger.warning(f"BMC overloaded (503) at {url}. Retrying in {delay}s (Attempt {attempt+1}/{max_retries})...")
+                except asyncio.TimeoutError:
+                    if attempt < max_retries:
                         await asyncio.sleep(delay)
-                        delay *= 2  # Exponential backoff
+                        delay *= 2
                         continue
+                    return {"error": "Failed to connect", "status_code": 408, "details": "Request timed out"}
+                except aiohttp.ClientConnectorError as e:
+                    if attempt < max_retries:
+                        await asyncio.sleep(delay)
+                        delay *= 2
+                        continue
+                    return {"error": "Failed to connect", "status_code": 503, "details": str(e)}
+                except Exception as e:
+                    return {"error": "Failed to connect", "status_code": 500, "details": str(e)}
 
-                    elif response.status == 401:
-                        return {"error": "Authentication Failed", "status_code": response.status, "message": "Incorrect credentials"}
-                    else:
-                        try:
-                            err_payload = await response.json()
-                            return {"error": f"HTTP {response.status}", "status_code": response.status, "details": err_payload}
-                        except Exception:
-                            return {"error": f"HTTP {response.status}", "status_code": response.status}
+            return {"error": "Max retries exceeded", "status_code": 503}
 
-            except asyncio.TimeoutError:
-                if attempt < max_retries:
-                    await asyncio.sleep(delay)
-                    delay *= 2
-                    continue
-                return {"error": "Failed to connect", "status_code": 408, "details": "Request timed out"}
-            except aiohttp.ClientConnectorError as e:
-                if attempt < max_retries:
-                    await asyncio.sleep(delay)
-                    delay *= 2
-                    continue
-                return {"error": "Failed to connect", "status_code": 503, "details": str(e)}
-            except Exception as e:
-                return {"error": "Failed to connect", "status_code": 500, "details": str(e)}
+    async def resolve_all_bmc_paths(self, force_rediscover: bool = False) -> Dict[str, str]:
+        """
+        Dynamic Path Discovery & Normalization:
+        Queries /redfish/v1/ to extract collection links (Systems, Chassis, Managers),
+        resolves vendor-specific member URIs (e.g., /Systems/1, /Systems/Self, custom node IDs),
+        and saves/looks up these resolved paths per server IP in PostgreSQL.
+        """
+        if not force_rediscover:
+            cached_paths = await db.get_resolved_paths(self.bmc_ip)
+            if cached_paths and "systems" in cached_paths and "chassis" in cached_paths:
+                RESOLVED_SYSTEM_URI_CACHE[self.base_url] = cached_paths["systems"]
+                RESOLVED_CHASSIS_URI_CACHE[self.base_url] = cached_paths["chassis"]
+                return cached_paths
 
-        return {"error": "Max retries exceeded", "status_code": 503}
-
-    async def resolve_system_url(self) -> str:
+        paths = {
+            "systems": "/redfish/v1/Systems/1",
+            "chassis": "/redfish/v1/Chassis/1",
+            "managers": "/redfish/v1/Managers/1"
+        }
         try:
             root = await self._request("GET", "/redfish/v1/")
             if isinstance(root, dict) and "error" not in root:
-                systems_ref = root.get("Systems", {}).get("@odata.id", "/redfish/v1/Systems")
-                systems_col = await self._request("GET", systems_ref)
-                if isinstance(systems_col, dict) and "error" not in systems_col:
-                    members = systems_col.get("Members", [])
-                    if members and isinstance(members, list) and "@odata.id" in members[0]:
-                        resolved = members[0]["@odata.id"]
-                        logger.info(f"Dynamically resolved system ID to: {resolved} for BMC {self.base_url}")
-                        return resolved
+                # 1. Systems Collection
+                sys_obj = root.get("Systems")
+                sys_ref = sys_obj.get("@odata.id") if isinstance(sys_obj, dict) else "/redfish/v1/Systems"
+                if sys_ref:
+                    sys_col = await self._request("GET", sys_ref)
+                    if isinstance(sys_col, dict) and "Members" in sys_col and sys_col["Members"]:
+                        m0 = sys_col["Members"][0]
+                        if isinstance(m0, dict) and "@odata.id" in m0:
+                            paths["systems"] = m0["@odata.id"]
+
+                # 2. Chassis Collection
+                ch_obj = root.get("Chassis")
+                ch_ref = ch_obj.get("@odata.id") if isinstance(ch_obj, dict) else "/redfish/v1/Chassis"
+                if ch_ref:
+                    ch_col = await self._request("GET", ch_ref)
+                    if isinstance(ch_col, dict) and "Members" in ch_col and ch_col["Members"]:
+                        m0 = ch_col["Members"][0]
+                        if isinstance(m0, dict) and "@odata.id" in m0:
+                            paths["chassis"] = m0["@odata.id"]
+
+                # 3. Managers Collection
+                mgr_obj = root.get("Managers")
+                mgr_ref = mgr_obj.get("@odata.id") if isinstance(mgr_obj, dict) else "/redfish/v1/Managers"
+                if mgr_ref:
+                    mgr_col = await self._request("GET", mgr_ref)
+                    if isinstance(mgr_col, dict) and "Members" in mgr_col and mgr_col["Members"]:
+                        m0 = mgr_col["Members"][0]
+                        if isinstance(m0, dict) and "@odata.id" in m0:
+                            paths["managers"] = m0["@odata.id"]
+
+            await db.save_resolved_paths(self.bmc_ip, paths)
+            RESOLVED_SYSTEM_URI_CACHE[self.base_url] = paths["systems"]
+            RESOLVED_CHASSIS_URI_CACHE[self.base_url] = paths["chassis"]
         except Exception as e:
-            logger.warning(f"Failed to dynamically resolve system ID: {e}")
-        return "/redfish/v1/Systems/1"
+            logger.warning(f"Dynamic path discovery warning for BMC {self.bmc_ip}: {e}")
+
+        return paths
+
+    async def resolve_system_url(self) -> str:
+        """Dynamically discovers and caches the correct System URI (/Systems/1 vs /Systems/Self)."""
+        paths = await self.resolve_all_bmc_paths()
+        return paths.get("systems", "/redfish/v1/Systems/1")
+
+    async def resolve_chassis_url(self) -> str:
+        """Dynamically discovers and caches the correct Chassis URI (/Chassis/1 vs /Chassis/Self)."""
+        paths = await self.resolve_all_bmc_paths()
+        return paths.get("chassis", "/redfish/v1/Chassis/1")
 
     # --- FEATURE A: Fleet Inventory & Dynamic Crawling ---
-    async def get_system_inventory(self) -> Dict[str, Any]:
+    async def get_system_inventory(self, force_refresh: bool = False) -> Dict[str, Any]:
         """
-        Dynamically crawls /redfish/v1/Systems to locate the systems endpoint,
-        extracting processors, memory, power state, and overall health.
+        Dynamically crawls /redfish/v1/ and uses Read-Through Buffer in PostgreSQL to avoid
+        repetitive network roundtrips for static attributes (model, serial number, processor, RAM).
         """
-        root = await self._request("GET", "/redfish/v1/")
-        if "error" in root:
-            return root
+        # Read-through buffer check
+        static_inv = None
+        if not force_refresh:
+            static_inv = await db.get_static_inventory(self.bmc_ip)
 
-        systems_ref = root.get("Systems", {}).get("@odata.id", "/redfish/v1/Systems")
-        systems_collection = await self._request("GET", systems_ref)
-        if "error" in systems_collection:
-            return systems_collection
+        paths = await self.resolve_all_bmc_paths(force_rediscover=force_refresh)
+        system_url = paths.get("systems", "/redfish/v1/Systems/1")
 
-        members = systems_collection.get("Members", [])
-        if not members:
-            return {"error": "No ComputerSystems found", "status_code": 404}
-
-        # Query first active system dynamically (e.g. Systems/1 or Systems/Self)
-        system_url = members[0]["@odata.id"]
         system_details = await self._request("GET", system_url)
-        if "error" in system_details:
+        if isinstance(system_details, dict) and "error" in system_details:
+            if static_inv:
+                return {
+                    "success": True,
+                    "bmc_ip": self.bmc_ip,
+                    "system_uri": system_url,
+                    "model": static_inv.get("Model", "Unknown Model"),
+                    "power_state": static_inv.get("PowerState", "Unknown"),
+                    "health": static_inv.get("Status", {}).get("Health", "Unknown"),
+                    "processors": static_inv.get("ProcessorSummary", {}),
+                    "memory": static_inv.get("MemorySummary", {}),
+                    "from_cache": True
+                }
             return system_details
 
-        # Extract structured model and state telemetry
-        model = system_details.get("Model", "Unknown Model")
         power_state = system_details.get("PowerState", "Unknown")
         health = system_details.get("Status", {}).get("Health", "Unknown")
 
-        # Processor summary crawling
-        proc_summary = system_details.get("ProcessorSummary", {})
-        proc_count = proc_summary.get("Count", 0)
-        proc_model = proc_summary.get("Model", "N/A")
-        proc_health = proc_summary.get("Status", {}).get("Health", "Unknown")
+        if static_inv and not force_refresh:
+            model = static_inv.get("Model") or system_details.get("Model", "Unknown Model")
+            proc_summary = static_inv.get("ProcessorSummary") or system_details.get("ProcessorSummary", {})
+            mem_summary = static_inv.get("MemorySummary") or system_details.get("MemorySummary", {})
+        else:
+            model = system_details.get("Model", "Unknown Model")
+            proc_summary = system_details.get("ProcessorSummary", {})
+            mem_summary = system_details.get("MemorySummary", {})
 
-        # Memory summary crawling
-        mem_summary = system_details.get("MemorySummary", {})
-        mem_gib = mem_summary.get("TotalSystemMemoryGiB", 0)
-        mem_health = mem_summary.get("Status", {}).get("Health", "Unknown")
+        proc_count = proc_summary.get("Count", 0) if isinstance(proc_summary, dict) else 0
+        proc_model = proc_summary.get("Model", "N/A") if isinstance(proc_summary, dict) else "N/A"
+        proc_health = proc_summary.get("Status", {}).get("Health", "Unknown") if isinstance(proc_summary, dict) else "Unknown"
+
+        mem_gib = mem_summary.get("TotalSystemMemoryGiB", 0) if isinstance(mem_summary, dict) else 0
+        mem_health = mem_summary.get("Status", {}).get("Health", "Unknown") if isinstance(mem_summary, dict) else "Unknown"
 
         return {
             "success": True,
@@ -445,10 +1017,20 @@ class RedfishBMCClient:
         logger.info(f"Executing System Reset action {mapped_action} -> POST {action_url}")
         return await self._request("POST", action_url, payload)
 
-    async def _resolve_collection_or_list(self, field_value: Any) -> List[Dict[str, Any]]:
+    async def _resolve_collection_or_list(self, field_value: Any, timeout: float = 5.0) -> List[Dict[str, Any]]:
         from typing import Any
         if not field_value:
             return []
+        try:
+            return await asyncio.wait_for(self._do_resolve_collection_or_list(field_value, timeout=timeout), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(f"[Timeout Guard] Collection resolution timed out ({timeout}s). Deferring nested expansion.")
+            return []
+        except Exception as e:
+            logger.warning(f"Error expanding collection field: {e}")
+            return []
+
+    async def _do_resolve_collection_or_list(self, field_value: Any, timeout: float = 5.0) -> List[Dict[str, Any]]:
         if isinstance(field_value, list):
             tasks = [self._request("GET", m["@odata.id"]) for m in field_value if isinstance(m, dict) and "@odata.id" in m]
             if not tasks:
@@ -457,17 +1039,28 @@ class RedfishBMCClient:
             return [r for r in results if not isinstance(r, Exception) and "error" not in r]
         elif isinstance(field_value, dict):
             if "@odata.id" in field_value:
-                return await self._get_collection_members(field_value["@odata.id"])
+                return await self._get_collection_members(field_value["@odata.id"], timeout=timeout)
         return []
 
-    async def _get_collection_members(self, coll_url: Optional[str]) -> List[Dict[str, Any]]:
+    async def _get_collection_members(self, coll_url: Optional[str], timeout: float = 5.0) -> List[Dict[str, Any]]:
         if not coll_url:
             return []
+        try:
+            return await asyncio.wait_for(self._do_get_collection_members(coll_url), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(f"[Timeout Guard] Collection members expansion for '{coll_url}' timed out ({timeout}s). Deferring result.")
+            return [{"@odata.id": coll_url, "Name": "Deferred Collection Payload"}]
+        except Exception:
+            return []
+
+    async def _do_get_collection_members(self, coll_url: str) -> List[Dict[str, Any]]:
         coll = await self._request("GET", coll_url)
-        if "error" in coll or "Members" not in coll:
+        if "error" in coll or "Members" not in coll or not isinstance(coll["Members"], list):
             return []
         
-        tasks = [self._request("GET", m["@odata.id"]) for m in coll["Members"] if "@odata.id" in m]
+        tasks = [self._request("GET", m["@odata.id"]) for m in coll["Members"] if isinstance(m, dict) and "@odata.id" in m]
+        if not tasks:
+            return []
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return [r for r in results if not isinstance(r, Exception) and "error" not in r]
 
@@ -498,6 +1091,7 @@ class RedfishBMCClient:
     async def get_detailed_os_inventory(self) -> Dict[str, Any]:
         """
         Gathers full Redfish telemetry payload to build a detailed OS inventory matrix.
+        Includes 5-second short timeout protection on storage expansion to avoid exceeding 25s threshold.
         """
         root = await self._request("GET", "/redfish/v1/")
         if "error" in root:
@@ -521,11 +1115,11 @@ class RedfishBMCClient:
         
         # 1. Processors
         proc_val = system.get("Processors")
-        tasks.append(self._resolve_collection_or_list(proc_val))
+        tasks.append(self._resolve_collection_or_list(proc_val, timeout=5.0))
         
         # 2. Memory
         mem_val = system.get("Memory")
-        tasks.append(self._resolve_collection_or_list(mem_val))
+        tasks.append(self._resolve_collection_or_list(mem_val, timeout=5.0))
         
         # 3. Chassis (for Power and Thermal)
         chassis_val = root.get("Chassis") if isinstance(root, dict) else None
@@ -534,18 +1128,18 @@ class RedfishBMCClient:
         
         # 4. Ethernet
         eth_val = system.get("EthernetInterfaces")
-        tasks.append(self._resolve_collection_or_list(eth_val))
+        tasks.append(self._resolve_collection_or_list(eth_val, timeout=5.0))
         
         # 5. PCIe
         links_val = system.get("Links")
         pcie_val = system.get("PCIeDevices")
         if not pcie_val and isinstance(links_val, dict):
             pcie_val = links_val.get("PCIeDevices")
-        tasks.append(self._resolve_collection_or_list(pcie_val))
+        tasks.append(self._resolve_collection_or_list(pcie_val, timeout=5.0))
         
-        # 6. Storage
+        # 6. Storage (5.0s short timeout protection to defer heavy nested expansion if slow)
         storage_val = system.get("Storage")
-        tasks.append(self._resolve_collection_or_list(storage_val))
+        tasks.append(self._resolve_collection_or_list(storage_val, timeout=5.0))
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
@@ -605,7 +1199,12 @@ class RedfishBMCClient:
         interfaces_list = []
         for nic in eth_interfaces:
             ips = ", ".join(ip.get("Address", "") for ip in nic.get("IPv4Addresses", [])) or "No IP"
-            interfaces_list.append(f"{nic.get('Id', nic.get('Name'))}: <{nic.get('LinkStatus', 'LinkUp')}> MAC: {nic.get('MACAddress')} | IP: {ips}")
+            link_st = nic.get("LinkStatus")
+            if not link_st:
+                has_ip = any(ip.get("Address") and ip.get("Address") != "0.0.0.0" and ip.get("Address") != "N/A" for ip in nic.get("IPv4Addresses", []))
+                has_speed = bool(nic.get("SpeedMbps") and int(nic.get("SpeedMbps", 0)) > 0)
+                link_st = "LinkUp" if (has_ip or has_speed) else "LinkDown"
+            interfaces_list.append(f"{nic.get('Id', nic.get('Name'))}: <{link_st}> MAC: {nic.get('MACAddress')} | IP: {ips}")
         interfaces_str = "\n".join(interfaces_list) or "No network links mapped"
         
         # Map Sensors info
@@ -673,9 +1272,15 @@ class RedfishBMCClient:
     async def get_raid_config(self) -> Dict[str, Any]:
         """
         Fetches storage controller, virtual disks, and physical disks mapping.
+        Defers heavy nested storage expansion if request exceeds 5-second short timeout limit.
         """
         storage_url = "/redfish/v1/Systems/1/Storage"
-        storage_col = await self._request("GET", storage_url)
+        try:
+            storage_col = await asyncio.wait_for(self._request("GET", storage_url), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"[Timeout Guard] Storage collection fetch timed out (5s) on BMC {self.bmc_ip}. Deferring nested expansion.")
+            return {"success": True, "deferred": True, "message": "Storage expansion deferred due to 5s timeout limit", "controllers": []}
+
         if "error" in storage_col:
             return {"success": False, "error": "Failed to fetch storage collection", "controllers": []}
         
@@ -684,7 +1289,12 @@ class RedfishBMCClient:
         
         for i, member in enumerate(members):
             ctrl_id = member["@odata.id"]
-            ctrl_data = await self._request("GET", ctrl_id)
+            try:
+                ctrl_data = await asyncio.wait_for(self._request("GET", ctrl_id), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning(f"[Timeout Guard] Storage controller fetch timed out (5s) for {ctrl_id}")
+                continue
+
             if "error" in ctrl_data:
                 continue
                 
@@ -703,21 +1313,33 @@ class RedfishBMCClient:
             if storage_controllers:
                 controller_obj["firmware"] = storage_controllers[0].get("FirmwareVersion", "Active Live Mode")
                 
-            # Fetch Drives (Physical Disks)
+            # Fetch Drives (Physical Disks) with short timeout limit (5s)
             drives_refs = ctrl_data.get("Drives", [])
-            drive_tasks = [self._request("GET", d["@odata.id"]) for d in drives_refs if "@odata.id" in d]
-            drives_data = await asyncio.gather(*drive_tasks, return_exceptions=True)
-            drives_data = [d for d in drives_data if not isinstance(d, Exception) and "error" not in d]
+            drive_tasks = [self._request("GET", d["@odata.id"]) for d in drives_refs if isinstance(d, dict) and "@odata.id" in d]
+            if drive_tasks:
+                try:
+                    drives_res = await asyncio.wait_for(asyncio.gather(*drive_tasks, return_exceptions=True), timeout=5.0)
+                    drives_data = [d for d in drives_res if not isinstance(d, Exception) and "error" not in d]
+                except asyncio.TimeoutError:
+                    logger.warning(f"[Timeout Guard] Drives enumeration timed out (5s) for controller {ctrl_id}")
+                    drives_data = []
+            else:
+                drives_data = []
             
-            # Fetch Volumes (Virtual Disks)
+            # Fetch Volumes (Virtual Disks) with short timeout limit (5s)
             volumes_ref = ctrl_data.get("Volumes", {}).get("@odata.id")
             volumes_data = []
             if volumes_ref:
-                vol_col = await self._request("GET", volumes_ref)
-                if "error" not in vol_col and "Members" in vol_col:
-                    vol_tasks = [self._request("GET", m["@odata.id"]) for m in vol_col["Members"] if "@odata.id" in m]
-                    volumes_res = await asyncio.gather(*vol_tasks, return_exceptions=True)
-                    volumes_data = [v for v in volumes_res if not isinstance(v, Exception) and "error" not in v]
+                try:
+                    vol_col = await asyncio.wait_for(self._request("GET", volumes_ref), timeout=5.0)
+                    if "error" not in vol_col and "Members" in vol_col and isinstance(vol_col["Members"], list):
+                        vol_tasks = [self._request("GET", m["@odata.id"]) for m in vol_col["Members"] if isinstance(m, dict) and "@odata.id" in m]
+                        if vol_tasks:
+                            volumes_res = await asyncio.wait_for(asyncio.gather(*vol_tasks, return_exceptions=True), timeout=5.0)
+                            volumes_data = [v for v in volumes_res if not isinstance(v, Exception) and "error" not in v]
+                except asyncio.TimeoutError:
+                    logger.warning(f"[Timeout Guard] Volumes enumeration timed out (5s) for controller {ctrl_id}")
+                    volumes_data = []
             
             # Helper to format bytes
             def format_bytes(b_val) -> str:
@@ -820,9 +1442,10 @@ class RedfishBMCClient:
 
 # --- SECTION 3: Dashboard Integration & Concurrency Execution Example ---
 
-async def orchestrate_fleet_inventory(servers: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+async def orchestrate_fleet_inventory(servers: List[Dict[str, str]], force_refresh: bool = False) -> List[Dict[str, Any]]:
     """
-    Executes parallel inventory crawling tasks over a list of server profiles concurrently.
+    Executes parallel inventory crawling tasks over a list of server profiles concurrently
+    and performs bulk database upserts in a single transaction.
     """
     session_manager = RedfishSessionManager()
     tasks = []
@@ -834,14 +1457,17 @@ async def orchestrate_fleet_inventory(servers: List[Dict[str, str]]) -> List[Dic
             username=s["username"],
             password=s["password"]
         )
-        tasks.append(client.get_system_inventory())
+        tasks.append(client.get_system_inventory(force_refresh=force_refresh))
 
     try:
         # Run all requests concurrently without blocking the main event loop
         results = await asyncio.gather(*tasks, return_exceptions=True)
         # Parse exceptions/unhandled blocks into standard JSON structures
         parsed_results = []
+        bulk_items = []
         for idx, res in enumerate(results):
+            sid = servers[idx].get("id") or servers[idx].get("bmc_ip")
+            vendor = servers[idx].get("vendor", "SM")
             if isinstance(res, Exception):
                 parsed_results.append({
                     "success": False,
@@ -851,6 +1477,17 @@ async def orchestrate_fleet_inventory(servers: List[Dict[str, str]]) -> List[Dic
                 })
             else:
                 parsed_results.append(res)
+                if sid:
+                    bulk_items.append({
+                        "server_id": sid,
+                        "vendor": vendor,
+                        "inventory_data": res,
+                        "raw_payload": res
+                    })
+
+        if bulk_items:
+            await db.bulk_upsert_server_inventory(bulk_items)
+
         return parsed_results
     finally:
         await session_manager.close_all()
@@ -869,10 +1506,26 @@ from typing import Tuple
 
 from db import db
 from sse_engine import sse_manager, ws_clients, sse_queues, broadcast_event
-from async_collector import collect_datacenter_inventory, fetch_server_inventory, rewrite_vendor_url, build_clean_url, normalize_redfish_url, GLOBAL_SYNC_STATE
 from redfish_monitor import redfish_manager, SSERedfishDaemonWorker
 
-app = FastAPI(title="Tyrone Redfish Engine Backend", version="2.0.0")
+session_manager = RedfishSessionManager()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initializes PostgreSQL connection pool and syncs background SSE receivers & monitoring daemons on startup, tearing down on shutdown."""
+    await db.initialize()
+    await redfish_manager.start()
+    servers = await db.get_all_servers()
+    if servers:
+        await sse_manager.sync_servers(servers)
+    yield
+    try:
+        await redfish_manager.stop()
+    except Exception:
+        pass
+    await session_manager.close_all()
+
+app = FastAPI(title="Tyrone Redfish Engine Backend", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -882,21 +1535,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-session_manager = RedfishSessionManager()
-
-@app.on_event("startup")
-async def startup_event():
-    """Initializes PostgreSQL connection pool and syncs background SSE receivers & monitoring daemons."""
-    await db.initialize()
-    await redfish_manager.start()
-    servers = await db.get_all_servers()
-    if servers:
-        await sse_manager.sync_servers(servers)
-
 @app.get("/")
 async def root():
     """Root endpoint status response to prevent 404 logs on ping."""
     return {"status": "online", "app": "Tyrone Redfish Engine Backend", "version": "2.0.0", "docs": "/docs"}
+
+@app.get("/api/health")
+async def health_check():
+    """Lightweight backend health check endpoint for UI startup pinging."""
+    return {
+        "status": "healthy",
+        "engine": "Tyrone Redfish Engine Backend",
+        "version": "2.0.0",
+        "timestamp": datetime.now().isoformat()
+    }
 
 def get_local_pc_ip() -> str:
     import socket
@@ -1019,14 +1671,6 @@ async def get_server_sel_logs(server_id: str):
     
     entries = await worker.fetch_sel_logs()
     return {"server_id": server_id, "count": len(entries), "entries": entries}
-
-@app.delete("/api/servers/{server_id}")
-async def delete_server_endpoint(server_id: str):
-    """Deletes a server from database and stops background SSE streams."""
-    await db.delete_server(server_id)
-    servers = await db.get_all_servers()
-    await sse_manager.sync_servers(servers)
-    return {"success": True, "message": f"Server {server_id} removed from database and background streams stopped."}
 
 @app.get("/api/events/sse")
 @app.get("/api/events/stream")
@@ -1170,14 +1814,24 @@ async def get_local_fleet():
 @app.delete("/api/local/fleet/{server_id}")
 @app.delete("/api/servers/{server_id}")
 async def delete_server_endpoint(server_id: str):
-    """Deletes a server by ID or IP address from database and memory fallback."""
+    """
+    Deletes a server by ID or IP address from database.
+    Explicitly cancels and terminates all active background tasks, inventory monitors,
+    and SSE streams for that specific device IP before removing it from PostgreSQL.
+    """
+    await cancel_server_tasks(server_id)
     success = await db.delete_server(server_id)
-    asyncio.create_task(sse_manager.sync_servers())
-    return {"success": success, "message": f"Server '{server_id}' removed successfully."}
+    servers = await db.get_all_servers()
+    await redfish_manager.sync_servers(servers)
+    await sse_manager.sync_servers(servers)
+    return {
+        "success": success,
+        "message": f"Server '{server_id}' removed successfully and all background tasks & streams terminated."
+    }
 
 @app.post("/api/local/fleet")
 async def update_local_fleet(fleet: List[Dict[str, Any]]):
-    """Syncs posted fleet with database storage."""
+    """Syncs posted fleet with database storage, cancelling background tasks for removed nodes."""
     existing_servers = await db.get_all_servers()
     
     new_ids = set()
@@ -1201,9 +1855,15 @@ async def update_local_fleet(fleet: List[Dict[str, Any]]):
         sid = s.get("id")
         ip = s.get("ip", "").lstrip("http://").lstrip("https://").strip()
         if sid not in new_ids and ip not in new_ips:
+            if sid:
+                await cancel_server_tasks(sid)
+            if ip:
+                await cancel_server_tasks(ip)
             await db.delete_server(sid or ip)
-            
-    asyncio.create_task(sse_manager.sync_servers())
+
+    servers = await db.get_all_servers()
+    await redfish_manager.sync_servers(servers)
+    await sse_manager.sync_servers(servers)
     return {"success": True, "message": "Fleet inventory synced successfully."}
 
 @app.get("/api/local/env-servers")
@@ -1285,6 +1945,15 @@ class SelRequest(BaseModel):
 class DeployRequest(BaseModel):
     redfishConfig: RedfishConfig
     isoUri: str
+
+class OsInstallRequest(BaseModel):
+    bmc_ip: Optional[str] = None
+    url: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    iso_url: Optional[str] = None
+    isoUri: Optional[str] = None
+    redfishConfig: Optional[RedfishConfig] = None
 
 class UpdateRequest(BaseModel):
     redfishConfig: RedfishConfig
@@ -1525,35 +2194,193 @@ async def sel_clear(req: SelRequest):
         raise HTTPException(status_code=res.get("status_code", 500), detail=res)
     return {"success": True, "message": "BMC Event Log cleared successfully.", "output": res}
 
+# Environment variable for internal network HTTP/file server hosting installer ISOs
+ISO_SERVER_BASE_URL = os.getenv("ISO_SERVER_BASE_URL", "http://172.16.0.1:8080/isos")
+
+async def check_iso_url_accessibility(full_url: str, timeout: float = 5.0) -> Tuple[bool, str]:
+    """
+    Step 2: URL Accessibility Pre-Check.
+    Validates reachability of target ISO URL via HEAD or Range GET request before instructing BMC to mount.
+    """
+    try:
+        async with httpx.AsyncClient(verify=False, follow_redirects=True, timeout=timeout) as client:
+            try:
+                res = await client.head(full_url)
+                if res.status_code < 400:
+                    return True, f"ISO URL '{full_url}' is reachable (HTTP {res.status_code})."
+            except Exception:
+                pass
+
+            # Fallback range GET request if HEAD is unsupported by file server
+            res = await client.get(full_url, headers={"Range": "bytes=0-10"})
+            if res.status_code < 400:
+                return True, f"ISO URL '{full_url}' is reachable (HTTP {res.status_code})."
+            return False, f"Target ISO URL '{full_url}' returned HTTP status {res.status_code}."
+    except Exception as ex:
+        return False, f"Target ISO URL '{full_url}' accessibility pre-check failed: {ex}"
+
+async def trigger_os_install(bmc_ip: str, credentials: Any, iso_url: str) -> Dict[str, Any]:
+    """
+    Automates bare-metal OS installation via Redfish Virtual Media ISO mounting, Boot Override, and System Reset.
+    
+    Steps:
+    1. ISO Source Configuration & Dynamic Resolution
+    2. URL Accessibility Pre-Check
+    3. Mount Virtual Media (ISO)
+    4. Configure Boot Override (Cd, Once, UEFI)
+    5. Power Cycle / Reset (ForceRestart)
+    6. Error Handling & Fallbacks
+    """
+    # Parse credentials
+    if isinstance(credentials, dict):
+        username = credentials.get("username") or credentials.get("user") or credentials.get("UserName") or "admin"
+        password = credentials.get("password") or credentials.get("pass") or credentials.get("Password") or ""
+    elif isinstance(credentials, (list, tuple)) and len(credentials) >= 2:
+        username, password = str(credentials[0]), str(credentials[1])
+    else:
+        username, password = "admin", str(credentials or "")
+
+    clean_ip = bmc_ip.replace("https://", "").replace("http://", "").rstrip("/").split(":")[0]
+
+    # 1. ISO Source Configuration & Dynamic Resolution
+    clean_iso = iso_url.strip()
+    if not clean_iso.startswith("http://") and not clean_iso.startswith("https://"):
+        base = ISO_SERVER_BASE_URL.rstrip("/")
+        rel = clean_iso.lstrip("/")
+        full_iso_url = f"{base}/{rel}"
+    else:
+        full_iso_url = clean_iso
+
+    # 2. URL Accessibility Pre-Check
+    accessible, precheck_msg = await check_iso_url_accessibility(full_iso_url)
+    if not accessible:
+        logger.warning(f"[OS Install Pre-Check Failed] {precheck_msg}")
+        return {
+            "success": False,
+            "error": "ISO URL Accessibility Pre-Check Failed",
+            "message": precheck_msg,
+            "iso_url": full_iso_url,
+            "bmc_ip": clean_ip,
+            "status_code": 400
+        }
+
+    logger.info(f"🚀 [OS Install] Starting bare-metal installation sequence for BMC {clean_ip} with ISO: {full_iso_url}")
+
+    client = RedfishBMCClient(session_manager, clean_ip, username, password)
+
+    try:
+        # Resolve System and Manager URIs
+        resolved_sys_uri = await client.resolve_system_url()
+        manager_id = "1"
+        try:
+            mgr_col = await client._request("GET", "/redfish/v1/Managers")
+            if isinstance(mgr_col, dict) and isinstance(mgr_col.get("Members"), list) and len(mgr_col["Members"]) > 0:
+                first_mgr = mgr_col["Members"][0]
+                mgr_uri = first_mgr.get("@odata.id") if isinstance(first_mgr, dict) else first_mgr
+                if mgr_uri:
+                    manager_id = mgr_uri.rstrip("/").split("/")[-1]
+        except Exception:
+            pass
+
+        # 3. Mount Virtual Media (ISO)
+        mount_res = await client.mount_iso(manager_id, full_iso_url)
+        if isinstance(mount_res, dict) and "error" in mount_res and mount_res.get("status_code", 500) >= 400:
+            # Fallback direct InsertMedia action on CD1 slot
+            fallback_target = f"/redfish/v1/Managers/{manager_id}/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia"
+            fallback_mount = await client._request("POST", fallback_target, {
+                "Image": full_iso_url,
+                "Inserted": True,
+                "WriteProtected": True
+            })
+            if isinstance(fallback_mount, dict) and "error" not in fallback_mount:
+                mount_res = fallback_mount
+
+        # 4. Configure Boot Override (Cd, Once, UEFI)
+        boot_payload = {
+            "Boot": {
+                "BootSourceOverrideTarget": "Cd",
+                "BootSourceOverrideEnabled": "Once",
+                "BootSourceOverrideMode": "UEFI"
+            }
+        }
+        boot_res = await client._request("PATCH", resolved_sys_uri, boot_payload)
+        if isinstance(boot_res, dict) and "error" in boot_res:
+            # Fallback target "VirtualMedia" or "UefiBoot"
+            boot_payload_fallback = {
+                "Boot": {
+                    "BootSourceOverrideTarget": "VirtualMedia",
+                    "BootSourceOverrideEnabled": "Once"
+                }
+            }
+            boot_res = await client._request("PATCH", resolved_sys_uri, boot_payload_fallback)
+
+        # 5. Power Cycle / Reset (ForceRestart)
+        sys_id = resolved_sys_uri.rstrip("/").split("/")[-1] or "1"
+        reboot_res = await client.set_power_state(sys_id, "ForceRestart")
+        if isinstance(reboot_res, dict) and "error" in reboot_res:
+            reboot_res = await client.set_power_state(sys_id, "PowerCycle")
+
+        return {
+            "success": True,
+            "bmc_ip": clean_ip,
+            "iso_url": full_iso_url,
+            "precheck_status": precheck_msg,
+            "mounted_slot": f"/redfish/v1/Managers/{manager_id}/VirtualMedia/CD1",
+            "boot_override": "Cd (Once, UEFI)",
+            "reset_action": "ForceRestart",
+            "message": "Bare-metal OS installation sequence triggered successfully via Redfish Virtual Media.",
+            "details": {
+                "mount": mount_res,
+                "boot": boot_res,
+                "reboot": reboot_res
+            }
+        }
+    except Exception as ex:
+        logger.error(f"[OS Install Exception] Failed bare-metal installation sequence for {clean_ip}: {ex}")
+        return {
+            "success": False,
+            "error": str(ex),
+            "bmc_ip": clean_ip,
+            "iso_url": full_iso_url,
+            "status_code": 500
+        }
+
+@app.post("/api/redfish/os-install")
+@app.post("/api/redfish/trigger-os-install")
+async def redfish_trigger_os_install_endpoint(req: OsInstallRequest, request: Request):
+    """
+    Automates bare-metal OS installation via Redfish Virtual Media ISO mounting, Boot Override, and System Reset.
+    """
+    target_ip = req.bmc_ip or req.url or (req.redfishConfig.url if req.redfishConfig else "")
+    username = req.username or (req.redfishConfig.username if req.redfishConfig else "")
+    password = req.password or (req.redfishConfig.password if req.redfishConfig else "")
+    iso_target = req.iso_url or req.isoUri or ""
+
+    if not target_ip or not iso_target:
+        return JSONResponse(status_code=400, content={"error": "Bad Request", "message": "Missing required BMC IP/URL or iso_url in payload."})
+
+    clean_ip = target_ip.replace("https://", "").replace("http://", "").rstrip("/").split(":")[0]
+    servers = await db.get_all_servers()
+    target_server = next((s for s in servers if s.get("ip", "").replace("https://", "").replace("http://", "").rstrip("/").split(":")[0] == clean_ip), None)
+
+    if (not username or not password) and target_server:
+        username = username or target_server.get("username", "admin")
+        password = password or target_server.get("password", "")
+
+    username = username or "admin"
+    password = password or ""
+
+    res = await trigger_os_install(clean_ip, {"username": username, "password": password}, iso_target)
+    if not res.get("success"):
+        return JSONResponse(status_code=res.get("status_code", 500), content=res)
+    return res
+
 @app.post("/api/redfish/deploy")
 async def deploy_os(req: DeployRequest):
     client = RedfishBMCClient(session_manager, req.redfishConfig.url, req.redfishConfig.username, req.redfishConfig.password)
-    
-    # 1. Mount virtual media ISO (CD1 or CD/DVD type drive)
-    mount_res = await client.mount_iso("1", req.isoUri)
-    if "error" in mount_res:
-        raise HTTPException(status_code=mount_res.get("status_code", 500), detail=mount_res)
-    
-    # 2. Set boot source override to CD once
-    boot_res = await client._request("PATCH", "/redfish/v1/Systems/1", {
-        "Boot": {
-            "BootSourceOverrideTarget": "Cd",
-            "BootSourceOverrideEnabled": "Once"
-        }
-    })
-    
-    # 3. Force restart system to boot into OS installer
-    reboot_res = await client.set_power_state("1", "ForceRestart")
-    
-    return {
-        "success": True, 
-        "message": "Zero-Touch OS Deployment sequence executed successfully via Redfish Virtual Media.",
-        "details": {
-            "mount": mount_res,
-            "boot": boot_res,
-            "reboot": reboot_res
-        }
-    }
+
+    clean_ip = req.redfishConfig.url.replace("https://", "").replace("http://", "").rstrip("/").split(":")[0]
+    return await trigger_os_install(clean_ip, {"username": req.redfishConfig.username, "password": req.redfishConfig.password}, req.isoUri)
 
 @app.post("/api/redfish/update")
 async def update_firmware(req: UpdateRequest):
@@ -1564,7 +2391,7 @@ async def update_firmware(req: UpdateRequest):
     return {"success": True, "message": "Firmware update sequence initiated successfully.", "details": res}
 
 @app.post("/api/redfish/proxy")
-async def redfish_proxy(req: ProxyRequest):
+async def redfish_proxy(req: ProxyRequest, request: Request):
     # 1. Pre-check validation: check target URL existence
     if not req.url or not req.url.strip():
         return JSONResponse(
@@ -1572,24 +2399,15 @@ async def redfish_proxy(req: ProxyRequest):
             content={"error": "Bad Request", "message": "Missing required 'url' parameter in proxy request payload.", "status_code": 400}
         )
 
-    # 2. Auth Guard: Validate authentication header or session token presence
-    auth_header = req.headers.get("Authorization") or req.headers.get("authorization") if req.headers else ""
-    x_token = req.headers.get("X-Auth-Token") or req.headers.get("x-auth-token") if req.headers else ""
+    # 2. Extract auth from body headers or HTTP request headers
+    http_auth = request.headers.get("Authorization") or request.headers.get("authorization") or ""
+    http_token = request.headers.get("X-Auth-Token") or request.headers.get("x-auth-token") or ""
+
+    body_headers = req.headers or {}
+    auth_header = body_headers.get("Authorization") or body_headers.get("authorization") or http_auth
+    x_token = body_headers.get("X-Auth-Token") or body_headers.get("x-auth-token") or http_token
     
     username, password = decode_basic_auth(auth_header)
-    
-    if not auth_header and not x_token:
-        logger.warning(f"[Proxy Auth Guard] Intercepted unauthenticated proxy request targeting '{req.url}'")
-        return JSONResponse(
-            status_code=401,
-            content={"error": "Unauthorized", "message": "Authentication required. Please include a valid Authorization Basic header or X-Auth-Token.", "status_code": 401}
-        )
-
-    if auth_header and (username is None or password is None):
-        return JSONResponse(
-            status_code=401,
-            content={"error": "Unauthorized", "message": "Malformed Authorization header payload.", "status_code": 401}
-        )
 
     # 3. URL Normalization: Eliminate double-domain & malformed endpoints
     normalized_url = normalize_redfish_url(req.url)
@@ -1601,12 +2419,24 @@ async def redfish_proxy(req: ProxyRequest):
         )
 
     bmc_ip = parsed.netloc.split(":")[0]
-
-    # Inspect target server vendor classification tag ('SM' vs 'AS') to apply URL rewriter
-    servers = await db.get_all_servers()
     clean_ip = bmc_ip.lstrip("http://").lstrip("https://").split(":")[0]
+
+    # Inspect registered DB servers to resolve credentials & vendor tag
+    servers = await db.get_all_servers()
     target_server = next((s for s in servers if s.get("ip", "").lstrip("http://").lstrip("https://").split(":")[0] == clean_ip), None)
     target_vendor = target_server.get("vendor", "SM") if target_server else "SM"
+
+    # Auto-fill credentials from registered DB server if missing
+    if (not username or not password) and target_server:
+        username = username or target_server.get("username", "admin")
+        password = password or target_server.get("password", "")
+
+    if not auth_header and not x_token and not (username and password):
+        logger.warning(f"[Proxy Auth Guard] Intercepted unauthenticated proxy request targeting '{req.url}'")
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Unauthorized", "message": "Authentication required. Please include a valid Authorization Basic header or X-Auth-Token.", "status_code": 401}
+        )
 
     target_url = rewrite_vendor_url(normalized_url, target_vendor)
     
@@ -1622,7 +2452,7 @@ async def redfish_proxy(req: ProxyRequest):
     return res
 
 @app.post("/api/redfish/batch")
-async def redfish_batch_proxy(req: BatchRequest):
+async def redfish_batch_proxy(req: BatchRequest, request: Request):
     """
     Consolidates multiple individual Redfish resource path requests into a single batch round-trip.
     Executes sub-requests concurrently on the backend using connection-pooled RedfishBMCClient.
@@ -1639,17 +2469,17 @@ async def redfish_batch_proxy(req: BatchRequest):
     if not target_url:
         target_url = req.url or req.bmc_ip
     if not username or not password:
-        username = req.username or username or "admin"
-        password = req.password or password or ""
+        username = req.username or username
+        password = req.password or password
 
-    if req.headers:
-        auth_hdr = req.headers.get("Authorization") or req.headers.get("authorization")
-        if auth_hdr:
-            hdr_u, hdr_p = decode_basic_auth(auth_hdr)
-            if hdr_u:
-                username = hdr_u
-            if hdr_p is not None:
-                password = hdr_p
+    body_headers = req.headers or {}
+    auth_hdr = body_headers.get("Authorization") or body_headers.get("authorization") or request.headers.get("Authorization") or request.headers.get("authorization")
+    if auth_hdr:
+        hdr_u, hdr_p = decode_basic_auth(auth_hdr)
+        if hdr_u:
+            username = username or hdr_u
+        if hdr_p is not None:
+            password = password or hdr_p
 
     if not target_url or not target_url.strip():
         return JSONResponse(
@@ -1672,6 +2502,13 @@ async def redfish_batch_proxy(req: BatchRequest):
     target_server = next((s for s in servers if s.get("ip", "").lstrip("http://").lstrip("https://").split(":")[0] == clean_ip), None)
     target_vendor = target_server.get("vendor", "SM") if target_server else "SM"
 
+    if (not username or not password) and target_server:
+        username = username or target_server.get("username", "admin")
+        password = password or target_server.get("password", "")
+
+    username = username or "admin"
+    password = password or ""
+
     default_bundle = [
         "/redfish/v1/Systems/1",
         "/redfish/v1/Chassis/1",
@@ -1691,8 +2528,12 @@ async def redfish_batch_proxy(req: BatchRequest):
         try:
             norm_url = normalize_redfish_url(normalized_base_url, path_str)
             rw_url = rewrite_vendor_url(norm_url, target_vendor)
-            res = await client._request("GET", rw_url)
+            req_timeout = 5.0 if "Storage" in path_str else 10.0
+            res = await asyncio.wait_for(client._request("GET", rw_url), timeout=req_timeout)
             return path_str, res
+        except asyncio.TimeoutError:
+            logger.warning(f"[Batch Proxy] Sub-request for '{path_str}' timed out after {req_timeout}s. Deferring response.")
+            return path_str, {"error": "Timeout", "status_code": 408, "message": f"Sub-request for '{path_str}' deferred after {req_timeout}s timeout limit"}
         except Exception as ex:
             return path_str, {"error": str(ex), "status_code": 500}
 
@@ -1713,7 +2554,7 @@ async def redfish_batch_proxy(req: BatchRequest):
     }
 
 @app.post("/api/redfish/server-summary")
-async def redfish_server_summary(req: ServerSummaryRequest):
+async def redfish_server_summary(req: ServerSummaryRequest, request: Request):
     """
     Returns a consolidated single-payload hardware telemetry summary for a target BMC server.
     """
@@ -1729,23 +2570,36 @@ async def redfish_server_summary(req: ServerSummaryRequest):
     if not target_url:
         target_url = req.url or req.bmc_ip
     if not username or not password:
-        username = req.username or username or "admin"
-        password = req.password or password or ""
+        username = req.username or username
+        password = req.password or password
 
-    if req.headers:
-        auth_hdr = req.headers.get("Authorization") or req.headers.get("authorization")
-        if auth_hdr:
-            hdr_u, hdr_p = decode_basic_auth(auth_hdr)
-            if hdr_u:
-                username = hdr_u
-            if hdr_p is not None:
-                password = hdr_p
+    body_headers = req.headers or {}
+    auth_hdr = body_headers.get("Authorization") or body_headers.get("authorization") or request.headers.get("Authorization") or request.headers.get("authorization")
+    if auth_hdr:
+        hdr_u, hdr_p = decode_basic_auth(auth_hdr)
+        if hdr_u:
+            username = username or hdr_u
+        if hdr_p is not None:
+            password = password or hdr_p
 
     if not target_url or not target_url.strip():
         return JSONResponse(
             status_code=400,
             content={"error": "Bad Request", "message": "Missing required BMC URL or IP address in summary request payload.", "status_code": 400}
         )
+
+    normalized_base_url = normalize_redfish_url(target_url)
+    parsed = urlparse(normalized_base_url)
+    clean_ip = parsed.netloc.split(":")[0].lstrip("http://").lstrip("https://") if parsed.netloc else target_url
+
+    servers = await db.get_all_servers()
+    target_server = next((s for s in servers if s.get("ip", "").lstrip("http://").lstrip("https://").split(":")[0] == clean_ip), None)
+    if (not username or not password) and target_server:
+        username = username or target_server.get("username", "admin")
+        password = password or target_server.get("password", "")
+
+    username = username or "admin"
+    password = password or ""
 
     client = RedfishBMCClient(session_manager, target_url, username, password)
     summary_data = await client.get_detailed_os_inventory()
@@ -1763,11 +2617,124 @@ async def redfish_server_summary(req: ServerSummaryRequest):
         "summary": summary_data
     }
 
+@app.post("/api/redfish/hardware-inventory")
+async def redfish_hardware_inventory_endpoint(req: ServerSummaryRequest, request: Request):
+    """
+    Queries server hardware inventory for RAID Controllers, Physical Drives, and PCIe/AOC Cards
+    asynchronously using httpx with 60-second in-memory TTL caching.
+    """
+    target_url = req.url or req.bmc_ip or (req.redfishConfig.url if req.redfishConfig else "")
+    username = req.username or (req.redfishConfig.username if req.redfishConfig else "")
+    password = req.password or (req.redfishConfig.password if req.redfishConfig else "")
 
+    if not target_url or not target_url.strip():
+        return JSONResponse(status_code=400, content={"error": "Bad Request", "message": "Missing required BMC URL or IP."})
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    await session_manager.close_all()
+    clean_ip = target_url.replace("https://", "").replace("http://", "").rstrip("/").split(":")[0]
+    servers = await db.get_all_servers()
+    target_server = next((s for s in servers if s.get("ip", "").replace("https://", "").replace("http://", "").rstrip("/").split(":")[0] == clean_ip), None)
+
+    if (not username or not password) and target_server:
+        username = username or target_server.get("username", "admin")
+        password = password or target_server.get("password", "")
+
+    username = username or "admin"
+    password = password or ""
+
+    try:
+        from redfish_hardware_inventory import AsyncRedfishHardwareInventory
+        inv_service = AsyncRedfishHardwareInventory(bmc_ip=clean_ip, username=username, password=password)
+        inventory = await inv_service.get_full_inventory()
+        return {"success": True, "inventory": inventory}
+    except Exception as ex:
+        logger.error(f"Hardware inventory collection failed for {clean_ip}: {ex}")
+        return JSONResponse(status_code=500, content={"error": str(ex)})
+
+@app.post("/api/redfish/fleet-hardware-inventory")
+async def redfish_fleet_hardware_inventory_endpoint(request: Request):
+    """
+    Batched Fleet Optimization Endpoint:
+    Queries hardware inventory (RAID controllers, physical drives, PCIe/AOC cards)
+    across ALL registered datacenter server BMCs concurrently using asyncio & httpx.
+    """
+    try:
+        servers = await db.get_all_servers()
+        if not servers:
+            return {"success": True, "total_servers": 0, "servers": {}}
+
+        from redfish_hardware_inventory import collect_datacenter_hardware_inventory
+        fleet_data = await collect_datacenter_hardware_inventory(servers)
+        return fleet_data
+    except Exception as ex:
+        logger.error(f"Fleet hardware inventory collection failed: {ex}")
+        return JSONResponse(status_code=500, content={"error": str(ex)})
+
+class TelemetryPayload(BaseModel):
+    ip: str
+    vendor: str = "Tyrone"
+    power_state: str = "On"
+    cpu_temp_celsius: float = 0.0
+    ambient_temp_celsius: float = 0.0
+    fan_speed_rpm: int = 0
+
+telemetry_store: Dict[str, Dict[str, Any]] = {}
+active_connections: Set[WebSocket] = set()
+
+@app.post("/api/telemetry")
+async def ingest_telemetry(payload: TelemetryPayload):
+    """
+    High-throughput telemetry ingestion endpoint.
+    Persists state to PostgreSQL (with high-performance in-memory fallback)
+    and broadcasts live update to all active WebSocket clients.
+    """
+    data = payload.dict()
+    telemetry_store[payload.ip] = data
+
+    # 1. Persist asynchronously to DB (PostgreSQL / In-Memory)
+    await db.save_telemetry(
+        ip=payload.ip,
+        vendor=payload.vendor,
+        power_state=payload.power_state,
+        cpu_temp=payload.cpu_temp_celsius,
+        ambient_temp=payload.ambient_temp_celsius,
+        fan_speed=payload.fan_speed_rpm,
+        raw_metadata={"source": "Redfish BMC Poll"}
+    )
+
+    # 2. Broadcast live update to all active WebSocket clients
+    disconnected = set()
+    for ws in list(active_connections):
+        try:
+            await ws.send_json(data)
+        except Exception:
+            disconnected.add(ws)
+
+    # Clean up dead sockets
+    active_connections.difference_update(disconnected)
+    return {"status": "persisted_and_broadcasted", "ip": payload.ip}
+
+@app.get("/api/telemetry")
+async def get_all_telemetry():
+    """Returns list of all telemetry records from PostgreSQL DB or in-memory state."""
+    db_records = await db.get_all_telemetry()
+    if db_records:
+        return db_records
+    return list(telemetry_store.values())
+
+@app.websocket("/ws")
+@app.websocket("/ws/events")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time telemetry streaming to connected UI clients."""
+    await websocket.accept()
+    active_connections.add(websocket)
+    try:
+        while True:
+            # Keep connection alive and listen for any incoming client pings
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        active_connections.discard(websocket)
+    except Exception:
+        active_connections.discard(websocket)
 
 if __name__ == "__main__":
     uvicorn.run("redfish_backend:app", host="127.0.0.1", port=8000, reload=True)

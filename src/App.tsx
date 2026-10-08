@@ -304,7 +304,7 @@ export default function App() {
       const next = !prev;
       try {
         localStorage.setItem("tyrone_sidebar_collapsed", String(next));
-      } catch (_) {}
+      } catch (_) { }
       return next;
     });
   };
@@ -541,13 +541,24 @@ export default function App() {
       });
 
       const finalServers = merged;
-      setServers(finalServers);
-
-      const statuses: Record<string, any> = {};
-      finalServers.forEach(s => {
-        statuses[s.id] = { status: "OK", model: "Tyrone RH21XM", manufacturer: "Supermicro", temperature: 22.0 };
+      setServers(prev => {
+        if (
+          prev.length === finalServers.length &&
+          prev.every((s, i) => s.id === finalServers[i].id && s.bmcIp === finalServers[i].bmcIp && s.name === finalServers[i].name)
+        ) {
+          return prev;
+        }
+        return finalServers;
       });
-      setServerStatuses(statuses);
+
+      setServerStatuses(prev => {
+        if (Object.keys(prev).length > 0) return prev;
+        const statuses: Record<string, any> = {};
+        finalServers.forEach(s => {
+          statuses[s.id] = { status: "OK", model: "Tyrone RH21XM", manufacturer: "Supermicro", temperature: 22.0 };
+        });
+        return statuses;
+      });
 
       if (finalServers.length > 0) {
         const savedActive = localStorage.getItem("tyrone_active_server_id");
@@ -655,7 +666,14 @@ export default function App() {
         })
       );
 
-      setServerStatuses(updatedStatuses);
+      setServerStatuses(prev => {
+        const isSame = Object.keys(prev).length === Object.keys(updatedStatuses).length &&
+          Object.entries(updatedStatuses).every(([k, v]) => {
+            const p = prev[k];
+            return p && p.status === v.status && p.powerState === v.powerState && p.powerConsumedWatts === v.powerConsumedWatts && p.temperature === v.temperature;
+          });
+        return isSame ? prev : updatedStatuses;
+      });
     } catch (err) {
       console.error("Centralized Digital Twin scan execution exception:", err);
     } finally {
@@ -683,8 +701,13 @@ export default function App() {
   useEffect(() => {
     fetchServers();
 
+    let fleetUpdateTimeout: any = null;
     const handleFleetUpdate = () => {
-      fetchServers();
+      if (fleetUpdateTimeout) return;
+      fleetUpdateTimeout = setTimeout(() => {
+        fleetUpdateTimeout = null;
+        fetchServers();
+      }, 1000);
     };
     window.addEventListener("fleet-updated", handleFleetUpdate);
     window.addEventListener("inventory-updated", handleFleetUpdate);
@@ -735,7 +758,7 @@ export default function App() {
 
       const intervalId = setInterval(() => {
         runHardwareScan(false);
-      }, 15000);
+      }, 30000);
 
       return () => clearInterval(intervalId);
     }
@@ -908,7 +931,7 @@ export default function App() {
         const racksObj = savedRacks ? JSON.parse(savedRacks) : {};
         racksObj[editedNode.id] = editNodeRack || "Rack 1";
         localStorage.setItem("tyrone_server_racks", JSON.stringify(racksObj));
-      } catch (_) {}
+      } catch (_) { }
 
       await fetch("/api/local/fleet", {
         method: "POST",
@@ -1174,7 +1197,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard", icon: LayoutGrid },
     { id: "hierarchy", label: "Hierarchy", icon: Network },
     { id: "global_inventory", label: "Devices", icon: Smartphone },
-    { id: "sustainability", label: "Sustainability", icon: Zap },
+    { id: "sustainability", label: "Raid", icon: HardDrive },
     { id: "reliability", label: "Reliability", icon: HeartPulse },
     { id: "events", label: "Events", icon: ClipboardCheck },
     { id: "reports", label: "Reports", icon: FileBarChart },
@@ -1183,7 +1206,7 @@ export default function App() {
 
   if (!isLoggedIn) {
     return (
-      <div 
+      <div
         className="min-h-screen flex items-center justify-center p-4 font-sans relative bg-cover bg-center bg-no-repeat"
         style={{ backgroundImage: `url('/login-bg.png')` }}
       >
@@ -1276,10 +1299,10 @@ export default function App() {
           >
             <Menu className="w-5 h-5" />
           </button>
-          <img 
-            src="/tyrone-logo.png" 
-            alt="Tyrone Logo" 
-            className="h-11 md:h-12 max-w-[260px] object-contain shrink-0 filter brightness-0 invert" 
+          <img
+            src="/tyrone-logo.png"
+            alt="Tyrone Logo"
+            className="h-11 md:h-12 max-w-[260px] object-contain shrink-0 filter brightness-0 invert"
           />
           <div className="h-6.5 w-px bg-white/40 shrink-0" />
           <span className="text-base md:text-lg font-medium text-slate-100 tracking-wide font-sans leading-none opacity-95">
@@ -1313,22 +1336,15 @@ export default function App() {
 
             <div className="h-4 md:h-5 w-px bg-white/30 shrink-0" />
 
-            {/* User Profile / Logged In IP Popover Dropdown */}
+            {/* User Profile Popover Dropdown */}
             <div className="relative flex items-center">
               <button
-                onClick={() => {
-                  const nextState = !isUserPopoverOpen;
-                  setIsUserPopoverOpen(nextState);
-                  if (nextState && !userIp) {
-                    fetchUserIp();
-                  }
-                }}
+                onClick={() => setIsUserPopoverOpen(!isUserPopoverOpen)}
                 className="flex items-center gap-1.5 leading-none hover:text-white/80 cursor-pointer focus:outline-none transition-colors"
-                title="Click to view logged in user IP & profile"
+                title="Click to view profile"
               >
                 <User className="w-3.5 h-3.5 md:w-4 md:h-4 text-white/90 shrink-0" />
                 <span className="font-semibold text-white leading-none">{loginUsername || "admin"}</span>
-                {userIp && <span className="text-[11px] text-red-200 font-mono bg-red-950/60 px-1.5 py-0.5 rounded border border-red-500/30">({userIp})</span>}
                 <ChevronDown className={`w-3 h-3 text-white/70 transition-transform shrink-0 ${isUserPopoverOpen ? "rotate-180" : ""}`} />
               </button>
 
@@ -1339,50 +1355,14 @@ export default function App() {
                     className="fixed inset-0 z-[55]"
                     onClick={() => setIsUserPopoverOpen(false)}
                   />
-                  <div className="absolute right-0 top-full mt-2 w-64 bg-slate-900 text-white rounded-lg shadow-2xl border border-slate-700/80 p-3.5 z-[60] text-xs font-sans animate-fade-in">
-                    <div className="flex items-center gap-2.5 pb-2.5 border-b border-slate-800 mb-3">
+                  <div className="absolute right-0 top-full mt-2 w-56 bg-slate-900 text-white rounded-lg shadow-2xl border border-slate-700/80 p-3.5 z-[60] text-xs font-sans animate-fade-in">
+                    <div className="flex items-center gap-2.5">
                       <div className="w-8 h-8 rounded-full bg-red-600/30 text-red-400 border border-red-500/40 flex items-center justify-center font-bold text-sm shrink-0">
                         {(loginUsername || "admin")[0].toUpperCase()}
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="font-bold text-white truncate text-sm">{loginUsername || "admin"}</div>
                         <div className="text-[11px] text-slate-400 font-medium">Administrator</div>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2.5">
-                      <div className="bg-slate-800/90 rounded-md p-2.5 border border-slate-700/60">
-                        <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider mb-1 flex items-center justify-between">
-                          <span>Logged In User IP</span>
-                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                        </div>
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono text-sm text-emerald-400 font-bold tracking-wide">
-                            {loadingIp ? "Fetching..." : (userIp || "127.0.0.1")}
-                          </span>
-                          <button
-                            onClick={() => {
-                              const ipToCopy = userIp || "127.0.0.1";
-                              navigator.clipboard.writeText(ipToCopy);
-                              setCopiedIp(true);
-                              setTimeout(() => setCopiedIp(false), 2000);
-                            }}
-                            className="px-2 py-1 text-[11px] bg-slate-700 hover:bg-slate-600 text-slate-200 rounded transition-colors font-sans flex items-center gap-1 shrink-0 cursor-pointer"
-                            title="Copy IP Address"
-                          >
-                            {copiedIp ? (
-                              <>
-                                <Check className="w-3 h-3 text-emerald-400" />
-                                <span className="text-emerald-400 font-medium">Copied</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="w-3 h-3 text-slate-300" />
-                                <span>Copy</span>
-                              </>
-                            )}
-                          </button>
-                        </div>
                       </div>
                     </div>
                   </div>
@@ -1459,9 +1439,8 @@ export default function App() {
       <div className="flex-1 flex min-h-0 relative overflow-hidden">
         {/* Left Sidebar Menu Panel - Red Theme matching exact reference format */}
         <aside
-          className={`${
-            isSidebarCollapsed ? "w-14 sm:w-16" : "w-48 sm:w-52"
-          } transition-all duration-200 bg-[#680505] text-white flex flex-col shrink-0 border-r border-[#4d0000] font-semibold select-none z-20 h-full overflow-hidden`}
+          className={`${isSidebarCollapsed ? "w-14 sm:w-16" : "w-48 sm:w-52"
+            } transition-all duration-200 bg-[#680505] text-white flex flex-col shrink-0 border-r border-[#4d0000] font-semibold select-none z-20 h-full overflow-hidden`}
         >
           <div className="py-1 space-y-0.5 overflow-y-auto flex-1">
             {sidebarTabs.map((t) => {
@@ -1474,25 +1453,21 @@ export default function App() {
                   key={t.id}
                   onClick={() => setActiveTab(t.id as any)}
                   title={isSidebarCollapsed ? t.label : undefined}
-                  className={`w-full text-left flex items-center cursor-pointer transition-colors ${
-                    isSidebarCollapsed
+                  className={`w-full text-left flex items-center cursor-pointer transition-colors ${isSidebarCollapsed
                       ? "justify-center px-2 py-3"
                       : "justify-between px-4 py-2.5"
-                  } ${
-                    isActive
+                    } ${isActive
                       ? "bg-[#e3e8ee] text-[#680505] font-bold shadow-xs"
                       : "text-white hover:bg-[#520000]"
-                  }`}
+                    }`}
                 >
                   <div
-                    className={`flex items-center ${
-                      isSidebarCollapsed ? "justify-center" : "gap-3 min-w-0"
-                    }`}
+                    className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "gap-3 min-w-0"
+                      }`}
                   >
                     <Icon
-                      className={`w-4.5 h-4.5 shrink-0 ${
-                        isActive ? "text-[#680505]" : "text-white"
-                      }`}
+                      className={`w-4.5 h-4.5 shrink-0 ${isActive ? "text-[#680505]" : "text-white"
+                        }`}
                     />
                     {!isSidebarCollapsed && (
                       <span className="text-sm font-bold tracking-tight truncate">
@@ -1502,9 +1477,8 @@ export default function App() {
                   </div>
                   {!isSidebarCollapsed && (
                     <ChevronsRight
-                      className={`w-4 h-4 shrink-0 ${
-                        isActive ? "text-[#680505]" : "text-white"
-                      }`}
+                      className={`w-4 h-4 shrink-0 ${isActive ? "text-[#680505]" : "text-white"
+                        }`}
                     />
                   )}
                 </button>
@@ -1647,7 +1621,7 @@ export default function App() {
       {showErrorAlertsModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs select-none">
           <div className="bg-white border border-slate-300 rounded shadow-2xl max-w-3xl w-full overflow-hidden text-slate-800 text-xs flex flex-col max-h-[85vh]">
-            
+
             {/* Header */}
             <div className="bg-[#7a0c0c] text-white px-5 py-3 flex items-center justify-between font-sans shrink-0">
               <div className="flex items-center gap-2">
@@ -1700,13 +1674,12 @@ export default function App() {
                       {alerts.map((al) => (
                         <tr key={al.id} className="hover:bg-slate-50">
                           <td className="p-2.5 pl-3">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              al.severity === "Critical"
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${al.severity === "Critical"
                                 ? "bg-red-100 text-red-700 border border-red-200"
                                 : al.severity === "Warning"
-                                ? "bg-amber-100 text-amber-800 border border-amber-200"
-                                : "bg-emerald-100 text-emerald-800 border border-emerald-200"
-                            }`}>
+                                  ? "bg-amber-100 text-amber-800 border border-amber-200"
+                                  : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                              }`}>
                               {al.severity}
                             </span>
                           </td>

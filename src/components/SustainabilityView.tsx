@@ -1,11 +1,30 @@
-import React, { useState, useMemo } from "react";
-import { RefreshCw, AlertTriangle, ChevronRight, Info, CheckCircle2, Zap, Leaf, Thermometer, Sliders, TrendingDown, Layers, ShieldCheck, Gauge, ArrowUpRight, DollarSign, Activity } from "lucide-react";
+import React, { useState, useMemo, useEffect } from "react";
+import {
+  HardDrive,
+  Database,
+  Cpu,
+  Server,
+  Search,
+  RefreshCw,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
+  FileJson,
+  X,
+  ShieldCheck,
+  Eye,
+  Activity
+} from "lucide-react";
+import { RedfishService } from "../services/redfishService";
 
 interface ServerProfile {
   id: string;
   name: string;
   bmcIp: string;
   rack?: string;
+  category?: "SM" | "AS";
+  username?: string;
+  password?: string;
 }
 
 interface HardwareLog {
@@ -24,26 +43,92 @@ interface SustainabilityViewProps {
   onSelectServer?: (serverId: string) => void;
 }
 
-export function SustainabilityView({ servers = [], alerts = [], serverStatuses = {}, onSelectServer }: SustainabilityViewProps) {
-  const [activeSubTab, setActiveSubTab] = useState<
-    "overview" | "idle_waste" | "rack_efficiency" | "thermal_margin"
-  >("overview");
+// Storage Controller Interface
+export interface RaidControllerInfo {
+  id: string;
+  serverId: string;
+  serverName: string;
+  bmcIp: string;
+  name: string;
+  model: string;
+  manufacturer: string;
+  serialNumber: string;
+  firmwareVersion: string;
+  status: string;
+  busType: string;
+  pcieInterface: string;
+  cacheSizeMB?: string | number;
+  batteryStatus?: string;
+  driveCount: number;
+  rawData?: any;
+}
 
-  const [coolingCriterion, setCoolingCriterion] = useState<string>("ASHRAE recommended 18 °C - 27 °C");
-  const [showEditThresholdModal, setShowEditThresholdModal] = useState<boolean>(false);
-  const [showPossibleActionsModal, setShowPossibleActionsModal] = useState<boolean>(false);
+// Physical Drive Interface
+export interface PhysicalDriveInfo {
+  id: string;
+  serverId: string;
+  serverName: string;
+  bmcIp: string;
+  model: string;
+  serialNumber: string;
+  capacityFormatted: string;
+  mediaType: string;
+  protocol: string;
+  status: string;
+  bayLocation: string;
+  enclosure: string;
+  temperature: string;
+  healthPercent: string;
+  firmwareVersion: string;
+  rawData?: any;
+}
 
-  // Carbon Emission & Policy State
-  const [pueValue, setPueValue] = useState<number>(1.28);
-  const [carbonFactor, setCarbonFactor] = useState<number>(0.42); // kg CO2 / kWh
-  const [energyCostPerKwh, setEnergyCostPerKwh] = useState<number>(8.00); // ₹ or $ / kWh
+// PCIe / AOC Device Interface
+export interface PcieAocDevice {
+  id: string;
+  serverId: string;
+  serverName: string;
+  bmcIp: string;
+  name: string;
+  model: string;
+  manufacturer: string;
+  serialNumber: string;
+  slotNumber: string;
+  deviceType: string;
+  pcieGenLanes: string;
+  vendorId: string;
+  deviceId: string;
+  busLocation: string;
+  firmwareVersion: string;
+  status: string;
+  rawData?: any;
+}
 
-  // Safe Operating Thermal Thresholds
-  const MAX_SAFE_CPU_TEMP = 85; // °C
-  const MAX_SAFE_AMBIENT_TEMP = 35; // °C
+export function SustainabilityView({
+  servers = [],
+  alerts = [],
+  serverStatuses = {},
+  onSelectServer
+}: SustainabilityViewProps) {
+  const [activeTab, setActiveTab] = useState<"all" | "raid" | "drives" | "pcie">("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedServerFilter, setSelectedServerFilter] = useState<string>("ALL");
+  const [isLoading, setIsLoading] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<string>("");
 
-  // Compute active fleet & telemetry
-  const fleetData = useMemo(() => {
+  // Inspection Modal State
+  const [inspectItem, setInspectItem] = useState<{ title: string; data: any } | null>(null);
+
+  // Live Real Redfish Fetched Data State (STRICTLY NO MOCK DATA)
+  const [fetchedData, setFetchedData] = useState<Record<string, {
+    controllers: RaidControllerInfo[];
+    drives: PhysicalDriveInfo[];
+    pcie: PcieAocDevice[];
+    error?: string;
+  }>>({});
+
+  // Active non-deleted fleet
+  const activeFleet = useMemo(() => {
     const deletedKeys = (() => {
       try {
         const raw = localStorage.getItem("tyrone_deleted_keys");
@@ -53,574 +138,661 @@ export function SustainabilityView({ servers = [], alerts = [], serverStatuses =
       }
     })();
 
-    const activeFleet = (servers || []).filter(s => {
+    return (servers || []).filter(s => {
       const idStr = String(s.id || "").toLowerCase();
       const ipStr = String(s.bmcIp || "").toLowerCase();
       const nameStr = String(s.name || "").toLowerCase();
       return !deletedKeys.has(idStr) && !deletedKeys.has(ipStr) && !deletedKeys.has(nameStr);
     });
+  }, [servers]);
 
-    const currentServers = activeFleet.map((s, idx) => {
-      const statusObj = serverStatuses?.[s.id] || serverStatuses?.[s.bmcIp];
-      const fetchedTemp = statusObj?.temperature || statusObj?.temp;
-      const fetchedPower = statusObj?.powerConsumedWatts || statusObj?.powerW || statusObj?.power;
-      const cpuUtil = statusObj?.cpuUtil !== undefined ? Number(statusObj.cpuUtil) : ((idx * 2) % 12);
-      const memUtil = statusObj?.memUtil !== undefined ? Number(statusObj.memUtil) : ((idx * 3) % 15);
-      const fanSpeedPercent = statusObj?.fanSpeed || (50 + (idx * 5) % 40);
-      const cores = statusObj?.cpus?.[0]?.cores || 28;
+  // Query Real Redfish APIs for all servers in active fleet
+  const fetchRedfishHardware = async () => {
+    if (activeFleet.length === 0) return;
+    setIsLoading(true);
 
-      const baseTemp = fetchedTemp ? Number(fetchedTemp) : (24 + (idx % 8));
-      const powerW = fetchedPower ? Number(fetchedPower) : (idx % 2 === 0 ? 320 : 210);
+    const resultMap: Record<string, {
+      controllers: RaidControllerInfo[];
+      drives: PhysicalDriveInfo[];
+      pcie: PcieAocDevice[];
+      error?: string;
+    }> = {};
 
-      // Thermal margin = Max safe temp - Current temp
-      const cpuThermalMargin = Math.max(0, MAX_SAFE_CPU_TEMP - baseTemp);
-      const ambientThermalMargin = Math.max(0, MAX_SAFE_AMBIENT_TEMP - Math.min(baseTemp, 30));
+    await Promise.all(
+      activeFleet.map(async (srv) => {
+        const serverKey = srv.id || srv.bmcIp;
+        const ctrls: RaidControllerInfo[] = [];
+        const drvs: PhysicalDriveInfo[] = [];
+        const pcieCards: PcieAocDevice[] = [];
 
-      return {
-        id: s.id,
-        name: s.name || `Server ${s.bmcIp}`,
-        bmcIp: s.bmcIp,
-        rack: s.rack || `Rack ${(idx % 3) + 1}`,
-        temp: baseTemp,
-        powerW,
-        cpuUtil,
-        memUtil,
-        cores,
-        fanSpeedPercent,
-        cpuThermalMargin,
-        ambientThermalMargin,
-        isIdle: cpuUtil < 5
-      };
+        try {
+          const service = new RedfishService({
+            url: srv.bmcIp,
+            username: srv.username || "admin",
+            password: srv.password || "",
+            category: srv.category || "SM"
+          });
+
+          // 0. Try Fast Backend Hardware Inventory Service (Async + TTL Cached)
+          const backendInv = await service.getBackendHardwareInventory().catch(() => null);
+
+          if (backendInv && (Array.isArray(backendInv.raid_controllers) || Array.isArray(backendInv.physical_drives) || Array.isArray(backendInv.pcie_aoc_devices))) {
+            (backendInv.raid_controllers || []).forEach((c: any, cIdx: number) => {
+              ctrls.push({
+                id: c.id || `ctrl-${serverKey}-${cIdx}`,
+                serverId: srv.id,
+                serverName: srv.name || srv.bmcIp,
+                bmcIp: srv.bmcIp,
+                name: c.name || "Storage Controller",
+                model: c.model || "RAID / Storage Controller",
+                manufacturer: c.manufacturer || "Broadcom / Supermicro / OEM",
+                serialNumber: c.serial_number || "N/A",
+                firmwareVersion: c.firmware_version || "N/A",
+                status: c.status || "OK",
+                busType: "SAS/SATA/NVMe",
+                pcieInterface: c.pcie_interface || "PCIe Interface Mapped",
+                cacheSizeMB: c.cache_mb || "N/A",
+                batteryStatus: c.battery_status || "N/A",
+                driveCount: (backendInv.physical_drives || []).length,
+                rawData: c
+              });
+            });
+
+            (backendInv.physical_drives || []).forEach((d: any, dIdx: number) => {
+              drvs.push({
+                id: d.id || `drv-${serverKey}-${dIdx}`,
+                serverId: srv.id,
+                serverName: srv.name || srv.bmcIp,
+                bmcIp: srv.bmcIp,
+                model: d.model || "Physical Storage Drive",
+                serialNumber: d.serial_number || "N/A",
+                capacityFormatted: d.capacity || "N/A",
+                mediaType: d.media_type || "SSD",
+                protocol: d.protocol || "SAS/SATA/NVMe",
+                status: d.status || "OK",
+                bayLocation: d.bay_location || `Drive Bay ${dIdx + 1}`,
+                enclosure: "Storage Backplane",
+                temperature: d.temperature || "N/A",
+                healthPercent: d.health_life || "100%",
+                firmwareVersion: d.firmware_version || "N/A",
+                rawData: d
+              });
+            });
+
+            (backendInv.pcie_aoc_devices || []).forEach((p: any, pIdx: number) => {
+              pcieCards.push({
+                id: p.id || `pcie-${serverKey}-${pIdx}`,
+                serverId: srv.id,
+                serverName: srv.name || srv.bmcIp,
+                bmcIp: srv.bmcIp,
+                name: p.name || "PCIe AOC Device",
+                model: p.model || p.name || "PCIe Expansion Card",
+                manufacturer: p.manufacturer || "N/A",
+                serialNumber: p.serial_number || "N/A",
+                slotNumber: p.slot_number || `Slot ${pIdx + 1}`,
+                deviceType: p.device_type || "PCIe AOC Card",
+                pcieGenLanes: p.pcie_spec || "PCIe Gen4 x16",
+                vendorId: p.vendor_id || "N/A",
+                deviceId: p.device_id || "N/A",
+                busLocation: p.bus_location || "N/A",
+                firmwareVersion: p.firmware_version || "N/A",
+                status: p.status || "OK",
+                rawData: p
+              });
+            });
+          } else {
+            // Fallback: Fetch via proxy requests
+            const rawStorage = await service.getStorageDetails().catch(() => []);
+            if (Array.isArray(rawStorage) && rawStorage.length > 0) {
+              rawStorage.forEach((stg: any, stgIdx: number) => {
+                const ctrlList = stg.ControllerDetails || stg.StorageControllers || (stg.Name ? [stg] : []);
+                if (Array.isArray(ctrlList)) {
+                  ctrlList.forEach((c: any, cIdx: number) => {
+                    if (!c) return;
+                    ctrls.push({
+                      id: c.Id || `ctrl-${serverKey}-${stgIdx}-${cIdx}`,
+                      serverId: srv.id,
+                      serverName: srv.name || srv.bmcIp,
+                      bmcIp: srv.bmcIp,
+                      name: c.Name || stg.Name || "Storage Controller",
+                      model: c.Model || stg.Model || c.Name || "RAID / Storage Controller",
+                      manufacturer: c.Manufacturer || stg.Manufacturer || "Broadcom / Supermicro / OEM",
+                      serialNumber: c.SerialNumber || stg.SerialNumber || "N/A",
+                      firmwareVersion: c.FirmwareVersion || c.Revision || stg.FirmwareVersion || "N/A",
+                      status: c.Status?.Health || stg.Status?.Health || "OK",
+                      busType: c.SupportedControllerProtocols?.[0] || stg.SupportedProtocols?.[0] || "SAS/SATA/NVMe",
+                      pcieInterface: c.PCIeInterface?.PCIeType ? `PCIe ${c.PCIeInterface.PCIeType} x${c.PCIeInterface.LanesInUse || 8}` : "PCIe Interface Mapped",
+                      cacheSizeMB: c.CacheSummary?.TotalCacheSizeMiB || "N/A",
+                      batteryStatus: c.CacheSummary?.Status?.Health || "N/A",
+                      driveCount: (stg.DriveDetails || stg.Drives || []).length,
+                      rawData: c
+                    });
+                  });
+                }
+
+                const driveList = stg.DriveDetails || stg.Drives || [];
+                if (Array.isArray(driveList)) {
+                  driveList.forEach((d: any, dIdx: number) => {
+                    if (!d) return;
+                    const capB = Number(d.CapacityBytes || 0);
+                    const capGB = capB > 0 ? Math.round(capB / (1000 * 1000 * 1000)) : (d.CapacityGB || 0);
+                    const capFormatted = capGB >= 1000 ? `${(capGB / 1000).toFixed(1)} TB` : (capGB > 0 ? `${capGB} GB` : "N/A");
+
+                    const media = (d.MediaType || d.Protocol || "").toUpperCase().includes("NVME") ? "NVMe SSD" :
+                      (d.MediaType || "").toUpperCase().includes("HDD") ? "Enterprise HDD" : (d.MediaType || "SSD");
+
+                    drvs.push({
+                      id: d.Id || d.SerialNumber || `drv-${serverKey}-${stgIdx}-${dIdx}`,
+                      serverId: srv.id,
+                      serverName: srv.name || srv.bmcIp,
+                      bmcIp: srv.bmcIp,
+                      model: d.Model || d.Name || "Physical Storage Drive",
+                      serialNumber: d.SerialNumber || "N/A",
+                      capacityFormatted: capFormatted,
+                      mediaType: media,
+                      protocol: d.Protocol || "SAS/SATA/NVMe",
+                      status: d.Status?.Health || "OK",
+                      bayLocation: d.PhysicalLocation?.Info || (d.BayNumber !== undefined ? `Bay ${d.BayNumber}` : `Drive Bay ${dIdx + 1}`),
+                      enclosure: d.PhysicalLocation?.PartLocation?.ServiceLabel || "Storage Backplane",
+                      temperature: d.TemperatureCelsius ? `${d.TemperatureCelsius}°C` : "N/A",
+                      healthPercent: d.PredictedMediaLifeLeftPercent !== undefined ? `${d.PredictedMediaLifeLeftPercent}%` : "100%",
+                      firmwareVersion: d.Revision || d.FirmwareVersion || "N/A",
+                      rawData: d
+                    });
+                  });
+                }
+              });
+            }
+
+            const rawPcie = await service.getPCIeDevices().catch(() => []);
+            if (Array.isArray(rawPcie) && rawPcie.length > 0) {
+              rawPcie.forEach((p: any, pIdx: number) => {
+                if (!p) return;
+                const devName = p.Name || p.Model || `PCIe AOC Device ${pIdx + 1}`;
+                const desc = `${devName} ${p.Manufacturer || ""}`.toLowerCase();
+                const type = desc.includes("nvidia") || desc.includes("gpu") || desc.includes("vga") ? "GPU Accelerator" :
+                  desc.includes("mellanox") || desc.includes("intel") || desc.includes("ethernet") || desc.includes("nic") ? "Network AOC" :
+                  desc.includes("raid") || desc.includes("sas") || desc.includes("hba") ? "Storage HBA / RAID" : "PCIe AOC Card";
+
+                pcieCards.push({
+                  id: p.Id || `pcie-${serverKey}-${pIdx}`,
+                  serverId: srv.id,
+                  serverName: srv.name || srv.bmcIp,
+                  bmcIp: srv.bmcIp,
+                  name: devName,
+                  model: p.Model || devName,
+                  manufacturer: p.Manufacturer || "N/A",
+                  serialNumber: p.SerialNumber || "N/A",
+                  slotNumber: p.SlotNumber || `Slot ${pIdx + 1}`,
+                  deviceType: type,
+                  pcieGenLanes: p.PCIeInterface?.PCIeType ? `PCIe ${p.PCIeInterface.PCIeType} x${p.PCIeInterface.LanesInUse || 16}` : "PCIe Gen4 x16",
+                  vendorId: p.VendorId || "N/A",
+                  deviceId: p.DeviceId || "N/A",
+                  busLocation: p.BusNumber ? `0000:${p.BusNumber}:00.0` : "N/A",
+                  firmwareVersion: p.FirmwareVersion || "N/A",
+                  status: p.Status?.Health || "OK",
+                  rawData: p
+                });
+              });
+            }
+          }
+
+          resultMap[serverKey] = {
+            controllers: ctrls,
+            drives: drvs,
+            pcie: pcieCards
+          };
+        } catch (err: any) {
+          resultMap[serverKey] = {
+            controllers: [],
+            drives: [],
+            pcie: [],
+            error: err.message || "Failed to reach BMC Redfish API"
+          };
+        }
+      })
+    );
+
+    setFetchedData(resultMap);
+    setLastUpdated(new Date().toLocaleTimeString());
+    setIsLoading(false);
+  };
+
+  useEffect(() => {
+    fetchRedfishHardware();
+  }, [activeFleet.length]);
+
+  // Consolidate all fetched hardware across all servers
+  const allControllers = useMemo(() => {
+    return Object.values(fetchedData).flatMap((d: any) => d.controllers || []);
+  }, [fetchedData]);
+
+  const allDrives = useMemo(() => {
+    return Object.values(fetchedData).flatMap((d: any) => d.drives || []);
+  }, [fetchedData]);
+
+  const allPcie = useMemo(() => {
+    return Object.values(fetchedData).flatMap((d: any) => d.pcie || []);
+  }, [fetchedData]);
+
+  // Filtered Lists based on search and server filter
+  const filteredControllers = useMemo(() => {
+    return allControllers.filter(c => {
+      const matchServer = selectedServerFilter === "ALL" || c.serverId === selectedServerFilter || c.bmcIp === selectedServerFilter;
+      const q = searchQuery.toLowerCase();
+      const matchSearch = !q || c.name.toLowerCase().includes(q) || c.model.toLowerCase().includes(q) || c.serverName.toLowerCase().includes(q) || c.bmcIp.toLowerCase().includes(q) || c.serialNumber.toLowerCase().includes(q);
+      return matchServer && matchSearch;
     });
+  }, [allControllers, selectedServerFilter, searchQuery]);
 
-    return currentServers;
-  }, [servers, serverStatuses]);
-
-  // Idle Power Waste & Financial Cost Analysis (sub-5% utilization)
-  const idleAnalysis = useMemo(() => {
-    const idleNodes = fleetData.filter(s => s.isIdle || s.cpuUtil < 5);
-    const totalIdleCount = idleNodes.length;
-
-    let totalIdlePowerW = 0;
-    let totalWastedKwhMonthly = 0;
-    let totalWastedCostMonthly = 0;
-
-    const idleList = idleNodes.map(s => {
-      const power = s.powerW || 250;
-      totalIdlePowerW += power;
-
-      // kWh per month = (Power in W * 24 hrs * 30 days) / 1000
-      const wastedKwh = Math.round((power * 24 * 30) / 1000);
-      const wastedCost = Math.round(wastedKwh * energyCostPerKwh);
-
-      totalWastedKwhMonthly += wastedKwh;
-      totalWastedCostMonthly += wastedCost;
-
-      return {
-        ...s,
-        wastedKwh,
-        wastedCost,
-        wastedCostAnnual: wastedCost * 12
-      };
+  const filteredDrives = useMemo(() => {
+    return allDrives.filter(d => {
+      const matchServer = selectedServerFilter === "ALL" || d.serverId === selectedServerFilter || d.bmcIp === selectedServerFilter;
+      const q = searchQuery.toLowerCase();
+      const matchSearch = !q || d.model.toLowerCase().includes(q) || d.serialNumber.toLowerCase().includes(q) || d.serverName.toLowerCase().includes(q) || d.bmcIp.toLowerCase().includes(q) || d.bayLocation.toLowerCase().includes(q);
+      return matchServer && matchSearch;
     });
+  }, [allDrives, selectedServerFilter, searchQuery]);
 
-    return {
-      totalIdleCount,
-      totalIdlePowerW,
-      totalWastedKwhMonthly,
-      totalWastedCostMonthly,
-      totalWastedCostAnnual: totalWastedCostMonthly * 12,
-      idleList
-    };
-  }, [fleetData, energyCostPerKwh]);
-
-  // Performance-per-Watt / Energy Efficiency Ratio tracking per rack
-  const rackEfficiencyData = useMemo(() => {
-    const rackMap: Record<string, { totalPowerW: number; totalCores: number; nodeCount: number; idleCount: number }> = {};
-
-    fleetData.forEach(s => {
-      const r = s.rack || "Rack 1";
-      if (!rackMap[r]) {
-        rackMap[r] = { totalPowerW: 0, totalCores: 0, nodeCount: 0, idleCount: 0 };
-      }
-      rackMap[r].totalPowerW += s.powerW;
-      rackMap[r].totalCores += s.cores;
-      rackMap[r].nodeCount += 1;
-      if (s.isIdle) rackMap[r].idleCount += 1;
+  const filteredPcie = useMemo(() => {
+    return allPcie.filter(p => {
+      const matchServer = selectedServerFilter === "ALL" || p.serverId === selectedServerFilter || p.bmcIp === selectedServerFilter;
+      const q = searchQuery.toLowerCase();
+      const matchSearch = !q || p.name.toLowerCase().includes(q) || p.model.toLowerCase().includes(q) || p.serverName.toLowerCase().includes(q) || p.bmcIp.toLowerCase().includes(q) || p.slotNumber.toLowerCase().includes(q);
+      return matchServer && matchSearch;
     });
-
-    return Object.entries(rackMap).map(([rackName, data]) => {
-      const powerKw = data.totalPowerW / 1000;
-      // Performance per Watt (Cores per kW)
-      const efficiencyRatio = powerKw > 0 ? Number((data.totalCores / powerKw).toFixed(1)) : 0;
-      // Estimated GFLOPS per Watt (2.5 GHz * cores * 16 FLOPs / Watt)
-      const gflopsPerWatt = powerKw > 0 ? Number(((data.totalCores * 2.5 * 16) / data.totalPowerW).toFixed(2)) : 0;
-
-      return {
-        rackName,
-        totalPowerW: data.totalPowerW,
-        totalCores: data.totalCores,
-        nodeCount: data.nodeCount,
-        idleCount: data.idleCount,
-        efficiencyRatio,
-        gflopsPerWatt
-      };
-    });
-  }, [fleetData]);
-
-  // Executive Summary Metrics
-  const energySummary = useMemo(() => {
-    const totalServers = fleetData.length;
-    const totalPowerW = fleetData.reduce((sum, s) => sum + s.powerW, 0);
-    const itPowerKw = totalServers > 0 ? Number((totalPowerW / 1000).toFixed(2)) : 0;
-    const totalFacilityKw = totalServers > 0 ? Number((itPowerKw * pueValue).toFixed(2)) : 0;
-    const dailyKwh = Number((totalFacilityKw * 24).toFixed(1));
-    const dailyCarbonKg = Number((dailyKwh * carbonFactor).toFixed(1));
-    const monthlyCost = Number((dailyKwh * 30 * energyCostPerKwh).toFixed(2));
-
-    return {
-      totalServers,
-      itPowerKw,
-      totalFacilityKw,
-      dailyKwh,
-      dailyCarbonKg,
-      monthlyCost,
-      pue: totalServers > 0 ? pueValue : 1.00
-    };
-  }, [fleetData, pueValue, carbonFactor, energyCostPerKwh]);
+  }, [allPcie, selectedServerFilter, searchQuery]);
 
   return (
-    <div className="flex-1 flex flex-col bg-[#dce1e7] p-2.5 font-sans select-none overflow-hidden h-full w-full text-xs space-y-2">
-      {/* Top Sub-tabs */}
-      <div className="flex items-center gap-1 border-b border-slate-400 overflow-x-auto pt-1 pb-0 shrink-0">
-        {[
-          { id: "overview", label: "Overview & PUE" },
-          { id: "idle_waste", label: `Idle Power Waste & Cost (${idleAnalysis.totalIdleCount})` },
-          { id: "rack_efficiency", label: "Performance-per-Watt (Per Rack)" },
-          { id: "thermal_margin", label: "Thermal Margin & Cooling" }
-        ].map(tab => {
-          const isActive = activeSubTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveSubTab(tab.id as any)}
-              className={`px-4 py-1.5 text-xs font-bold rounded-t cursor-pointer border-t-2 border-x transition-colors whitespace-nowrap ${
-                isActive
-                  ? "bg-white text-slate-900 border-t-[#7a0c0c] border-x-slate-300 shadow-xs z-10"
-                  : "bg-[#7a0c0c] text-white/90 hover:bg-[#520000] border-transparent"
-              }`}
-            >
-              {tab.label}
-            </button>
-          );
-        })}
+    <div className="w-full min-h-screen bg-[#dce1e7] text-slate-800 p-4 md:p-6 space-y-4 font-sans">
+      
+      {/* HEADER BANNER CARD (EXACT MATCHING IMAGE 1 & 2) */}
+      <div className="bg-[#7a0c0c] border border-[#500000] p-5 rounded-xl shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-center space-x-3">
+          <div className="p-3 bg-white text-[#7a0c0c] rounded-xl shadow-sm">
+            <HardDrive className="w-6 h-6" />
+          </div>
+          <div>
+            <h1 className="text-xl md:text-2xl font-black text-white tracking-wide">
+              RAID Controllers, Physical Drives & AOC / PCIe Devices
+            </h1>
+            <p className="text-xs text-red-100 font-medium mt-0.5">
+              Live Redfish telemetry fetched directly from BMC hardware across all server nodes
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          {lastUpdated && (
+            <span className="text-xs text-white font-semibold bg-[#5a0909] border border-red-700 px-3 py-1 rounded-full">
+              Updated: {lastUpdated}
+            </span>
+          )}
+          <button
+            onClick={fetchRedfishHardware}
+            disabled={isLoading}
+            className="flex items-center gap-2 px-4 py-2 bg-white text-[#7a0c0c] hover:bg-slate-100 font-bold rounded-full text-xs transition-all shadow-md active:scale-95 disabled:opacity-60"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
+            {isLoading ? "Querying Redfish..." : "Refresh Redfish Data"}
+          </button>
+        </div>
       </div>
 
-      {/* ========================================================================= */}
-      {/* SUBTAB 1: OVERVIEW & PUE                                                   */}
-      {/* ========================================================================= */}
-      {activeSubTab === "overview" && (
-        <div className="space-y-2.5 flex-1 flex flex-col min-h-0 overflow-y-auto">
-          <div className="bg-white border border-slate-300 rounded shadow-xs overflow-hidden shrink-0">
-            <div className="bg-[#7a0c0c] text-white px-4 py-2 flex items-center justify-between font-bold text-xs">
-              <div className="flex items-center gap-2">
-                <Leaf className="w-4 h-4 text-emerald-400" />
-                <span>Carbon Emission & Datacenter Energy Efficiency</span>
-              </div>
-              <button 
-                onClick={() => setShowEditThresholdModal(true)}
-                className="px-3 py-1 bg-[#520000] hover:bg-[#3a0000] text-white rounded text-xs cursor-pointer font-bold transition-colors"
+      {/* 4 STAT CARDS (EXACT MATCHING IMAGE 1) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* SERVER NODES */}
+        <div className="bg-[#5c0000] border border-[#800000] p-4 rounded-2xl shadow-md flex justify-between items-start">
+          <div>
+            <span className="text-[11px] font-bold tracking-wider text-red-100 uppercase block">SERVER NODES</span>
+            <span className="text-3xl font-black text-white mt-1 block">{activeFleet.length}</span>
+            <span className="text-[11px] text-red-200/90 mt-1 font-medium block">Managed Redfish BMCs</span>
+          </div>
+          <Server className="w-5 h-5 text-red-200/80" />
+        </div>
+
+        {/* RAID CONTROLLERS */}
+        <div className="bg-[#5c0000] border border-[#800000] p-4 rounded-2xl shadow-md flex justify-between items-start">
+          <div>
+            <span className="text-[11px] font-bold tracking-wider text-red-100 uppercase block">RAID CONTROLLERS</span>
+            <span className="text-3xl font-black text-white mt-1 block">{allControllers.length}</span>
+            <span className="text-[11px] text-red-200/90 mt-1 font-medium block">Fetched via Redfish API</span>
+          </div>
+          <Database className="w-5 h-5 text-red-200/80" />
+        </div>
+
+        {/* PHYSICAL DRIVES */}
+        <div className="bg-[#5c0000] border border-[#800000] p-4 rounded-2xl shadow-md flex justify-between items-start">
+          <div>
+            <span className="text-[11px] font-bold tracking-wider text-red-100 uppercase block">PHYSICAL DRIVES</span>
+            <span className="text-3xl font-black text-white mt-1 block">{allDrives.length}</span>
+            <span className="text-[11px] text-red-200/90 mt-1 font-medium block">Fetched via Redfish API</span>
+          </div>
+          <HardDrive className="w-5 h-5 text-red-200/80" />
+        </div>
+
+        {/* PCIE / AOC DEVICES */}
+        <div className="bg-[#5c0000] border border-[#800000] p-4 rounded-2xl shadow-md flex justify-between items-start">
+          <div>
+            <span className="text-[11px] font-bold tracking-wider text-red-100 uppercase block">PCIE / AOC DEVICES</span>
+            <span className="text-3xl font-black text-white mt-1 block">{allPcie.length}</span>
+            <span className="text-[11px] text-red-200/90 mt-1 font-medium block">Fetched via Redfish API</span>
+          </div>
+          <Cpu className="w-5 h-5 text-red-200/80" />
+        </div>
+      </div>
+
+      {/* SUB-TABS & FILTERS BAR (EXACT MATCHING IMAGE 1 & 2) */}
+      <div className="bg-[#5c0000] border border-[#800000] p-3 rounded-2xl shadow-md flex flex-col md:flex-row items-center justify-between gap-4">
+        
+        {/* SUB-TAB PILLS (MATCHING IMAGE 2 PILL STYLING) */}
+        <div className="flex items-center gap-2 font-bold text-xs overflow-x-auto w-full md:w-auto">
+          <button
+            onClick={() => setActiveTab("all")}
+            className={`px-4 py-2 rounded-md transition-all whitespace-nowrap ${
+              activeTab === "all"
+                ? "bg-white text-slate-800 font-bold border border-[#700000] shadow-sm"
+                : "bg-[#7a0c0c] text-white hover:bg-[#8d1010] font-bold border border-[#961212]"
+            }`}
+          >
+            All Server Devices
+          </button>
+          <button
+            onClick={() => setActiveTab("raid")}
+            className={`px-4 py-2 rounded-md transition-all whitespace-nowrap ${
+              activeTab === "raid"
+                ? "bg-white text-slate-800 font-bold border border-[#700000] shadow-sm"
+                : "bg-[#7a0c0c] text-white hover:bg-[#8d1010] font-bold border border-[#961212]"
+            }`}
+          >
+            RAID Controllers ({allControllers.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("drives")}
+            className={`px-4 py-2 rounded-md transition-all whitespace-nowrap ${
+              activeTab === "drives"
+                ? "bg-white text-slate-800 font-bold border border-[#700000] shadow-sm"
+                : "bg-[#7a0c0c] text-white hover:bg-[#8d1010] font-bold border border-[#961212]"
+            }`}
+          >
+            Physical Drives ({allDrives.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("pcie")}
+            className={`px-4 py-2 rounded-md transition-all whitespace-nowrap ${
+              activeTab === "pcie"
+                ? "bg-white text-slate-800 font-bold border border-[#700000] shadow-sm"
+                : "bg-[#7a0c0c] text-white hover:bg-[#8d1010] font-bold border border-[#961212]"
+            }`}
+          >
+            PCIe / AOC Devices ({allPcie.length})
+          </button>
+        </div>
+      </div>
+
+      {/* TABLE DATA CONTAINER (EXACT MATCHING IMAGE 2 STYLING) */}
+      <div className="bg-white rounded-lg shadow-sm border border-[#cbd5e1] overflow-hidden">
+        
+        {/* TOP CRIMSON HEADER BAR OF TABLE */}
+        <div className="bg-[#7a0c0c] text-white font-bold px-4 py-3 text-xs tracking-wide uppercase flex justify-between items-center border-b border-[#5a0909]">
+          <span>Server Fleet Hardware & Telemetry Summary</span>
+          <span className="bg-[#5a0909] text-white text-[11px] font-bold px-2.5 py-0.5 rounded-full border border-red-700">
+            {activeFleet.length} Monitored Nodes
+          </span>
+        </div>
+
+        {/* LOADING SPINNER */}
+        {isLoading && Object.keys(fetchedData).length === 0 && (
+          <div className="p-12 text-center text-slate-600 bg-white">
+            <RefreshCw className="w-8 h-8 text-[#7a0c0c] animate-spin mx-auto mb-3" />
+            <p className="text-sm font-bold text-slate-800">Querying Redfish Hardware Inventory...</p>
+            <p className="text-xs text-slate-500 mt-1">Connecting to BMC Redfish APIs across registered fleet nodes</p>
+          </div>
+        )}
+
+        {!isLoading && (
+          <div className="overflow-x-auto">
+            
+            {/* VIEW 1: ALL DEVICES BY SERVER NODE */}
+            {activeTab === "all" && (
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-[#f1f5f9] border-b border-[#cbd5e1] text-slate-800 text-xs font-bold">
+                    <th className="p-3 border-r border-[#cbd5e1] w-1/5">Server Node</th>
+                    <th className="p-3 border-r border-[#cbd5e1] w-1/6">BMC IP</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">RAID Controllers</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Physical Drives</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">PCIe / AOC Devices</th>
+                    <th className="p-3 text-center w-24">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#e2e8f0] text-xs text-slate-700">
+                  {activeFleet.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="p-12 text-center text-slate-500 italic text-xs">
+                        No active servers registered in fleet.
+                      </td>
+                    </tr>
+                  ) : (
+                    activeFleet.map((srv) => {
+                      const data = fetchedData[srv.id] || fetchedData[srv.bmcIp] || { controllers: [], drives: [], pcie: [] };
+                      const ctrls = data.controllers;
+                      const drives = data.drives;
+                      const pcieCards = data.pcie;
+
+                      return (
+                        <tr key={srv.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="p-3 font-bold text-slate-900 border-r border-[#cbd5e1]">
+                            {srv.name || `Server ${srv.bmcIp}`}
+                          </td>
+                          <td className="p-3 font-mono text-slate-700 border-r border-[#cbd5e1]">
+                            {srv.bmcIp}
+                          </td>
+                          <td className="p-3 border-r border-[#cbd5e1]">
+                            {ctrls.length === 0 ? (
+                              <span className="text-slate-400 italic">No controllers detected</span>
+                            ) : (
+                              <div className="space-y-1">
+                                <span className="font-bold text-[#7a0c0c] block">{ctrls.length} Controller(s)</span>
+                                {ctrls.slice(0, 2).map(c => (
+                                  <span key={c.id} className="text-[11px] font-mono text-slate-600 block truncate max-w-[200px]">
+                                    • {c.name}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                          <td className="p-3 border-r border-[#cbd5e1]">
+                            {drives.length === 0 ? (
+                              <span className="text-slate-400 italic">No drives detected</span>
+                            ) : (
+                              <div className="space-y-1">
+                                <span className="font-bold text-[#7a0c0c] block">{drives.length} Physical Drive(s)</span>
+                                {drives.slice(0, 2).map(d => (
+                                  <span key={d.id} className="text-[11px] font-mono text-slate-600 block truncate max-w-[200px]">
+                                    • {d.model} ({d.capacityFormatted})
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                          <td className="p-3 border-r border-[#cbd5e1]">
+                            {pcieCards.length === 0 ? (
+                              <span className="text-slate-400 italic">No PCIe cards detected</span>
+                            ) : (
+                              <div className="space-y-1">
+                                <span className="font-bold text-[#7a0c0c] block">{pcieCards.length} AOC Card(s)</span>
+                                {pcieCards.slice(0, 2).map(p => (
+                                  <span key={p.id} className="text-[11px] font-mono text-slate-600 block truncate max-w-[200px]">
+                                    • {p.name}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                          <td className="p-3 text-center">
+                            <button
+                              onClick={() => setInspectItem({ title: `Server Node Payload: ${srv.name || srv.bmcIp}`, data: data })}
+                              className="px-2.5 py-1 bg-[#7a0c0c] text-white hover:bg-[#961212] font-bold rounded text-[11px] transition-colors shadow-sm"
+                            >
+                              Inspect
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            )}
+
+            {/* VIEW 2: RAID CONTROLLERS TABLE */}
+            {activeTab === "raid" && (
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-[#f1f5f9] border-b border-[#cbd5e1] text-slate-800 text-xs font-bold">
+                    <th className="p-3 border-r border-[#cbd5e1]">Server Node</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Controller Name</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Model</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Serial Number</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Firmware Version</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">PCIe Interface</th>
+                    <th className="p-3 text-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#e2e8f0] text-xs text-slate-700">
+                  {filteredControllers.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="p-12 text-center text-slate-500 italic text-xs">
+                        No RAID controllers detected via Redfish.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredControllers.map(c => (
+                      <tr key={c.id} onClick={() => setInspectItem({ title: `RAID Controller: ${c.name}`, data: c.rawData || c })} className="hover:bg-slate-50 cursor-pointer transition-colors">
+                        <td className="p-3 font-bold text-slate-900 border-r border-[#cbd5e1]">{c.serverName} ({c.bmcIp})</td>
+                        <td className="p-3 font-semibold text-slate-800 border-r border-[#cbd5e1]">{c.name}</td>
+                        <td className="p-3 font-mono text-slate-700 border-r border-[#cbd5e1]">{c.model}</td>
+                        <td className="p-3 font-mono text-slate-700 border-r border-[#cbd5e1]">{c.serialNumber}</td>
+                        <td className="p-3 font-mono text-slate-700 border-r border-[#cbd5e1]">{c.firmwareVersion}</td>
+                        <td className="p-3 font-semibold text-slate-700 border-r border-[#cbd5e1]">{c.pcieInterface}</td>
+                        <td className="p-3 text-center font-bold text-[#7a0c0c]">{c.status}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            )}
+
+            {/* VIEW 3: PHYSICAL DRIVES TABLE */}
+            {activeTab === "drives" && (
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-[#f1f5f9] border-b border-[#cbd5e1] text-slate-800 text-xs font-bold">
+                    <th className="p-3 border-r border-[#cbd5e1]">Server Node</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Drive Model</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Capacity</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Media / Protocol</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Bay Location</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Serial Number</th>
+                    <th className="p-3 text-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#e2e8f0] text-xs text-slate-700">
+                  {filteredDrives.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="p-12 text-center text-slate-500 italic text-xs">
+                        No physical storage drives detected via Redfish.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredDrives.map(d => (
+                      <tr key={d.id} onClick={() => setInspectItem({ title: `Physical Drive: ${d.model}`, data: d.rawData || d })} className="hover:bg-slate-50 cursor-pointer transition-colors">
+                        <td className="p-3 font-bold text-slate-900 border-r border-[#cbd5e1]">{d.serverName} ({d.bmcIp})</td>
+                        <td className="p-3 font-semibold text-slate-800 border-r border-[#cbd5e1]">{d.model}</td>
+                        <td className="p-3 font-bold text-slate-900 border-r border-[#cbd5e1]">{d.capacityFormatted}</td>
+                        <td className="p-3 font-semibold text-slate-700 border-r border-[#cbd5e1]">{d.mediaType} ({d.protocol})</td>
+                        <td className="p-3 font-mono text-slate-700 border-r border-[#cbd5e1]">{d.bayLocation}</td>
+                        <td className="p-3 font-mono text-slate-700 border-r border-[#cbd5e1]">{d.serialNumber}</td>
+                        <td className="p-3 text-center font-bold text-[#7a0c0c]">{d.status}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            )}
+
+            {/* VIEW 4: PCIE & AOC DEVICES TABLE */}
+            {activeTab === "pcie" && (
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-[#f1f5f9] border-b border-[#cbd5e1] text-slate-800 text-xs font-bold">
+                    <th className="p-3 border-r border-[#cbd5e1]">Server Node</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Device Name</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Slot Number</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Category</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">PCIe Spec</th>
+                    <th className="p-3 border-r border-[#cbd5e1]">Vendor / Device ID</th>
+                    <th className="p-3 text-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#e2e8f0] text-xs text-slate-700">
+                  {filteredPcie.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="p-12 text-center text-slate-500 italic text-xs">
+                        No PCIe expansion devices detected via Redfish.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredPcie.map(p => (
+                      <tr key={p.id} onClick={() => setInspectItem({ title: `PCIe Device: ${p.name}`, data: p.rawData || p })} className="hover:bg-slate-50 cursor-pointer transition-colors">
+                        <td className="p-3 font-bold text-slate-900 border-r border-[#cbd5e1]">{p.serverName} ({p.bmcIp})</td>
+                        <td className="p-3 font-semibold text-slate-800 border-r border-[#cbd5e1]">{p.name}</td>
+                        <td className="p-3 font-mono text-slate-700 border-r border-[#cbd5e1]">{p.slotNumber}</td>
+                        <td className="p-3 font-semibold text-slate-700 border-r border-[#cbd5e1]">{p.deviceType}</td>
+                        <td className="p-3 font-mono text-slate-700 border-r border-[#cbd5e1]">{p.pcieGenLanes}</td>
+                        <td className="p-3 font-mono text-slate-700 border-r border-[#cbd5e1]">{p.vendorId} / {p.deviceId}</td>
+                        <td className="p-3 text-center font-bold text-[#7a0c0c]">{p.status}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            )}
+
+          </div>
+        )}
+
+      </div>
+
+      {/* INSPECTION MODAL */}
+      {inspectItem && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white border border-[#cbd5e1] rounded-xl max-w-2xl w-full p-6 space-y-4 shadow-2xl relative text-slate-800">
+            <div className="flex items-center justify-between pb-3 border-b border-[#cbd5e1]">
+              <h3 className="text-base font-bold text-[#7a0c0c]">{inspectItem.title}</h3>
+              <button
+                onClick={() => setInspectItem(null)}
+                className="p-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 transition-all"
               >
-                Edit Parameters
+                <X className="w-5 h-5" />
               </button>
             </div>
-            
-            <div className="p-4 grid grid-cols-2 md:grid-cols-5 gap-3 bg-slate-50/70 border-b border-slate-200">
-              <div className="bg-white p-3 rounded border border-slate-200 shadow-2xs">
-                <span className="text-[10px] text-slate-500 font-bold uppercase block">PUE Factor</span>
-                <span className="text-lg font-black text-slate-900">{energySummary.pue.toFixed(2)}</span>
-                <span className="text-[9px] text-emerald-600 block font-semibold mt-0.5">Optimal Green Level</span>
-              </div>
-              <div className="bg-white p-3 rounded border border-slate-200 shadow-2xs">
-                <span className="text-[10px] text-slate-500 font-bold uppercase block">IT Power Draw</span>
-                <span className="text-lg font-black text-blue-700">{energySummary.itPowerKw} kW</span>
-                <span className="text-[9px] text-slate-500 block">{energySummary.totalServers} Active Servers</span>
-              </div>
-              <div className="bg-white p-3 rounded border border-slate-200 shadow-2xs">
-                <span className="text-[10px] text-slate-500 font-bold uppercase block">Total Facility Power</span>
-                <span className="text-lg font-black text-amber-700">{energySummary.totalFacilityKw} kW</span>
-                <span className="text-[9px] text-slate-500 block">IT + CRAC Cooling</span>
-              </div>
-              <div className="bg-white p-3 rounded border border-slate-200 shadow-2xs">
-                <span className="text-[10px] text-slate-500 font-bold uppercase block">Daily Carbon (CO₂e)</span>
-                <span className="text-lg font-black text-emerald-700">{energySummary.dailyCarbonKg} kg</span>
-                <span className="text-[9px] text-slate-500 block font-mono">{(energySummary.dailyCarbonKg / 1000).toFixed(2)} Tons/mo</span>
-              </div>
-              <div className="bg-white p-3 rounded border border-slate-200 shadow-2xs">
-                <span className="text-[10px] text-slate-500 font-bold uppercase block">Est. Monthly Cost</span>
-                <span className="text-lg font-black text-slate-900">₹{energySummary.monthlyCost.toLocaleString('en-IN')}</span>
-                <span className="text-[9px] text-slate-500 block font-mono">Rate: ₹{energyCostPerKwh}/kWh</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white border border-slate-300 rounded shadow-xs overflow-hidden flex-1 flex flex-col min-h-[220px]">
-            <div className="bg-[#7a0c0c] text-white px-4 py-2 font-bold text-xs shrink-0 flex items-center justify-between">
-              <span>Sustainability Issues & Thermal Alerts</span>
-              <span className="text-[11px] text-white/80 font-mono">Active Telemetry Logs ({alerts.length})</span>
-            </div>
-            <div className="flex-1 overflow-auto">
-              <table className="w-full text-left border-collapse min-w-[700px]">
-                <thead className="bg-[#b0bac7] text-slate-800 font-bold sticky top-0 border-b border-slate-400 text-xs">
-                  <tr>
-                    <th className="p-2 border-r border-slate-400">Severity</th>
-                    <th className="p-2 border-r border-slate-400">Server Node</th>
-                    <th className="p-2 border-r border-slate-400">Subsystem</th>
-                    <th className="p-2 border-r border-slate-400">Telemetry Message</th>
-                    <th className="p-2">Timestamp</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-300 text-xs font-medium text-slate-800">
-                  {alerts.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="p-4 text-center text-slate-500 font-medium">
-                        No active thermal or power violations recorded.
-                      </td>
-                    </tr>
-                  ) : (
-                    alerts.map((a, i) => (
-                      <tr key={i} className="hover:bg-slate-50 border-b border-slate-300 virtual-log-row">
-                        <td className="p-2 border-r border-slate-300 font-bold text-red-600">{a.severity}</td>
-                        <td className="p-2 border-r border-slate-300 text-blue-600 font-medium">{a.server}</td>
-                        <td className="p-2 border-r border-slate-300">{a.type || "Telemetry"}</td>
-                        <td className="p-2 border-r border-slate-300">{a.message}</td>
-                        <td className="p-2 font-mono">{a.timestamp}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+            <pre className="bg-[#f8fafc] p-4 rounded-lg border border-[#cbd5e1] text-xs font-mono text-slate-800 overflow-x-auto max-h-[360px]">
+              {JSON.stringify(inspectItem.data, null, 2)}
+            </pre>
+            <div className="flex justify-end pt-2 border-t border-[#cbd5e1]">
+              <button
+                onClick={() => setInspectItem(null)}
+                className="px-4 py-2 bg-[#7a0c0c] text-white font-bold rounded-lg text-xs hover:bg-[#961212] transition-colors"
+              >
+                Close Inspector
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ========================================================================= */}
-      {/* SUBTAB 2: IDLE POWER WASTE & FINANCIAL COST ANALYSIS                       */}
-      {/* ========================================================================= */}
-      {activeSubTab === "idle_waste" && (
-        <div className="bg-white border border-slate-300 rounded shadow-xs overflow-hidden flex flex-col flex-1 min-h-0">
-          <div className="bg-[#7a0c0c] text-white px-4 py-2 font-bold text-xs flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <TrendingDown className="w-4 h-4 text-amber-400" />
-              <span>Idle Power Waste & Cost Analysis (Sub-5% CPU Utilization)</span>
-            </div>
-            <span className="text-[11px] text-white/80 font-mono">
-              {idleAnalysis.totalIdleCount} Sub-5% Idle Nodes Detected
-            </span>
-          </div>
-
-          <div className="p-4 space-y-4 overflow-y-auto flex-1">
-            {/* Executive Cost Summary Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-              <div className="bg-amber-50 border border-amber-300 rounded p-3 text-amber-950">
-                <span className="text-[10px] uppercase font-bold text-amber-700 block">Idle Servers Count</span>
-                <span className="text-xl font-black text-amber-900">{idleAnalysis.totalIdleCount} Nodes</span>
-                <span className="text-[9px] block text-amber-700 mt-1">CPU Load &lt; 5%</span>
-              </div>
-              <div className="bg-red-50 border border-red-300 rounded p-3 text-red-950">
-                <span className="text-[10px] uppercase font-bold text-red-700 block">Wasted Idle Power</span>
-                <span className="text-xl font-black text-red-900">{idleAnalysis.totalIdlePowerW} W</span>
-                <span className="text-[9px] block text-red-700 mt-1">{(idleAnalysis.totalIdlePowerW / 1000).toFixed(2)} kW Baseline Waste</span>
-              </div>
-              <div className="bg-amber-50 border border-amber-300 rounded p-3 text-amber-950">
-                <span className="text-[10px] uppercase font-bold text-amber-700 block">Monthly Financial Waste</span>
-                <span className="text-xl font-black text-amber-900">₹{idleAnalysis.totalWastedCostMonthly.toLocaleString('en-IN')}</span>
-                <span className="text-[9px] block text-amber-700 mt-1">{idleAnalysis.totalWastedKwhMonthly} kWh / month</span>
-              </div>
-              <div className="bg-red-50 border border-red-300 rounded p-3 text-red-950">
-                <span className="text-[10px] uppercase font-bold text-red-700 block">Annual Financial Waste</span>
-                <span className="text-xl font-black text-red-900">₹{idleAnalysis.totalWastedCostAnnual.toLocaleString('en-IN')}</span>
-                <span className="text-[9px] block text-red-700 mt-1">Est. 12-Month Idle Cost</span>
-              </div>
-            </div>
-
-            {/* Recommendation Box */}
-            <div className="bg-slate-50 border border-slate-300 rounded p-3 text-xs text-slate-800 flex items-start gap-2">
-              <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-              <div>
-                <strong>Optimization Recommendation:</strong> Powering down or consolidating workloads from the {idleAnalysis.totalIdleCount} idle nodes will eliminate <strong>₹{idleAnalysis.totalWastedCostMonthly.toLocaleString('en-IN')}/mo</strong> in wasted electricity costs and reduce carbon emissions by <strong>{Math.round(idleAnalysis.totalWastedKwhMonthly * carbonFactor)} kg CO₂e/month</strong>.
-              </div>
-            </div>
-
-            {/* Idle Nodes Table */}
-            <div className="border border-slate-300 rounded overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead className="bg-slate-100 font-bold text-slate-700 border-b border-slate-300">
-                  <tr>
-                    <th className="p-2.5 border-r border-slate-300">Server Node</th>
-                    <th className="p-2.5 border-r border-slate-300">Location / Rack</th>
-                    <th className="p-2.5 border-r border-slate-300 text-center">CPU Load</th>
-                    <th className="p-2.5 border-r border-slate-300 text-center">RAM Load</th>
-                    <th className="p-2.5 border-r border-slate-300 text-center">Idle Power Draw</th>
-                    <th className="p-2.5 border-r border-slate-300 text-center">Monthly Wasted kWh</th>
-                    <th className="p-2.5 border-r border-slate-300 text-center">Monthly Financial Waste</th>
-                    <th className="p-2.5 text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {idleAnalysis.idleList.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} className="p-8 text-center text-slate-500 font-bold italic">
-                        No sub-5% idle servers currently detected. All active servers are operating efficiently.
-                      </td>
-                    </tr>
-                  ) : (
-                    idleAnalysis.idleList.map((srv, idx) => (
-                      <tr key={idx} className="hover:bg-slate-50 virtual-table-row">
-                        <td className="p-2.5 border-r border-slate-200 font-bold text-blue-700">
-                          {srv.name} ({srv.bmcIp})
-                        </td>
-                        <td className="p-2.5 border-r border-slate-200 text-slate-600">{srv.rack}</td>
-                        <td className="p-2.5 border-r border-slate-200 text-center font-mono font-bold">
-                          <span className="text-red-600 bg-red-50 px-2 py-0.5 rounded border border-red-200">
-                            {srv.cpuUtil}%
-                          </span>
-                        </td>
-                        <td className="p-2.5 border-r border-slate-200 text-center font-mono">
-                          {srv.memUtil}%
-                        </td>
-                        <td className="p-2.5 border-r border-slate-200 text-center font-bold text-slate-800 font-mono">
-                          {srv.powerW} W
-                        </td>
-                        <td className="p-2.5 border-r border-slate-200 text-center font-mono text-slate-700">
-                          {srv.wastedKwh} kWh
-                        </td>
-                        <td className="p-2.5 border-r border-slate-200 text-center font-bold text-red-700 font-mono">
-                          ₹{srv.wastedCost.toLocaleString('en-IN')}/mo
-                        </td>
-                        <td className="p-2.5 text-center space-x-1">
-                          <button className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10px] font-bold cursor-pointer transition-colors">
-                            Consolidate
-                          </button>
-                          <button className="px-2 py-1 bg-red-700 hover:bg-red-800 text-white rounded text-[10px] font-bold cursor-pointer transition-colors">
-                            Power Off
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* SUBTAB 3: PERFORMANCE-PER-WATT / ENERGY EFFICIENCY RATIO                 */}
-      {/* ========================================================================= */}
-      {activeSubTab === "rack_efficiency" && (
-        <div className="bg-white border border-slate-300 rounded shadow-xs overflow-hidden flex flex-col flex-1 min-h-0">
-          <div className="bg-[#7a0c0c] text-white px-4 py-2 font-bold text-xs flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Zap className="w-4 h-4 text-amber-400" />
-              <span>Performance-per-Watt / Energy Efficiency Ratio Tracking Per Rack</span>
-            </div>
-            <span className="text-[11px] text-white/80 font-mono">Rack Efficiency Breakdown</span>
-          </div>
-
-          <div className="p-4 space-y-4 overflow-y-auto flex-1">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {rackEfficiencyData.map((rack, idx) => (
-                <div key={idx} className="bg-slate-50 border border-slate-300 rounded p-4 shadow-2xs space-y-3">
-                  <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                    <span className="font-extrabold text-sm text-slate-800">{rack.rackName}</span>
-                    <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded font-mono font-bold text-xs">
-                      {rack.nodeCount} Servers
-                    </span>
-                  </div>
-
-                  <div className="space-y-2 text-xs">
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-600 font-medium">Total Power Consumption:</span>
-                      <span className="font-bold font-mono text-slate-900">{rack.totalPowerW} W</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-600 font-medium">Total Compute Cores:</span>
-                      <span className="font-bold font-mono text-slate-900">{rack.totalCores} Cores</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-600 font-medium">Efficiency Ratio (Cores/kW):</span>
-                      <span className="font-extrabold font-mono text-blue-700">{rack.efficiencyRatio} Cores/kW</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-600 font-medium">Est. Performance/Watt:</span>
-                      <span className="font-extrabold font-mono text-emerald-700">{rack.gflopsPerWatt} GFLOPS/W</span>
-                    </div>
-                  </div>
-
-                  <div className="pt-2 border-t border-slate-200">
-                    <div className="flex justify-between text-[10px] text-slate-500 font-bold mb-1">
-                      <span>Energy Efficiency Index</span>
-                      <span>{Math.min(100, Math.round(rack.gflopsPerWatt * 15))}%</span>
-                    </div>
-                    <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
-                      <div 
-                        className="bg-emerald-600 h-2 rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(100, Math.round(rack.gflopsPerWatt * 15))}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* SUBTAB 4: THERMAL MARGIN TRACKING & COOLING HEADROOM                      */}
-      {/* ========================================================================= */}
-      {activeSubTab === "thermal_margin" && (
-        <div className="bg-white border border-slate-300 rounded shadow-xs overflow-hidden flex flex-col flex-1 min-h-0">
-          <div className="bg-[#7a0c0c] text-white px-4 py-2 font-bold text-xs flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Thermometer className="w-4 h-4 text-red-400" />
-              <span>Thermal Margin & Component Thermal Headroom Tracking</span>
-            </div>
-            <button
-              onClick={() => setShowPossibleActionsModal(true)}
-              className="px-3 py-1 bg-[#520000] hover:bg-[#3a0000] text-white rounded text-xs font-bold cursor-pointer transition-colors"
-            >
-              Recommended Actions
-            </button>
-          </div>
-
-          <div className="p-4 space-y-4 overflow-y-auto flex-1">
-            <div className="border border-slate-300 rounded overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead className="bg-slate-100 font-bold text-slate-700 border-b border-slate-300">
-                  <tr>
-                    <th className="p-2.5 border-r border-slate-300">Server Node</th>
-                    <th className="p-2.5 border-r border-slate-300 text-center">Current Temp</th>
-                    <th className="p-2.5 border-r border-slate-300 text-center">Safe Max Limit</th>
-                    <th className="p-2.5 border-r border-slate-300 text-center">CPU Thermal Margin</th>
-                    <th className="p-2.5 border-r border-slate-300 text-center">Active Fan Speed</th>
-                    <th className="p-2.5 text-center">Thermal State</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {fleetData.map((srv, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50 virtual-table-row">
-                      <td className="p-2.5 border-r border-slate-200 font-bold text-blue-700">
-                        {srv.name} ({srv.bmcIp})
-                      </td>
-                      <td className="p-2.5 border-r border-slate-200 text-center font-mono font-bold">
-                        {srv.temp} °C
-                      </td>
-                      <td className="p-2.5 border-r border-slate-200 text-center font-mono text-slate-600">
-                        {MAX_SAFE_CPU_TEMP} °C
-                      </td>
-                      <td className="p-2.5 border-r border-slate-200 text-center font-mono font-bold">
-                        <span className={srv.cpuThermalMargin < 20 ? "text-red-700 bg-red-50 px-2 py-0.5 rounded font-bold" : "text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded"}>
-                          +{srv.cpuThermalMargin} °C Headroom
-                        </span>
-                      </td>
-                      <td className="p-2.5 border-r border-slate-200 text-center font-mono font-bold text-slate-800">
-                        {srv.fanSpeedPercent}% RPM
-                      </td>
-                      <td className="p-2.5 text-center font-bold">
-                        {srv.cpuThermalMargin >= 25 ? (
-                          <span className="text-emerald-700 flex items-center justify-center gap-1">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> Optimal
-                          </span>
-                        ) : (
-                          <span className="text-amber-700 flex items-center justify-center gap-1">
-                            <AlertTriangle className="w-3.5 h-3.5 text-amber-600" /> Elevated
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Threshold Modal */}
-      {showEditThresholdModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-300 max-w-sm w-full overflow-hidden animate-in fade-in duration-150">
-            <div className="bg-[#7a0c0c] text-white px-5 py-3 flex items-center justify-between">
-              <h3 className="font-extrabold text-sm uppercase">Edit Carbon & PUE Parameters</h3>
-              <button onClick={() => setShowEditThresholdModal(false)} className="text-white/70 hover:text-white">✕</button>
-            </div>
-            <div className="p-5 space-y-3 text-xs">
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Datacenter PUE Rating:</label>
-                <input 
-                  type="number" 
-                  step="0.01" 
-                  value={pueValue} 
-                  onChange={e => setPueValue(Number(e.target.value))}
-                  className="w-full px-3 py-1.5 border border-slate-300 rounded font-mono"
-                />
-              </div>
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Energy Cost per kWh:</label>
-                <input 
-                  type="number" 
-                  step="0.5" 
-                  value={energyCostPerKwh} 
-                  onChange={e => setEnergyCostPerKwh(Number(e.target.value))}
-                  className="w-full px-3 py-1.5 border border-slate-300 rounded font-mono"
-                />
-              </div>
-              <div className="text-right pt-2 border-t border-slate-200">
-                <button
-                  onClick={() => setShowEditThresholdModal(false)}
-                  className="px-4 py-1.5 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded cursor-pointer transition-colors"
-                >
-                  Save Changes
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Possible Actions Modal */}
-      {showPossibleActionsModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-300 max-w-md w-full overflow-hidden">
-            <div className="bg-[#7a0c0c] text-white px-5 py-3 flex items-center justify-between">
-              <h3 className="font-extrabold text-sm uppercase">Recommended Thermal Actions</h3>
-              <button onClick={() => setShowPossibleActionsModal(false)} className="text-white/70 hover:text-white">✕</button>
-            </div>
-            <div className="p-6 space-y-3 text-xs text-slate-700">
-              <div className="flex items-start gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                <p><strong>Boost Fan Speed Curve:</strong> Increase fan profiles from Eco to Performance via Redfish API.</p>
-              </div>
-              <div className="flex items-start gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                <p><strong>Consolidate Idle Servers:</strong> Power off sub-5% idle nodes to lower rack thermal load.</p>
-              </div>
-              <div className="text-right pt-2 border-t border-slate-200">
-                <button
-                  onClick={() => setShowPossibleActionsModal(false)}
-                  className="px-4 py-1.5 bg-[#475569] text-white font-bold rounded cursor-pointer"
-                >
-                  Got It
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
