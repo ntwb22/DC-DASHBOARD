@@ -52,18 +52,21 @@ def normalize_inventory(vendor: str, sys_json: Dict[str, Any], net_json: Dict[st
 
     vendor_tag = vendor.upper() if vendor else "GENERIC"
     
-    # Base Metadata without hardcoded fake defaults
-    model = sys_json.get("Model") or sys_json.get("Name")
-    manufacturer = sys_json.get("Manufacturer")
-    serial_number = sys_json.get("SerialNumber") or sys_json.get("SKU")
+    # Unwrap system sub-object if payload is an inventory wrapper
+    system_obj = sys_json.get("system") if (isinstance(sys_json.get("system"), dict) and sys_json.get("system")) else sys_json
     
-    status_obj = sys_json.get("Status", {})
+    # Base Metadata without hardcoded fake defaults
+    model = system_obj.get("Model") or system_obj.get("Name") or sys_json.get("Model") or sys_json.get("Name")
+    manufacturer = system_obj.get("Manufacturer") or sys_json.get("Manufacturer")
+    serial_number = system_obj.get("SerialNumber") or system_obj.get("SKU") or sys_json.get("SerialNumber") or sys_json.get("SKU")
+    
+    status_obj = system_obj.get("Status") or sys_json.get("Status") or {}
     health = status_obj.get("Health") or status_obj.get("State") or "OK"
-    power_state = sys_json.get("PowerState") or "On"
+    power_state = system_obj.get("PowerState") or sys_json.get("PowerState") or "On"
 
     # 1. Processors (CPUs) Normalization (Present-Only)
     cpus: List[Dict[str, Any]] = []
-    processors_raw = sys_json.get("Processors", {})
+    processors_raw = system_obj.get("Processors") or sys_json.get("Processors") or sys_json.get("processors") or {}
     members = processors_raw.get("Members", []) if isinstance(processors_raw, dict) else []
     
     if isinstance(processors_raw, list):
@@ -84,7 +87,7 @@ def normalize_inventory(vendor: str, sys_json: Dict[str, Any], net_json: Dict[st
 
     # 2. Memory (RAM DIMMs) Normalization (Present-Only)
     memory_modules: List[Dict[str, Any]] = []
-    mem_raw = sys_json.get("Memory", {})
+    mem_raw = system_obj.get("Memory") or sys_json.get("Memory") or sys_json.get("memory") or {}
     mem_members = mem_raw.get("Members", []) if isinstance(mem_raw, dict) else []
     
     if isinstance(mem_raw, list):
@@ -107,7 +110,7 @@ def normalize_inventory(vendor: str, sys_json: Dict[str, Any], net_json: Dict[st
 
     # 3. Storage Controllers, Drives & SMART Wear-Out Normalization (Present-Only)
     storage_drives: List[Dict[str, Any]] = []
-    storage_raw = sys_json.get("Storage", {})
+    storage_raw = system_obj.get("Storage") or sys_json.get("Storage") or sys_json.get("storage") or {}
     st_members = storage_raw.get("Members", []) if isinstance(storage_raw, dict) else []
     if isinstance(storage_raw, list):
         st_members = storage_raw
@@ -158,14 +161,14 @@ def normalize_inventory(vendor: str, sys_json: Dict[str, Any], net_json: Dict[st
                         })
 
     # 5. PSU Redundancy & Power Supplies Normalization
-    power_info = sys_json.get("Power", {})
+    power_info = system_obj.get("Power") or sys_json.get("power") or sys_json.get("Power") or sys_json.get("chassis", {}).get("Power") or {}
     psu_list = power_info.get("PowerSupplies", []) if isinstance(power_info, dict) else []
     redundancy_info = power_info.get("Redundancy", [{}])[0] if isinstance(power_info, dict) and power_info.get("Redundancy") else {}
     psu_status = redundancy_info.get("Status", {}).get("Health", "Fully Redundant" if len(psu_list) >= 2 else "Single PSU (N+0)")
 
     # 6. Firmware & Golden Baseline Drift Normalization
-    bios_version = sys_json.get("BiosVersion") or sys_json.get("BIOS", {}).get("Version")
-    bmc_version = sys_json.get("BMCVersion") or sys_json.get("FirmwareVersion")
+    bios_version = system_obj.get("BiosVersion") or system_obj.get("BIOS", {}).get("Version") or sys_json.get("BiosVersion") or sys_json.get("firmware", {}).get("bios")
+    bmc_version = sys_json.get("firmware", {}).get("bmc") or system_obj.get("BMCVersion") or sys_json.get("BMCVersion") or sys_json.get("FirmwareVersion")
 
     # Clean Uniform Normalized DTO Layout for React UI (No mock fallbacks)
     return {

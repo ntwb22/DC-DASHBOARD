@@ -135,6 +135,16 @@ export const fetchServerDetailsForAddition = async (
         }
       } catch (_) { }
     }
+
+    let bmcFw: string | null = null;
+    try {
+      const mgrUri = await service.resolveManagerId().catch(() => "/redfish/v1/Managers/1");
+      const mgrDetails = await service.proxyRequest(mgrUri).catch(() => null);
+      if (mgrDetails?.FirmwareVersion) {
+        bmcFw = mgrDetails.FirmwareVersion;
+      }
+    } catch (_) { }
+
     return {
       model: sysDetails?.Model || "Server",
       manufacturer: sysDetails?.Manufacturer || "Tyrone Systems",
@@ -144,10 +154,14 @@ export const fetchServerDetailsForAddition = async (
       processorsCount: sysDetails?.Processors?.count || 0,
       memoryGiB: sysDetails?.Memory?.totalGiB || 0,
       storageCount: sysDetails?.Storage?.count || 0,
+      bmcFw: bmcFw || null,
+      bmcVersion: bmcFw || null,
+      biosVersion: sysDetails?.BiosVersion || null,
       rawSystem: sysDetails
     };
   } catch (err) {
     console.warn("Failed to fetch rich details on server addition:", err);
+    return null;
   }
 };
 
@@ -219,7 +233,8 @@ export class RedfishService {
         },
         headers: {
           "Content-Type": "application/json",
-          "Accept": "application/json"
+          "Accept": "application/json",
+          "Authorization": `Basic ${btoa(`${this.config.username}:${this.config.password}`)}`
         }
       }, { timeout: 8000 });
 
@@ -1192,9 +1207,9 @@ export class RedfishService {
     const token = await this.createSession().catch(() => null);
     if (token) {
       headers["X-Auth-Token"] = token;
-    } else {
-      headers["Authorization"] = `Basic ${btoa(`${this.config.username}:${this.config.password}`)}`;
     }
+    // Always include Authorization fallback so the backend proxy can extract the credentials for new devices
+    headers["Authorization"] = `Basic ${btoa(`${this.config.username}:${this.config.password}`)}`;
 
     try {
       const timeoutMs = method.toUpperCase() === "GET" ? 45000 : 350000;
@@ -1226,7 +1241,7 @@ export class RedfishService {
         const newToken = await this.createSession().catch(() => null);
         if (newToken && newToken !== "BASIC_AUTH_ONLY") {
           headers["X-Auth-Token"] = newToken;
-          delete headers["Authorization"];
+          // Preserve Authorization for proxy
         } else {
           headers["Authorization"] = `Basic ${btoa(`${this.config.username}:${this.config.password}`)}`;
         }

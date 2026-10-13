@@ -477,26 +477,38 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
   // Auto-select valid DC, Room, Row, and Rack if current selection is invalid or unselected
   useEffect(() => {
     if (Array.isArray(dataCenters) && dataCenters.length > 0) {
-      const activeDCFound = dataCenters.find(dc => dc && (dc.id === selectedDC || dc.name === selectedDC));
-      if (!selectedDC || !activeDCFound) {
-        const firstDCId = dataCenters[0]?.id || dataCenters[0]?.name || "DC1";
-        setSelectedDC(firstDCId);
-        const dcRooms = (rooms && firstDCId) ? (rooms[firstDCId] || rooms[dataCenters[0]?.name || ""] || []) : [];
-        const firstRoomId = dcRooms[0]?.id || dcRooms[0]?.name || "";
-        setSelectedRoom(firstRoomId);
-        if (firstRoomId) {
-          const rmRows = (rows && firstRoomId) ? (rows[firstRoomId] || []) : [];
-          const firstRowId = rmRows[0]?.id || rmRows[0]?.name || "";
-          setSelectedRow(firstRowId);
-          if (firstRowId) {
-            const rwRacks = (racks && firstRowId) ? (racks[firstRowId] || []) : [];
-            const firstRackId = rwRacks[0]?.id || rwRacks[0]?.name || "";
-            setSelectedRack(firstRackId);
-          }
-        }
+      let curDC = selectedDC;
+      const activeDCFound = dataCenters.find(dc => dc && (dc.id === curDC || dc.name === curDC));
+      if (!curDC || !activeDCFound) {
+        curDC = dataCenters[0]?.id || dataCenters[0]?.name || "DC1";
+        setSelectedDC(curDC);
+      }
+
+      const dcRooms = (rooms && curDC) ? (rooms[curDC] || rooms[dataCenters.find(d => d.id === curDC)?.name || ""] || []) : [];
+      let curRoom = selectedRoom;
+      const activeRoomFound = dcRooms.find(r => r && (r.id === curRoom || r.name === curRoom));
+      if (!curRoom || !activeRoomFound) {
+        curRoom = dcRooms[0]?.id || dcRooms[0]?.name || "";
+        if (curRoom) setSelectedRoom(curRoom);
+      }
+
+      const rmRows = (rows && curRoom) ? (rows[curRoom] || []) : [];
+      let curRow = selectedRow;
+      const activeRowFound = rmRows.find(rw => rw && (rw.id === curRow || rw.name === curRow));
+      if (!curRow || !activeRowFound) {
+        curRow = rmRows[0]?.id || rmRows[0]?.name || "";
+        if (curRow) setSelectedRow(curRow);
+      }
+
+      const rwRacks = (racks && curRow) ? (racks[curRow] || []) : [];
+      let curRack = selectedRack;
+      const activeRackFound = rwRacks.find(rk => rk && (rk.id === curRack || rk.name === curRack));
+      if (!curRack || !activeRackFound) {
+        curRack = rwRacks[0]?.id || rwRacks[0]?.name || "";
+        if (curRack) setSelectedRack(curRack);
       }
     }
-  }, [dataCenters, selectedDC, rooms, rows, racks]);
+  }, [dataCenters, selectedDC, rooms, selectedRoom, rows, selectedRow, racks, selectedRack]);
 
   const selectedDCName = useMemo(() => {
     if (!selectedDC) return "";
@@ -607,6 +619,8 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
           const addedDev = e?.detail?.newDevice;
           if (addedDev && addedDev.id) {
             setActiveServerId(addedDev.id);
+            const targetRack = addedDev.rack || serverRacks[addedDev.id] || "Rack 1";
+            setSelectedRack(targetRack);
             if (typeof (fetchServerTelemetry as any) === "function") {
               (fetchServerTelemetry as any)(addedDev, true);
             }
@@ -658,22 +672,34 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
   // Progressive cascading select functions
   const handleSelectDC = (dcId: string) => {
     setSelectedDC(dcId);
-    setSelectedRoom("");
-    setSelectedRow("");
-    setSelectedRack("");
+    const dcRooms = rooms[dcId] || [];
+    const firstRoom = dcRooms[0]?.id || dcRooms[0]?.name || "";
+    setSelectedRoom(firstRoom);
+    const rmRows = firstRoom ? (rows[firstRoom] || []) : [];
+    const firstRow = rmRows[0]?.id || rmRows[0]?.name || "";
+    setSelectedRow(firstRow);
+    const rwRacks = firstRow ? (racks[firstRow] || []) : [];
+    const firstRack = rwRacks[0]?.id || rwRacks[0]?.name || "";
+    setSelectedRack(firstRack);
     setActiveServerId("");
   };
 
   const handleSelectRoom = (roomId: string) => {
     setSelectedRoom(roomId);
-    setSelectedRow("");
-    setSelectedRack("");
+    const rmRows = rows[roomId] || [];
+    const firstRow = rmRows[0]?.id || rmRows[0]?.name || "";
+    setSelectedRow(firstRow);
+    const rwRacks = firstRow ? (racks[firstRow] || []) : [];
+    const firstRack = rwRacks[0]?.id || rwRacks[0]?.name || "";
+    setSelectedRack(firstRack);
     setActiveServerId("");
   };
 
   const handleSelectRow = (rowId: string) => {
     setSelectedRow(rowId);
-    setSelectedRack("");
+    const rwRacks = racks[rowId] || [];
+    const firstRack = rwRacks[0]?.id || rwRacks[0]?.name || "";
+    setSelectedRack(firstRack);
     setActiveServerId("");
   };
 
@@ -2052,12 +2078,12 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                   <span>2. Room</span>
                   <div className="flex items-center gap-1 text-slate-500">
                     <button
-                      disabled={!selectedDC}
                       onClick={() => {
-                        if (!selectedDC) return alert("Select a Data Center first.");
+                        const targetDC = selectedDC || (dataCenters[0]?.id || dataCenters[0]?.name || "DC1");
+                        if (!selectedDC) setSelectedDC(targetDC);
                         setShowAddRoomModal(true);
                       }}
-                      className={`${!selectedDC ? "opacity-30 cursor-not-allowed" : "hover:text-[#7a0c0c] cursor-pointer"} p-0.5`}
+                      className="hover:text-[#7a0c0c] cursor-pointer p-0.5"
                       title="Add Room"
                     >
                       <Plus className="w-3 h-3" />
@@ -2066,7 +2092,9 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                       disabled={!selectedRoom}
                       onClick={() => {
                         if (!selectedRoom || !selectedDC) return alert("Select a Room to edit.");
-                        const targetRoom = (rooms[selectedDC] || []).find(r => {
+                        const activeDCKey = selectedDC || (dataCenters[0]?.id || dataCenters[0]?.name || "DC1");
+                        const dcRooms = rooms[activeDCKey] || rooms[selectedDCName] || [];
+                        const targetRoom = dcRooms.find(r => {
                           if (!r) return false;
                           if (typeof r === "string") return r === selectedRoom;
                           return r.name === selectedRoom || r.id === selectedRoom;
@@ -2096,31 +2124,49 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                     </button>
                   </div>
                 </div>
-                {!selectedDC ? (
+                {!selectedDC && dataCenters.length === 0 ? (
                   <div className="p-4 text-center text-slate-400 italic text-[11px] flex flex-col items-center justify-center my-auto space-y-1">
                     <Info className="w-4 h-4 opacity-50 text-slate-400" />
                     <span>Click a Data Center to view Rooms</span>
                   </div>
                 ) : (
                   <div className="p-1 space-y-1 max-h-36 overflow-y-auto">
-                    {(rooms[selectedDC] || []).map(roomItem => {
-                      if (!roomItem) return null;
-                      const room = typeof roomItem === "string" ? { id: roomItem, name: roomItem } : { id: roomItem.id || roomItem.name || "Room", name: roomItem.name || roomItem.id || "Room" };
-                      return (
-                        <div
-                          key={room.id}
-                          onClick={() => handleSelectRoom(room.id)}
-                          className={`flex items-center justify-between px-3 py-1.5 rounded cursor-pointer font-bold transition-all ${selectedRoom === room.id ? "bg-[#7a0c0c] text-white shadow-sm" : "hover:bg-slate-200/70 text-slate-700 font-medium"
-                            }`}
-                        >
-                          <span>{room.name}</span>
-                          {selectedRoom === room.id && <ChevronRight className="w-3.5 h-3.5 text-white/80" />}
-                        </div>
-                      );
-                    })}
-                    {(!rooms[selectedDC] || rooms[selectedDC].length === 0) && (
-                      <div className="p-3 text-slate-400 italic text-[11px]">No rooms added in {selectedDC}</div>
-                    )}
+                    {(() => {
+                      const activeDCKey = selectedDC || (dataCenters[0]?.id || dataCenters[0]?.name || "DC1");
+                      const dcRooms = rooms[activeDCKey] || rooms[selectedDCName] || (activeDCKey && Object.entries(rooms).find(([k]) => k.toLowerCase() === activeDCKey.toLowerCase())?.[1]) || [];
+                      if (dcRooms.length === 0) {
+                        return (
+                          <div className="p-3 text-slate-400 italic text-[11px] text-center space-y-1">
+                            <div>No rooms added in {selectedDCName || activeDCKey}</div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!selectedDC) setSelectedDC(activeDCKey);
+                                setShowAddRoomModal(true);
+                              }}
+                              className="px-2.5 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white rounded text-[10px] font-bold uppercase cursor-pointer transition-all shadow-xs"
+                            >
+                              + Add Room
+                            </button>
+                          </div>
+                        );
+                      }
+                      return dcRooms.map(roomItem => {
+                        if (!roomItem) return null;
+                        const room = typeof roomItem === "string" ? { id: roomItem, name: roomItem } : { id: roomItem.id || roomItem.name || "Room", name: roomItem.name || roomItem.id || "Room" };
+                        return (
+                          <div
+                            key={room.id}
+                            onClick={() => handleSelectRoom(room.id)}
+                            className={`flex items-center justify-between px-3 py-1.5 rounded cursor-pointer font-bold transition-all ${selectedRoom === room.id ? "bg-[#7a0c0c] text-white shadow-sm" : "hover:bg-slate-200/70 text-slate-700 font-medium"
+                              }`}
+                          >
+                            <span>{room.name}</span>
+                            {selectedRoom === room.id && <ChevronRight className="w-3.5 h-3.5 text-white/80" />}
+                          </div>
+                        );
+                      });
+                    })()}
                   </div>
                 )}
               </div>
@@ -2131,12 +2177,18 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                   <span>3. Row</span>
                   <div className="flex items-center gap-1 text-slate-500">
                     <button
-                      disabled={!selectedRoom}
                       onClick={() => {
-                        if (!selectedRoom) return alert("Select a Room first.");
+                        const activeDCKey = selectedDC || (dataCenters[0]?.id || dataCenters[0]?.name || "DC1");
+                        const dcRooms = rooms[activeDCKey] || rooms[selectedDCName] || [];
+                        const activeRoomKey = selectedRoom || dcRooms[0]?.id || dcRooms[0]?.name;
+                        if (!activeRoomKey) {
+                          setShowAddRoomModal(true);
+                          return;
+                        }
+                        if (!selectedRoom) setSelectedRoom(activeRoomKey);
                         setShowAddRowModal(true);
                       }}
-                      className={`${!selectedRoom ? "opacity-30 cursor-not-allowed" : "hover:text-[#7a0c0c] cursor-pointer"} p-0.5`}
+                      className="hover:text-[#7a0c0c] cursor-pointer p-0.5"
                       title="Add Row"
                     >
                       <Plus className="w-3 h-3" />
@@ -2182,33 +2234,59 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                     </button>
                   </div>
                 </div>
-                {!selectedRoom ? (
-                  <div className="p-4 text-center text-slate-400 italic text-[11px] flex flex-col items-center justify-center my-auto space-y-1">
-                    <Info className="w-4 h-4 opacity-50 text-slate-400" />
-                    <span>Click a Room to view Rows</span>
-                  </div>
-                ) : (
-                  <div className="p-1 space-y-1 max-h-36 overflow-y-auto">
-                    {(rows[selectedRoom] || []).map(rwItem => {
-                      if (!rwItem) return null;
-                      const rw = typeof rwItem === "string" ? { id: rwItem, name: rwItem } : { id: rwItem.id || rwItem.name || "Row", name: rwItem.name || rwItem.id || "Row" };
-                      return (
-                        <div
-                          key={rw.id}
-                          onClick={() => handleSelectRow(rw.id)}
-                          className={`flex items-center justify-between px-3 py-1.5 rounded cursor-pointer font-bold transition-all ${selectedRow === rw.id ? "bg-[#7a0c0c] text-white shadow-sm" : "hover:bg-slate-200/70 text-slate-700 font-medium"
-                            }`}
+                {(() => {
+                  const activeDCKey = selectedDC || (dataCenters[0]?.id || dataCenters[0]?.name || "DC1");
+                  const dcRooms = rooms[activeDCKey] || rooms[selectedDCName] || [];
+                  const activeRoomKey = selectedRoom || dcRooms[0]?.id || dcRooms[0]?.name || "";
+                  const rmRows = (activeRoomKey && rows[activeRoomKey]) || (selectedRoomName && rows[selectedRoomName]) || (activeRoomKey && Object.entries(rows).find(([k]) => k.toLowerCase() === activeRoomKey.toLowerCase())?.[1]) || [];
+
+                  if (!activeRoomKey && dcRooms.length === 0) {
+                    return (
+                      <div className="p-4 text-center text-slate-400 italic text-[11px] flex flex-col items-center justify-center my-auto space-y-1">
+                        <Info className="w-4 h-4 opacity-50 text-slate-400" />
+                        <span>Click a Room to view Rows</span>
+                      </div>
+                    );
+                  }
+
+                  if (rmRows.length === 0) {
+                    return (
+                      <div className="p-3 text-slate-400 italic text-[11px] text-center space-y-1">
+                        <div>No rows added in {selectedRoomName || activeRoomKey || "Room"}</div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (activeRoomKey && !selectedRoom) setSelectedRoom(activeRoomKey);
+                            setShowAddRowModal(true);
+                          }}
+                          className="px-2.5 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white rounded text-[10px] font-bold uppercase cursor-pointer transition-all shadow-xs"
                         >
-                          <span>{rw.name}</span>
-                          {selectedRow === rw.id && <ChevronRight className="w-3.5 h-3.5 text-white/80" />}
-                        </div>
-                      );
-                    })}
-                    {(!rows[selectedRoom] || rows[selectedRoom].length === 0) && (
-                      <div className="p-3 text-slate-400 italic text-[11px]">No rows added in {selectedRoom}</div>
-                    )}
-                  </div>
-                )}
+                          + Add Row
+                        </button>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="p-1 space-y-1 max-h-36 overflow-y-auto">
+                      {rmRows.map(rwItem => {
+                        if (!rwItem) return null;
+                        const rw = typeof rwItem === "string" ? { id: rwItem, name: rwItem } : { id: rwItem.id || rwItem.name || "Row", name: rwItem.name || rwItem.id || "Row" };
+                        return (
+                          <div
+                            key={rw.id}
+                            onClick={() => handleSelectRow(rw.id)}
+                            className={`flex items-center justify-between px-3 py-1.5 rounded cursor-pointer font-bold transition-all ${selectedRow === rw.id ? "bg-[#7a0c0c] text-white shadow-sm" : "hover:bg-slate-200/70 text-slate-700 font-medium"
+                              }`}
+                          >
+                            <span>{rw.name}</span>
+                            {selectedRow === rw.id && <ChevronRight className="w-3.5 h-3.5 text-white/80" />}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* 4. Rack Column */}
@@ -2217,12 +2295,24 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                   <span>4. Rack</span>
                   <div className="flex items-center gap-1 text-slate-500">
                     <button
-                      disabled={!selectedRow}
                       onClick={() => {
-                        if (!selectedRow) return alert("Select a Row first.");
+                        const activeDCKey = selectedDC || (dataCenters[0]?.id || dataCenters[0]?.name || "DC1");
+                        const dcRooms = rooms[activeDCKey] || rooms[selectedDCName] || [];
+                        const activeRoomKey = selectedRoom || dcRooms[0]?.id || dcRooms[0]?.name;
+                        const curRmRows = (activeRoomKey && rows[activeRoomKey]) || (selectedRoomName && rows[selectedRoomName]) || [];
+                        const activeRowKey = selectedRow || curRmRows[0]?.id || curRmRows[0]?.name;
+                        if (!activeRowKey) {
+                          if (!activeRoomKey) {
+                            setShowAddRoomModal(true);
+                          } else {
+                            setShowAddRowModal(true);
+                          }
+                          return;
+                        }
+                        if (!selectedRow) setSelectedRow(activeRowKey);
                         setShowAddRackModal(true);
                       }}
-                      className={`${!selectedRow ? "opacity-30 cursor-not-allowed" : "hover:text-[#7a0c0c] cursor-pointer"} p-0.5`}
+                      className="hover:text-[#7a0c0c] cursor-pointer p-0.5"
                       title="Add Rack"
                     >
                       <Plus className="w-3 h-3" />
@@ -2261,33 +2351,61 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                     </button>
                   </div>
                 </div>
-                {!selectedRow ? (
-                  <div className="p-4 text-center text-slate-400 italic text-[11px] flex flex-col items-center justify-center my-auto space-y-1 select-none">
-                    <Info className="w-4 h-4 opacity-50 text-slate-400 shrink-0" />
-                    <span>Click a Row to view Racks</span>
-                  </div>
-                ) : (
-                  <div className="p-1 space-y-1 max-h-36 overflow-y-auto">
-                    {(racks[selectedRow] || []).map(rkItem => {
-                      if (!rkItem) return null;
-                      const rk = typeof rkItem === "string" ? { id: rkItem, name: rkItem } : { id: rkItem.id || rkItem.name || "Rack", name: rkItem.name || rkItem.id || "Rack" };
-                      return (
-                        <div
-                          key={rk.id}
-                          onClick={() => handleSelectRack(rk.id)}
-                          className={`flex items-center justify-between px-3 py-1.5 rounded cursor-pointer font-bold transition-all ${selectedRack === rk.id ? "bg-[#7a0c0c] text-white shadow-sm" : "hover:bg-slate-200/70 text-slate-700 font-medium"
-                            }`}
+                {(() => {
+                  const activeDCKey = selectedDC || (dataCenters[0]?.id || dataCenters[0]?.name || "DC1");
+                  const dcRooms = rooms[activeDCKey] || rooms[selectedDCName] || [];
+                  const activeRoomKey = selectedRoom || dcRooms[0]?.id || dcRooms[0]?.name || "";
+                  const curRmRows = (activeRoomKey && rows[activeRoomKey]) || (selectedRoomName && rows[selectedRoomName]) || [];
+                  const activeRowKey = selectedRow || curRmRows[0]?.id || curRmRows[0]?.name || "";
+                  const rwRacks = (activeRowKey && racks[activeRowKey]) || (selectedRowName && racks[selectedRowName]) || (activeRowKey && Object.entries(racks).find(([k]) => k.toLowerCase() === activeRowKey.toLowerCase())?.[1]) || [];
+
+                  if (!activeRowKey && curRmRows.length === 0) {
+                    return (
+                      <div className="p-4 text-center text-slate-400 italic text-[11px] flex flex-col items-center justify-center my-auto space-y-1 select-none">
+                        <Info className="w-4 h-4 opacity-50 text-slate-400 shrink-0" />
+                        <span>Click a Row to view Racks</span>
+                      </div>
+                    );
+                  }
+
+                  if (rwRacks.length === 0) {
+                    return (
+                      <div className="p-3 text-slate-400 italic text-[11px] text-center space-y-1">
+                        <div>No racks added in {selectedRowName || activeRowKey || "Row"}</div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (activeRowKey && !selectedRow) setSelectedRow(activeRowKey);
+                            setShowAddRackModal(true);
+                          }}
+                          className="px-2.5 py-1 bg-[#7a0c0c] hover:bg-[#520000] text-white rounded text-[10px] font-bold uppercase cursor-pointer transition-all shadow-xs"
                         >
-                          <span>{rk.name}</span>
-                          {selectedRack === rk.id && <ChevronRight className="w-3.5 h-3.5 text-white/80" />}
-                        </div>
-                      );
-                    })}
-                    {(!racks[selectedRow] || racks[selectedRow].length === 0) && (
-                      <div className="p-3 text-slate-400 italic text-[11px]">No racks added in {selectedRow}</div>
-                    )}
-                  </div>
-                )}
+                          + Add Rack
+                        </button>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="p-1 space-y-1 max-h-36 overflow-y-auto">
+                      {rwRacks.map(rkItem => {
+                        if (!rkItem) return null;
+                        const rk = typeof rkItem === "string" ? { id: rkItem, name: rkItem } : { id: rkItem.id || rkItem.name || "Rack", name: rkItem.name || rkItem.id || "Rack" };
+                        return (
+                          <div
+                            key={rk.id}
+                            onClick={() => handleSelectRack(rk.id)}
+                            className={`flex items-center justify-between px-3 py-1.5 rounded cursor-pointer font-bold transition-all ${selectedRack === rk.id ? "bg-[#7a0c0c] text-white shadow-sm" : "hover:bg-slate-200/70 text-slate-700 font-medium"
+                              }`}
+                          >
+                            <span>{rk.name}</span>
+                            {selectedRack === rk.id && <ChevronRight className="w-3.5 h-3.5 text-white/80" />}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* 5. Device / Server Column */}
@@ -2337,7 +2455,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                     </button>
                   </div>
                 </div>
-                {!selectedRack ? (
+                {(!selectedRack && localServers.length === 0) ? (
                   <div className="p-4 text-center text-slate-400 italic text-[11px] flex flex-col items-center justify-center my-auto space-y-1">
                     <Info className="w-4 h-4 opacity-50 text-slate-400" />
                     <span>Click a Rack to view Devices</span>
@@ -2351,12 +2469,12 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                         return r.id === selectedRack || r.name === selectedRack;
                       });
                       const rackServers = (localServers || []).filter(s => {
-                        if (!selectedRack) return false;
+                        if (!selectedRack) return true;
                         return matchesRack(s.rack, selectedRack);
                       });
 
                       if (rackServers.length === 0) {
-                        const rackDisplayName = typeof activeRackObj === "string" ? activeRackObj : (activeRackObj?.name || selectedRack);
+                        const rackDisplayName = typeof activeRackObj === "string" ? activeRackObj : (activeRackObj?.name || selectedRack || "this Rack");
                         return (
                           <div className="p-3 text-slate-400 italic text-[11px] text-center space-y-1">
                             <div>No servers in {rackDisplayName}</div>
@@ -4884,6 +5002,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
         dcName={selectedDC}
         onClose={() => setShowAddRoomModal(false)}
         onAddRoom={(rm) => {
+          const targetDC = selectedDC || (dataCenters[0]?.id || dataCenters[0]?.name || "DC1");
           const newRoom: RoomItem = {
             id: rm.name,
             name: rm.name,
@@ -4892,11 +5011,20 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
             spaceCapacityU: rm.spaceCapacityU || "42",
             weightCapacityKg: rm.weightCapacityKg || "1200"
           };
-          setRooms(prev => ({
-            ...prev,
-            [selectedDC]: [...(prev[selectedDC] || []), newRoom]
-          }));
+          setRooms(prev => {
+            const existing = prev[targetDC] || [];
+            const isAlreadyPresent = existing.some(r => r.name === rm.name || r.id === rm.name);
+            const updated = isAlreadyPresent ? existing : [...existing, newRoom];
+            return {
+              ...prev,
+              [targetDC]: updated
+            };
+          });
+          setSelectedDC(targetDC);
           setSelectedRoom(rm.name);
+          setSelectedRow("");
+          setSelectedRack("");
+          window.dispatchEvent(new CustomEvent("hierarchy-updated"));
         }}
       />
 
@@ -4934,11 +5062,23 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
         roomName={selectedRoom}
         onClose={() => setShowAddRowModal(false)}
         onAddRow={(rw) => {
-          setRows(prev => ({
-            ...prev,
-            [selectedRoom]: [...(prev[selectedRoom] || []), { id: rw.name, name: rw.name }]
-          }));
+          const targetDC = selectedDC || (dataCenters[0]?.id || dataCenters[0]?.name || "DC1");
+          const dcRooms = rooms[targetDC] || rooms[selectedDCName] || [];
+          const targetRoom = selectedRoom || dcRooms[0]?.id || dcRooms[0]?.name || "Room1";
+          setRows(prev => {
+            const existing = prev[targetRoom] || [];
+            const isAlreadyPresent = existing.some(r => r.name === rw.name || r.id === rw.name);
+            const updated = isAlreadyPresent ? existing : [...existing, { id: rw.name, name: rw.name }];
+            return {
+              ...prev,
+              [targetRoom]: updated
+            };
+          });
+          setSelectedDC(targetDC);
+          setSelectedRoom(targetRoom);
           setSelectedRow(rw.name);
+          setSelectedRack("");
+          window.dispatchEvent(new CustomEvent("hierarchy-updated"));
         }}
       />
 
@@ -4947,7 +5087,11 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
         rowName={selectedRow || "Row1"}
         onClose={() => setShowAddRackModal(false)}
         onAddRack={(rk) => {
-          const targetRow = selectedRow || (selectedRoom && rows[selectedRoom] && rows[selectedRoom][0]?.name) || (Object.keys(rows)[0] ? (rows[Object.keys(rows)[0]][0]?.name || Object.keys(rows)[0]) : "Row1");
+          const targetDC = selectedDC || (dataCenters[0]?.id || dataCenters[0]?.name || "DC1");
+          const dcRooms = rooms[targetDC] || rooms[selectedDCName] || [];
+          const targetRoom = selectedRoom || dcRooms[0]?.id || dcRooms[0]?.name || "Room1";
+          const rmRows = rows[targetRoom] || rows[selectedRoomName] || [];
+          const targetRow = selectedRow || rmRows[0]?.id || rmRows[0]?.name || "Row1";
 
           setRacks(prev => {
             const existingInRow = prev[targetRow] || [];
@@ -4976,6 +5120,8 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
             localStorage.setItem("tyrone_rack_capacities", JSON.stringify(currentCapacities));
           } catch (_) { }
 
+          setSelectedDC(targetDC);
+          setSelectedRoom(targetRoom);
           setSelectedRow(targetRow);
           setSelectedRack(rk.name);
           window.dispatchEvent(new CustomEvent("hierarchy-updated"));
@@ -5072,6 +5218,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
       <AddDeviceModal
         isOpen={showAddNewDeviceModal}
+        initialRack={selectedRack || "Rack 1"}
         onClose={() => setShowAddNewDeviceModal(false)}
         onBackToDevicesNotInHierarchy={() => {
           setShowAddNewDeviceModal(false);
@@ -5090,12 +5237,17 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
             if (rawDel) {
               const delSet = new Set<string>(JSON.parse(rawDel));
               const toRemove: string[] = [];
+              const ipLower = String(newDev.bmcIp || "").toLowerCase().trim();
+              const idLower = String(newDev.id || "").toLowerCase().trim();
+              const nameLower = String(newDev.name || "").toLowerCase().trim();
+
               delSet.forEach(k => {
-                const lk = String(k).toLowerCase();
+                const lk = String(k).toLowerCase().trim();
                 if (
-                  lk === String(newDev.id).toLowerCase() ||
-                  (newDev.bmcIp && lk === String(newDev.bmcIp).toLowerCase()) ||
-                  (newDev.name && lk === String(newDev.name).toLowerCase())
+                  lk === idLower ||
+                  (idLower && lk.includes(idLower)) ||
+                  (ipLower && (lk === ipLower || lk.includes(ipLower) || ipLower.includes(lk))) ||
+                  (nameLower && (lk === nameLower || lk.includes(nameLower)))
                 ) {
                   toRemove.push(k);
                 }

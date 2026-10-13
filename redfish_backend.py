@@ -22,6 +22,8 @@ path_blacklist = {}
 BLACKLIST_TTL_SECS = 300  # Remember 404 paths for 5 minutes
 
 import sys
+if __name__ == "__main__":
+    sys.modules["redfish_backend"] = sys.modules[__name__]
 import asyncio
 if sys.platform == "win32":
     try:
@@ -617,7 +619,7 @@ class RedfishBMCClient:
 
             if req_method in ("PATCH", "PUT"):
                 try:
-                    async with session.request("GET", url, auth=auth_arg, headers=req_headers) as get_response:
+                    async with session.request("GET", url, auth=auth_arg, headers=req_headers, timeout=aiohttp.ClientTimeout(total=15.0)) as get_response:
                         if get_response.status == 200:
                             etag = get_response.headers.get("ETag") or get_response.headers.get("etag")
                             if etag:
@@ -629,7 +631,7 @@ class RedfishBMCClient:
             delay = 0.3
             for attempt in range(max_retries + 1):
                 try:
-                    async with session.request(req_method, url, auth=auth_arg, json=data, headers=req_headers) as response:
+                    async with session.request(req_method, url, auth=auth_arg, json=data, headers=req_headers, timeout=aiohttp.ClientTimeout(total=15.0)) as response:
                         # Session validation / Re-auth on 401 / 403 wrapped in lock protection
                         if response.status in (401, 403) and attempt == 0:
                             logger.warning(f"[401/403] Session expired or invalid on {self.base_url}. Re-authenticating with lock protection...")
@@ -1527,13 +1529,13 @@ from typing import Tuple
 
 from db import db
 from sse_engine import sse_manager, ws_clients, sse_queues, broadcast_event
+from redfish_monitor import redfish_manager
 
 session_manager = RedfishSessionManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initializes PostgreSQL connection pool and syncs background SSE receivers & monitoring daemons on startup, tearing down on shutdown."""
-    from redfish_monitor import redfish_manager
     await db.initialize()
     await redfish_manager.start()
     servers = await db.get_all_servers()
@@ -1669,15 +1671,37 @@ async def get_all_inventories_endpoint(refresh: Optional[bool] = False):
 @app.post("/api/servers/{server_id}/collect")
 async def collect_single_inventory(server_id: str):
     """Fetches and normalizes inventory for a single server ID on demand."""
-    servers = await db.get_all_servers()
-    target = next((s for s in servers if s["id"] == server_id), None)
+    target = await db.get_server(server_id)
     if not target:
-        raise HTTPException(status_code=404, detail="Server not found in database.")
+        raise HTTPException(status_code=404, detail=f"Server '{server_id}' not found in database.")
     
-    await redfish_manager.on_manual_refresh(server_id)
-    async with httpx.AsyncClient(verify=False) as client:
-        res = await fetch_server_inventory(client, target)
-        return res
+    try:
+        from async_collector import fetch_server_inventory as live_harvest
+        async with httpx.AsyncClient(verify=False, timeout=15.0) as client:
+            res = await live_harvest(client, target)
+            if res:
+                return res
+    except Exception as e:
+        logger.warning(f"[Collect API] Live collection warning for {server_id}: {e}")
+
+    try:
+        await redfish_manager.on_manual_refresh(server_id)
+    except Exception as e:
+        logger.debug(f"[Collect API] redfish_manager refresh notice: {e}")
+
+    cached = await db.get_server_inventory(server_id)
+    if cached:
+        return cached
+
+    return {
+        "id": target.get("id", server_id),
+        "name": target.get("name", f"Tyrone Server ({target.get('ip')})"),
+        "ip": target.get("ip"),
+        "vendor": target.get("vendor", "SM"),
+        "healthStatus": target.get("health", "OK"),
+        "powerState": target.get("power_state", "ON"),
+        "status": "ONLINE"
+    }
 
 @app.get("/api/servers/{server_id}/sel")
 async def get_server_sel_logs(server_id: str):
@@ -1871,17 +1895,6 @@ async def update_local_fleet(fleet: List[Dict[str, Any]]):
             new_ids.add(sid)
             new_ips.add(ip)
             await db.save_server(sid, name, ip, vendor, username, password, rack)
-            
-    for s in existing_servers:
-        sid = s.get("id")
-        ip = s.get("ip", "").lstrip("http://").lstrip("https://").strip()
-        if sid not in new_ids and ip not in new_ips:
-            if sid:
-                await cancel_server_tasks(sid)
-            if ip:
-                await cancel_server_tasks(ip)
-            await db.delete_server(sid or ip)
-
     servers = await db.get_all_servers()
     await redfish_manager.sync_servers(servers)
     await sse_manager.sync_servers(servers)
@@ -2452,12 +2465,29 @@ async def redfish_proxy(req: ProxyRequest, request: Request):
         username = username or target_server.get("username", "admin")
         password = password or target_server.get("password", "")
 
+    # Session creation exemption: POST to /redfish/v1/SessionService/Sessions
+    is_session_creation = (
+        "sessionservice/sessions" in normalized_url.lower() or
+        "sessionservice/sessions" in req.url.lower()
+    )
+
+    # Extract credentials from request body for session creation if present
+    if is_session_creation and isinstance(req.data, dict):
+        body_user = req.data.get("UserName") or req.data.get("username")
+        body_pass = req.data.get("Password") or req.data.get("password")
+        if body_user and not username:
+            username = body_user
+        if body_pass and not password:
+            password = body_pass
+
+    # Proxy Auth Guard: Allow session creation unauthenticated, otherwise require credentials/token
     if not auth_header and not x_token and not (username and password):
-        logger.warning(f"[Proxy Auth Guard] Intercepted unauthenticated proxy request targeting '{req.url}'")
-        return JSONResponse(
-            status_code=401,
-            content={"error": "Unauthorized", "message": "Authentication required. Please include a valid Authorization Basic header or X-Auth-Token.", "status_code": 401}
-        )
+        if not is_session_creation:
+            logger.warning(f"[Proxy Auth Guard] Intercepted unauthenticated proxy request targeting '{req.url}'")
+            return JSONResponse(
+                status_code=401,
+                content={"error": "Unauthorized", "message": "Authentication required. Please include a valid Authorization Basic header or X-Auth-Token.", "status_code": 401}
+            )
 
     target_url = rewrite_vendor_url(normalized_url, target_vendor)
     

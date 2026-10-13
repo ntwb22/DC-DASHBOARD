@@ -57,10 +57,8 @@ class RedfishHttpClientPool:
 
 http_pool = RedfishHttpClientPool()
 
-from redfish_backend import REDFISH_BACKEND_SESSION_CACHE, get_or_acquire_session_context
-
 # Session Token Cache: bmc_ip -> {"token": str, "cookies": dict, "location": str, "created_at": float}
-SESSION_TOKEN_CACHE: Dict[str, Dict[str, Any]] = REDFISH_BACKEND_SESSION_CACHE
+SESSION_TOKEN_CACHE: Dict[str, Dict[str, Any]] = {}
 
 async def get_or_acquire_session_token(client: httpx.AsyncClient, bmc_ip: str, username: str, password: str, force_refresh: bool = False) -> Optional[str]:
     """Acquires or reuses X-Auth-Token via get_or_acquire_session_context with lock protection."""
@@ -226,6 +224,11 @@ async def fetch_and_cache_inventory(
             inventory_data["http_requests"] += 1
             resp = await client.get(sys_url, headers=headers, auth=auth)
             if resp.status_code in (401, 403):
+                try:
+                    from redfish_backend import REDFISH_BACKEND_SESSION_CACHE
+                    REDFISH_BACKEND_SESSION_CACHE.pop(clean_ip, None)
+                except Exception:
+                    pass
                 SESSION_TOKEN_CACHE.pop(clean_ip, None)
                 token = await get_or_acquire_session_token(client, clean_ip, username, password)
                 if token:
@@ -261,6 +264,20 @@ async def fetch_and_cache_inventory(
                     inventory_data["thermal"] = resp_th.json()
         except Exception as e:
             logger.warning(f"[Inventory] Chassis fetch error for {clean_ip} on {c_path}: {e}")
+
+        # Query 3: Manager (BMC) Inventory & Firmware
+        try:
+            m_path = resolved_paths.get("managers", "/redfish/v1/Managers/1")
+            resp_m = await client.get(f"{base_url}{m_path}", headers=headers, auth=auth)
+            if resp_m.status_code == 200:
+                m_data = resp_m.json()
+                bmc_fw = m_data.get("FirmwareVersion")
+                inventory_data["firmware"] = {
+                    "bmc": bmc_fw,
+                    "bios": inventory_data["system"].get("BiosVersion")
+                }
+        except Exception as e:
+            logger.debug(f"[Inventory] Manager fetch notice for {clean_ip}: {e}")
 
         # If static attributes were retrieved from read-through buffer, merge them if live call was partial
         if static_cached and not force_refresh:

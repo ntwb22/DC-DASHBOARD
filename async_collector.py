@@ -324,13 +324,36 @@ async def fetch_multi_tab_inventory(client: httpx.AsyncClient, server: Dict[str,
             if fallback_sys and fallback_sys.status_code == 200:
                 sys_json = fallback_sys.json()
 
-        # Merge Processors, Memory, Storage into System JSON structure
+        async def _expand_collection(coll: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+            if not isinstance(coll, dict):
+                return coll
+            members = coll.get("Members", [])
+            if not isinstance(members, list) or len(members) == 0:
+                return coll
+            # If members contain unexpanded links (i.e. only @odata.id)
+            if isinstance(members[0], dict) and "@odata.id" in members[0] and len(members[0]) <= 2:
+                tasks = [
+                    fetch_with_401_retry(client, base_url, m.get("@odata.id", ""), username, password, vendor)
+                    for m in members[:32] if isinstance(m, dict) and "@odata.id" in m
+                ]
+                if tasks:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    expanded = []
+                    for r in results:
+                        if isinstance(r, httpx.Response) and r.status_code == 200:
+                            try: expanded.append(r.json())
+                            except Exception: pass
+                    if expanded:
+                        return {**coll, "Members": expanded}
+            return coll
+
+        # Merge Processors, Memory, Storage into System JSON structure with member expansion
         if res_dict.get("procs") and isinstance(res_dict["procs"], dict):
-            sys_json["Processors"] = res_dict["procs"]
+            sys_json["Processors"] = await _expand_collection(res_dict["procs"])
         if res_dict.get("memory") and isinstance(res_dict["memory"], dict):
-            sys_json["Memory"] = res_dict["memory"]
+            sys_json["Memory"] = await _expand_collection(res_dict["memory"])
         if res_dict.get("storage") and isinstance(res_dict["storage"], dict):
-            sys_json["Storage"] = res_dict["storage"]
+            sys_json["Storage"] = await _expand_collection(res_dict["storage"])
         if res_dict.get("chassis") and isinstance(res_dict["chassis"], dict):
             sys_json["ChassisDetails"] = res_dict["chassis"]
         if res_dict.get("power") and isinstance(res_dict["power"], dict):

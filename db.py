@@ -192,7 +192,16 @@ class PostgresDatabase:
             except Exception as e:
                 logger.error(f"Failed to save server to PostgreSQL: {e}")
 
+        # Invalidate servers cache so immediate queries return fresh data
+        self._servers_cache = None
+        self._cache_time = 0
+
         # Fallback store
+        # Deduplicate any existing server with the same IP under another ID
+        for old_id in list(self.in_memory_fallback["servers"].keys()):
+            if self.in_memory_fallback["servers"][old_id].get("ip") == clean_ip and old_id != server_id:
+                del self.in_memory_fallback["servers"][old_id]
+
         existing_fallback_pass = self.in_memory_fallback["servers"].get(server_id, {}).get("enc_password", "")
         self.in_memory_fallback["servers"][server_id] = {
             "id": server_id,
@@ -259,6 +268,20 @@ class PostgresDatabase:
         self._cache_time = now
         return res
 
+    async def get_server(self, server_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a single server by ID, IP, or name."""
+        if not server_id:
+            return None
+        servers = await self.get_all_servers()
+        clean_target = str(server_id).replace("https://", "").replace("http://", "").rstrip("/").split(":")[0].strip().lower()
+        for s in servers:
+            s_id = str(s.get("id", "")).lower()
+            s_ip = str(s.get("ip", "")).lower()
+            s_name = str(s.get("name", "")).lower()
+            if s_id == server_id.lower() or s_ip == clean_target or s_name == server_id.lower() or clean_target in s_id or s_id in clean_target:
+                return s
+        return None
+
     async def delete_server(self, server_id: str) -> bool:
         """Deletes a server record by ID, IP, or URL from PostgreSQL database and memory fallback registry."""
         if not server_id:
@@ -311,6 +334,8 @@ class PostgresDatabase:
             r for r in self.in_memory_fallback["raw_inventory"]
             if r.get("server_id") not in targets
         ]
+        self._servers_cache = None
+        self._cache_time = 0
         return True
 
     async def save_raw_inventory(self, server_id: str, vendor: str, inventory_json: Dict[str, Any], network_json: Dict[str, Any]):
@@ -676,6 +701,19 @@ class PostgresDatabase:
             normalized_list.append(norm)
 
         return normalized_list
+
+    async def get_server_inventory(self, server_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves normalized inventory for a single server by ID or IP."""
+        if not server_id:
+            return None
+        inventories = await self.get_all_inventories()
+        clean_target = str(server_id).replace("https://", "").replace("http://", "").rstrip("/").split(":")[0].strip().lower()
+        for inv in inventories:
+            inv_id = str(inv.get("id", "")).lower()
+            inv_ip = str(inv.get("ip", "")).lower()
+            if inv_id == server_id.lower() or inv_ip == clean_target or clean_target in inv_id or inv_id in clean_target:
+                return inv
+        return None
 
     async def save_telemetry(self, ip: str, vendor: str, power_state: str, cpu_temp: float, ambient_temp: float, fan_speed: int, raw_metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Upserts server telemetry record into PostgreSQL server_telemetry JSONB table."""

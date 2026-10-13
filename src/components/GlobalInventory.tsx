@@ -54,7 +54,7 @@ interface GlobalInventoryProps {
 }
 
 // Centralized Module-Level In-Memory Inventory Cache Store
-const GLOBAL_INVENTORY_CACHE_STORE: Record<string, { serialNumber: string; model: string; manufacturer?: string; biosVersion?: string; bmcVersion?: string; cpuCount?: string; totalMemory?: string; osInfo?: string }> = {};
+export const GLOBAL_INVENTORY_CACHE_STORE: Record<string, { serialNumber: string; model: string; manufacturer?: string; biosVersion?: string; bmcVersion?: string; cpuCount?: string; totalMemory?: string; osInfo?: string }> = {};
 
 export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAddServer, onImportServers, onEditServer, onDeleteServer, onDeleteServers }: GlobalInventoryProps) => {
   const [activeTab, setActiveTab] = useState<"all" | "discovery" | "groups">("all");
@@ -191,14 +191,14 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
       servers.forEach(s => {
         if (!detailsMap[s.id]) {
           detailsMap[s.id] = {
-            serialNumber: (s.serialNumber && !s.serialNumber.startsWith("TYR-") && s.serialNumber !== "N/A") ? s.serialNumber : ((s as any).serial || "To be filled by O.E.M."),
-            model: s.model || "RH21XM",
-            manufacturer: s.vendor || (s.category === "AS" ? "ASRock" : "Tyrone Systems"),
-            bmcVersion: (s as any).bmcFw || (s as any).bmcVersion || "v3.88.0",
-            biosVersion: (s as any).biosVersion || "v2.1a",
-            cpuCount: (s as any).specs?.cpu || "2 CPUs",
-            totalMemory: (s as any).specs?.memory || "128 GB",
-            osInfo: "Linux"
+            serialNumber: (s.serialNumber && !s.serialNumber.startsWith("TYR-") && s.serialNumber !== "N/A") ? s.serialNumber : ((s as any).serial || "N/A"),
+            model: s.model || "N/A",
+            manufacturer: s.vendor || (s.category === "AS" ? "ASRock" : "N/A"),
+            bmcVersion: (s as any).bmcFw || (s as any).bmcVersion || "N/A",
+            biosVersion: (s as any).biosVersion || "N/A",
+            cpuCount: (s as any).specs?.cpu || "N/A",
+            totalMemory: (s as any).specs?.memory || "N/A",
+            osInfo: "N/A"
           };
           GLOBAL_INVENTORY_CACHE_STORE[s.id] = detailsMap[s.id];
         }
@@ -214,7 +214,6 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
 
     // Force Refresh (triggered ONLY on explicit manual button click)
     setIsManualRefreshing(true);
-    setLoadingDetails(true);
 
     const detailsMap: Record<string, { serialNumber: string; model: string; manufacturer?: string; biosVersion?: string; bmcVersion?: string; cpuCount?: string; totalMemory?: string; osInfo?: string }> = { ...mergedCache };
 
@@ -242,14 +241,14 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
               }
 
               detailsMap[targetId] = {
-                serialNumber: invItem.serialNumber || sys.SerialNumber || sys.SKU || sys.serial || matchedServer?.serialNumber || "To be filled by O.E.M.",
-                model: invItem.model || sys.Model || matchedServer?.model || "RH21XM",
-                manufacturer: invItem.manufacturer || sys.Manufacturer || (matchedServer?.category === "AS" ? "ASRock" : "Tyrone Systems"),
-                bmcVersion: firm.bmc || invItem.bmcVersion || sys.BMCVersion || sys.FirmwareVersion || (matchedServer as any)?.bmcFw || "v3.88.0",
-                biosVersion: firm.bios || invItem.biosVersion || sys.BiosVersion || (matchedServer as any)?.biosVersion || "v2.1a",
-                cpuCount: invItem.cpuCount || (procCount ? `${procCount} CPU${procCount > 1 ? "s" : ""}` : ((matchedServer as any)?.specs?.cpu || "2 CPUs")),
-                totalMemory: totalMemStr || (matchedServer as any)?.specs?.memory || "128 GB",
-                osInfo: sys.OperatingSystem || "Linux"
+                serialNumber: invItem.serialNumber || sys.SerialNumber || sys.SKU || sys.serial || matchedServer?.serialNumber || "N/A",
+                model: invItem.model || sys.Model || matchedServer?.model || "N/A",
+                manufacturer: invItem.manufacturer || sys.Manufacturer || (matchedServer?.category === "AS" ? "ASRock" : "N/A"),
+                bmcVersion: firm.bmc || invItem.bmcVersion || sys.BMCVersion || sys.FirmwareVersion || (matchedServer as any)?.bmcFw || "N/A",
+                biosVersion: firm.bios || invItem.biosVersion || sys.BiosVersion || (matchedServer as any)?.biosVersion || "N/A",
+                cpuCount: invItem.cpuCount || (procCount ? `${procCount} CPU${procCount > 1 ? "s" : ""}` : ((matchedServer as any)?.specs?.cpu || "N/A")),
+                totalMemory: totalMemStr || (matchedServer as any)?.specs?.memory || "N/A",
+                osInfo: sys.OperatingSystem || "N/A"
               };
               GLOBAL_INVENTORY_CACHE_STORE[targetId] = detailsMap[targetId];
             }
@@ -263,20 +262,31 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
     servers.forEach(s => {
       if (!detailsMap[s.id]) {
         detailsMap[s.id] = {
-          serialNumber: (s.serialNumber && !s.serialNumber.startsWith("TYR-") && s.serialNumber !== "N/A") ? s.serialNumber : ((s as any).serial || "To be filled by O.E.M."),
-          model: s.model || "RH21XM",
-          manufacturer: s.vendor || (s.category === "AS" ? "ASRock" : "Tyrone Systems"),
-          bmcVersion: (s as any).bmcFw || (s as any).bmcVersion || "v3.88.0",
-          biosVersion: (s as any).biosVersion || "v2.1a",
-          cpuCount: (s as any).specs?.cpu || "2 CPUs",
-          totalMemory: (s as any).specs?.memory || "128 GB",
-          osInfo: "Linux"
+          serialNumber: (s.serialNumber && !s.serialNumber.startsWith("TYR-") && s.serialNumber !== "N/A") ? s.serialNumber : ((s as any).serial || "N/A"),
+          model: s.model || "N/A",
+          manufacturer: s.vendor || (s.category === "AS" ? "ASRock" : "N/A"),
+          bmcVersion: (s as any).bmcFw || (s as any).bmcVersion || "N/A",
+          biosVersion: (s as any).biosVersion || "N/A",
+          cpuCount: (s as any).specs?.cpu || "N/A",
+          totalMemory: (s as any).specs?.memory || "N/A",
+          osInfo: "N/A"
         };
         GLOBAL_INVENTORY_CACHE_STORE[s.id] = detailsMap[s.id];
       }
     });
 
-    setFetchedDetails(prev => ({ ...prev, ...detailsMap }));
+    setFetchedDetails(prev => {
+      let changed = false;
+      const nextDetails = { ...prev };
+      Object.keys(detailsMap).forEach(key => {
+        if (!prev[key] || JSON.stringify(prev[key]) !== JSON.stringify(detailsMap[key])) {
+          nextDetails[key] = detailsMap[key];
+          changed = true;
+        }
+      });
+      return changed ? nextDetails : prev;
+    });
+    
     setLoadingDetails(false);
     setIsManualRefreshing(false);
     try {
@@ -287,8 +297,25 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
   useEffect(() => {
     if (servers.length > 0) {
       fetchAllServerDetails(false);
+      const needsFetch = servers.some(s => {
+        const d = GLOBAL_INVENTORY_CACHE_STORE[s.id] || fetchedDetails[s.id];
+        return !d || !d.model || d.model === "N/A" || !d.bmcVersion || d.bmcVersion === "N/A";
+      });
+      if (needsFetch) {
+        fetchAllServerDetails(true);
+      }
     }
-  }, [servers.length]);
+  }, [servers]);
+
+  useEffect(() => {
+    const handleSync = () => fetchAllServerDetails(true);
+    window.addEventListener("fleet-updated", handleSync);
+    window.addEventListener("inventory-updated", handleSync);
+    return () => {
+      window.removeEventListener("fleet-updated", handleSync);
+      window.removeEventListener("inventory-updated", handleSync);
+    };
+  }, [servers]);
 
   // SSDP Cleared state persistence
   const [isSsdpCleared, setIsSsdpCleared] = useState<boolean>(() => {
@@ -632,7 +659,9 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
         const serial = validDetailSerial || validRawSerial;
 
         if (!serial) {
-          return <span className="font-mono text-[11px] text-amber-700 font-medium animate-pulse">Fetching...</span>;
+          return loadingDetails
+            ? <span className="font-mono text-[11px] text-amber-700 font-medium animate-pulse">Fetching...</span>
+            : <span className="font-mono text-[11px] text-slate-500">N/A</span>;
         }
 
         return <span className="font-mono text-[11px] font-bold text-slate-800">{serial}</span>;
@@ -642,13 +671,15 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
       case "model": {
         const isFakeMdl = !server.model || server.model.includes("MD300A3R") || server.model === server.name;
         if (detail?.model && detail.model !== "N/A" && detail.model !== "NA") {
-          const mfg = detail.manufacturer && detail.manufacturer !== "N/A" ? detail.manufacturer : "Tyrone Systems";
+          const mfg = detail.manufacturer && detail.manufacturer !== "N/A" ? detail.manufacturer : (server.vendor || "Tyrone Systems");
           return <span>{`${mfg} - ${detail.model}`}</span>;
         } else if (!isFakeMdl && server.model && server.model !== "N/A") {
           const displayModel = server.model.includes("Tyrone") ? server.model : `Tyrone Systems - ${server.model}`;
           return <span>{displayModel}</span>;
         }
-        return <span className="text-[11px] text-amber-700 font-medium animate-pulse">Fetching...</span>;
+        return loadingDetails
+          ? <span className="text-[11px] text-amber-700 font-medium animate-pulse">Fetching...</span>
+          : <span>{server.model || "Tyrone Server"}</span>;
       }
       case "weight": {
         const wVal = (server as any).weightKg || server.weight || (server as any).weight;
@@ -664,25 +695,45 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
       case "bmcVersion": {
         const bmcV = (detail?.bmcVersion && detail.bmcVersion !== "N/A" && detail.bmcVersion !== "NA")
           ? detail.bmcVersion
-          : ((server as any)?.bmcFw || (server as any)?.bmcVersion || "v3.88.0");
+          : ((server as any)?.bmcFw || (server as any)?.bmcVersion);
+        if (!bmcV) {
+          return loadingDetails
+            ? <span className="text-[11px] text-amber-700 font-medium animate-pulse">Fetching...</span>
+            : <span className="font-mono text-slate-500">N/A</span>;
+        }
         return <span className="font-mono text-slate-800">{bmcV}</span>;
       }
       case "biosVersion": {
         const biosV = (detail?.biosVersion && detail.biosVersion !== "N/A" && detail.biosVersion !== "NA")
           ? detail.biosVersion
-          : ((server as any)?.biosVersion || "v2.1a");
+          : ((server as any)?.biosVersion);
+        if (!biosV) {
+          return loadingDetails
+            ? <span className="text-[11px] text-amber-700 font-medium animate-pulse">Fetching...</span>
+            : <span className="font-mono text-slate-500">N/A</span>;
+        }
         return <span className="font-mono text-slate-800">{biosV}</span>;
       }
       case "cpuCount": {
         const cpus = (detail?.cpuCount && detail.cpuCount !== "N/A" && detail.cpuCount !== "NA")
           ? detail.cpuCount
-          : ((server as any)?.specs?.cpu || (server as any)?.cpuCount || "2 CPUs");
+          : ((server as any)?.specs?.cpu || (server as any)?.cpuCount);
+        if (!cpus) {
+          return loadingDetails
+            ? <span className="text-[11px] text-amber-700 font-medium animate-pulse">Fetching...</span>
+            : <span className="text-slate-500">N/A</span>;
+        }
         return <span className="text-slate-800">{cpus}</span>;
       }
       case "totalMemory": {
         const mem = (detail?.totalMemory && detail.totalMemory !== "N/A" && detail.totalMemory !== "NA")
           ? detail.totalMemory
-          : ((server as any)?.specs?.memory || (server as any)?.totalMemory || "128 GB");
+          : ((server as any)?.specs?.memory || (server as any)?.totalMemory);
+        if (!mem) {
+          return loadingDetails
+            ? <span className="text-[11px] text-amber-700 font-medium animate-pulse">Fetching...</span>
+            : <span className="text-slate-500">N/A</span>;
+        }
         return <span className="text-slate-800">{mem}</span>;
       }
       case "osDeploy":

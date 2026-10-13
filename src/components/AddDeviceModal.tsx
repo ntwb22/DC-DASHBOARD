@@ -4,6 +4,7 @@ import { validateBmcCredentials, fetchServerDetailsForAddition } from "../servic
 
 export interface AddDeviceModalProps {
   isOpen: boolean;
+  initialRack?: string;
   onClose: () => void;
   onAddDevice: (deviceData: any) => void;
   onBackToDevicesNotInHierarchy?: () => void;
@@ -39,6 +40,7 @@ export function parseIpList(raw: string): string[] {
 
 export function AddDeviceModal({
   isOpen,
+  initialRack,
   onClose,
   onAddDevice,
   onBackToDevicesNotInHierarchy
@@ -52,7 +54,13 @@ export function AddDeviceModal({
   const [bulkIps, setBulkIps] = useState("172.16.12.50\n172.16.12.51\n172.16.12.52");
   const [category, setCategory] = useState<"SM" | "AS">("SM");
   const [deviceType, setDeviceType] = useState("Server");
-  const [rack, setRack] = useState("");
+  const [rack, setRack] = useState(initialRack || "");
+
+  React.useEffect(() => {
+    if (initialRack) {
+      setRack(initialRack);
+    }
+  }, [initialRack, isOpen]);
 
   // Protocol Info
   const [protocol, setProtocol] = useState<"IPMI" | "SSH" | "WMI" | "HTTPS" | "SSH BMC">("IPMI");
@@ -87,7 +95,7 @@ export function AddDeviceModal({
 
 
   const quickValidateAndFetch = async (ip: string, u: string, p: string, cat: any) => {
-    const timeoutMs = 2000;
+    const timeoutMs = 8000;
     const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs));
     const validatePromise = (async () => {
       try {
@@ -108,106 +116,46 @@ export function AddDeviceModal({
     const userStr = ipmiUsername.trim() || "admin";
     const passStr = ipmiPassword.trim() || "netweb@123";
 
-    if (mode === "single") {
-      const trimmedName = name.trim();
-      const trimmedIp = ipAddress.trim();
+    try {
+      if (mode === "single") {
+        const trimmedName = name.trim();
+        const trimmedIp = ipAddress.trim();
 
-      if (!trimmedName && !trimmedIp) {
-        setFormError("Please enter a Device Name or IP Address.");
-        return;
-      }
-
-      const deviceIp = trimmedIp || `172.16.12.${Math.floor(Math.random() * 150) + 10}`;
-      const deviceName = trimmedName || `Tyrone Node (${deviceIp})`;
-
-      setIsSubmitting(true);
-      const fetchedInfo = await quickValidateAndFetch(deviceIp, userStr, passStr, category);
-      setIsSubmitting(false);
-
-      const generatedSerial = serialNumber.trim() || fetchedInfo?.serialNumber || undefined;
-      const modelName = fetchedInfo?.model || "RH21XM";
-      const manufacturerName = vendor.trim() !== "Tyrone Systems" ? vendor.trim() : (fetchedInfo?.manufacturer || (category === "AS" ? "ASRock" : "Tyrone Systems"));
-
-      const newDevice = {
-        id: `server-${Date.now()}`,
-        name: deviceName,
-        bmcIp: deviceIp,
-        bmcUsername: userStr,
-        bmcPassword: passStr,
-        category,
-        chassisUri: category === "AS" ? "/redfish/v1/Chassis/Self" : "/redfish/v1/Chassis/1",
-        model: modelName,
-        manufacturer: manufacturerName,
-        serialNumber: generatedSerial,
-        serial: generatedSerial,
-        powerStatus: fetchedInfo?.powerState === "Off" ? "OFF" : "ON",
-        healthStatus: fetchedInfo?.healthStatus || "OK",
-        health: fetchedInfo?.healthStatus || "OK",
-        rack: rack || "Rack 1",
-        deviceType,
-        protocol,
-        ipmiKey,
-        operatingSystem,
-        sizeU: sizeU.trim() || "1",
-        size: sizeU.trim() || "1",
-        deratedPowerW: deratedPowerW.trim() || "400",
-        powerW: deratedPowerW.trim() || "400",
-        weightKg: weightKg.trim() || "15",
-        weight: weightKg.trim() || "15",
-        vendor: manufacturerName,
-        owner,
-        description,
-        specs: {
-          cpu: fetchedInfo?.processorsCount ? `${fetchedInfo.processorsCount} CPUs` : "Multi-Core Processor",
-          cores: fetchedInfo?.processorsCount || 2,
-          memory: fetchedInfo?.memoryGiB ? `${fetchedInfo.memoryGiB} GB` : "N/A",
-          storage: fetchedInfo?.storageCount ? `${fetchedInfo.storageCount} Drives` : "N/A"
+        if (!trimmedName && !trimmedIp) {
+          setFormError("Please enter a Device Name or IP Address.");
+          return;
         }
-      };
 
-      persistDevicesBatch([newDevice]);
-      onAddDevice(newDevice);
-      onClose();
-    } else {
-      // BULK MODE
-      if (parsedBulkIps.length === 0) {
-        setFormError("Please enter at least one valid IP address or IP range (e.g. 172.16.12.50-60 or 172.16.12.50, 172.16.12.51).");
-        return;
-      }
+        const deviceIp = trimmedIp || `172.16.12.${Math.floor(Math.random() * 150) + 10}`;
+        const deviceName = trimmedName || `Tyrone Node (${deviceIp})`;
 
-      setIsSubmitting(true);
-      const namePrefix = name.trim();
-      const createdDevices: any[] = [];
-      const timestamp = Date.now();
+        setIsSubmitting(true);
+        let fetchedInfo: any = null;
+        try {
+          fetchedInfo = await quickValidateAndFetch(deviceIp, userStr, passStr, category);
+        } catch (_) {}
+        setIsSubmitting(false);
 
-      // Probe first IP to see if credentials work with fast timeout
-      const firstIp = parsedBulkIps[0];
-      const firstFetchedInfo = await quickValidateAndFetch(firstIp, userStr, passStr, category);
-      setIsSubmitting(false);
+        const generatedSerial = serialNumber.trim() || fetchedInfo?.serialNumber || undefined;
+        const modelName = fetchedInfo?.model || "RH21XM";
+        const manufacturerName = vendor.trim() !== "Tyrone Systems" ? vendor.trim() : (fetchedInfo?.manufacturer || (category === "AS" ? "ASRock" : "Tyrone Systems"));
 
-      parsedBulkIps.forEach((ip, idx) => {
-        const deviceName = namePrefix
-          ? (parsedBulkIps.length > 1 ? `${namePrefix} (${ip})` : namePrefix)
-          : `Tyrone Node (${ip})`;
-
-        const devId = `server-${timestamp}-${idx}-${Math.floor(Math.random() * 1000)}`;
-
-        const dev = {
-          id: devId,
+        const newDevice = {
+          id: `server-${Date.now()}`,
           name: deviceName,
-          bmcIp: ip,
+          bmcIp: deviceIp,
           bmcUsername: userStr,
           bmcPassword: passStr,
           category,
           chassisUri: category === "AS" ? "/redfish/v1/Chassis/Self" : "/redfish/v1/Chassis/1",
-          model: (idx === 0 && firstFetchedInfo?.model) || "RH21XM",
-          manufacturer: vendor.trim() !== "Tyrone Systems" ? vendor.trim() : ((idx === 0 && firstFetchedInfo?.manufacturer) || (category === "AS" ? "ASRock" : "Tyrone Systems")),
-          serialNumber: idx === 0 ? (serialNumber.trim() || firstFetchedInfo?.serialNumber) : undefined,
-          serial: idx === 0 ? (serialNumber.trim() || firstFetchedInfo?.serialNumber) : undefined,
-          powerStatus: (idx === 0 && firstFetchedInfo?.powerState === "Off") ? "OFF" : "ON",
-          healthStatus: "OK",
-          health: "OK",
-          rack: rack || "Rack 1",
+          model: modelName,
+          manufacturer: manufacturerName,
+          serialNumber: generatedSerial,
+          serial: generatedSerial,
+          powerStatus: fetchedInfo?.powerState === "Off" ? "OFF" : "ON",
+          healthStatus: fetchedInfo?.healthStatus || "OK",
+          health: fetchedInfo?.healthStatus || "OK",
+          rack: rack || initialRack || "Rack 1",
           deviceType,
           protocol,
           ipmiKey,
@@ -218,51 +166,154 @@ export function AddDeviceModal({
           powerW: deratedPowerW.trim() || "400",
           weightKg: weightKg.trim() || "15",
           weight: weightKg.trim() || "15",
-          vendor: category === "AS" ? "ASRock" : "Tyrone Systems",
+          vendor: manufacturerName,
+          bmcFw: fetchedInfo?.bmcFw || undefined,
+          bmcVersion: fetchedInfo?.bmcFw || undefined,
+          biosVersion: fetchedInfo?.biosVersion || undefined,
           owner,
           description,
           specs: {
-            cpu: (idx === 0 && firstFetchedInfo?.processorsCount) ? `${firstFetchedInfo.processorsCount} CPUs` : "Multi-Core Processor",
-            cores: (idx === 0 && firstFetchedInfo?.processorsCount) || 2,
-            memory: (idx === 0 && firstFetchedInfo?.memoryGiB) ? `${firstFetchedInfo.memoryGiB} GB` : "N/A",
-            storage: (idx === 0 && firstFetchedInfo?.storageCount) ? `${firstFetchedInfo.storageCount} Drives` : "N/A"
+            cpu: fetchedInfo?.processorsCount ? `${fetchedInfo.processorsCount} CPUs` : "Multi-Core Processor",
+            cores: fetchedInfo?.processorsCount || 2,
+            memory: fetchedInfo?.memoryGiB ? `${fetchedInfo.memoryGiB} GB` : "N/A",
+            storage: fetchedInfo?.storageCount ? `${fetchedInfo.storageCount} Drives` : "N/A"
           }
         };
 
-        createdDevices.push(dev);
-      });
+        await persistDevicesBatch([newDevice]);
+        try {
+          onAddDevice(newDevice);
+        } catch (err) {
+          console.warn("onAddDevice callback notice:", err);
+        }
+        onClose();
+      } else {
+        // BULK MODE
+        if (parsedBulkIps.length === 0) {
+          setFormError("Please enter at least one valid IP address or IP range (e.g. 172.16.12.50-60 or 172.16.12.50, 172.16.12.51).");
+          return;
+        }
 
-      persistDevicesBatch(createdDevices);
+        setIsSubmitting(true);
+        const namePrefix = name.trim();
+        const createdDevices: any[] = [];
+        const timestamp = Date.now();
 
-      // Invoke callback for created devices
-      createdDevices.forEach(dev => onAddDevice(dev));
-      onClose();
+        // Probe first IP to see if credentials work with fast timeout
+        const firstIp = parsedBulkIps[0];
+        let firstFetchedInfo: any = null;
+        try {
+          firstFetchedInfo = await quickValidateAndFetch(firstIp, userStr, passStr, category);
+        } catch (_) {}
+        setIsSubmitting(false);
+
+        parsedBulkIps.forEach((ip, idx) => {
+          const deviceName = namePrefix
+            ? (parsedBulkIps.length > 1 ? `${namePrefix} (${ip})` : namePrefix)
+            : `Tyrone Node (${ip})`;
+
+          const devId = `server-${timestamp}-${idx}-${Math.floor(Math.random() * 1000)}`;
+
+          const dev = {
+            id: devId,
+            name: deviceName,
+            bmcIp: ip,
+            bmcUsername: userStr,
+            bmcPassword: passStr,
+            category,
+            chassisUri: category === "AS" ? "/redfish/v1/Chassis/Self" : "/redfish/v1/Chassis/1",
+            model: (idx === 0 && firstFetchedInfo?.model) || "RH21XM",
+            manufacturer: vendor.trim() !== "Tyrone Systems" ? vendor.trim() : ((idx === 0 && firstFetchedInfo?.manufacturer) || (category === "AS" ? "ASRock" : "Tyrone Systems")),
+            serialNumber: idx === 0 ? (serialNumber.trim() || firstFetchedInfo?.serialNumber) : undefined,
+            serial: idx === 0 ? (serialNumber.trim() || firstFetchedInfo?.serialNumber) : undefined,
+            powerStatus: (idx === 0 && firstFetchedInfo?.powerState === "Off") ? "OFF" : "ON",
+            healthStatus: "OK",
+            health: "OK",
+            rack: rack || initialRack || "Rack 1",
+            deviceType,
+            protocol,
+            ipmiKey,
+            operatingSystem,
+            sizeU: sizeU.trim() || "1",
+            size: sizeU.trim() || "1",
+            deratedPowerW: deratedPowerW.trim() || "400",
+            powerW: deratedPowerW.trim() || "400",
+            weightKg: weightKg.trim() || "15",
+            weight: weightKg.trim() || "15",
+            vendor: category === "AS" ? "ASRock" : "Tyrone Systems",
+            bmcFw: (idx === 0 && firstFetchedInfo?.bmcFw) || undefined,
+            bmcVersion: (idx === 0 && firstFetchedInfo?.bmcFw) || undefined,
+            biosVersion: (idx === 0 && firstFetchedInfo?.biosVersion) || undefined,
+            owner,
+            description,
+            specs: {
+              cpu: (idx === 0 && firstFetchedInfo?.processorsCount) ? `${firstFetchedInfo.processorsCount} CPUs` : "Multi-Core Processor",
+              cores: (idx === 0 && firstFetchedInfo?.processorsCount) || 2,
+              memory: (idx === 0 && firstFetchedInfo?.memoryGiB) ? `${firstFetchedInfo.memoryGiB} GB` : "N/A",
+              storage: (idx === 0 && firstFetchedInfo?.storageCount) ? `${firstFetchedInfo.storageCount} Drives` : "N/A"
+            }
+          };
+
+          createdDevices.push(dev);
+        });
+
+        await persistDevicesBatch(createdDevices);
+
+        // Invoke callback for created devices
+        createdDevices.forEach(dev => {
+          try {
+            onAddDevice(dev);
+          } catch (err) {
+            console.warn("onAddDevice callback notice:", err);
+          }
+        });
+        onClose();
+      }
+    } catch (err: any) {
+      console.error("Error saving device:", err);
+      setFormError(err?.message || "Failed to save device. Please check input fields.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const persistDevicesBatch = (devices: any[]) => {
+  const persistDevicesBatch = async (devices: any[]) => {
     // 1. Remove from deleted keys in localStorage
     try {
       const rawDel = localStorage.getItem("tyrone_deleted_keys");
       if (rawDel) {
         const delSet = new Set<string>(JSON.parse(rawDel));
         devices.forEach(dev => {
-          delSet.delete(dev.id.toLowerCase());
-          delSet.delete(dev.bmcIp.toLowerCase());
-          delSet.delete(dev.name.toLowerCase());
+          const ipLower = (dev.bmcIp || "").toLowerCase().trim();
+          const idLower = (dev.id || "").toLowerCase().trim();
+          const nameLower = (dev.name || "").toLowerCase().trim();
+
+          const toRemove: string[] = [];
+          delSet.forEach(k => {
+            const lk = String(k).toLowerCase().trim();
+            if (
+              (ipLower && (lk === ipLower || lk.includes(ipLower) || ipLower.includes(lk))) ||
+              (idLower && (lk === idLower || lk.includes(idLower))) ||
+              (nameLower && (lk === nameLower || lk.includes(nameLower)))
+            ) {
+              toRemove.push(k);
+            }
+          });
+          toRemove.forEach(k => delSet.delete(k));
         });
         localStorage.setItem("tyrone_deleted_keys", JSON.stringify(Array.from(delSet)));
       }
     } catch (_) {}
 
     // 2. Update tyrone_fleet & tyrone_server_racks in localStorage
+    let updatedFleet: any[] = [];
     try {
       const saved = localStorage.getItem("tyrone_fleet");
       const currentFleet = saved ? JSON.parse(saved) : [];
       const newIps = new Set(devices.map(d => d.bmcIp));
       const newIds = new Set(devices.map(d => d.id));
 
-      const updatedFleet = [
+      updatedFleet = [
         ...currentFleet.filter((s: any) => !newIds.has(s.id) && !newIps.has(s.bmcIp)),
         ...devices
       ];
@@ -276,36 +327,71 @@ export function AddDeviceModal({
       });
       localStorage.setItem("tyrone_server_racks", JSON.stringify(racksObj));
 
-      // 3. Backend persistence for each server
+      // Update global inventory cache with real fetched hardware details
+      const cachedRaw = localStorage.getItem("tyrone_global_inv_cache");
+      const cacheObj = cachedRaw ? JSON.parse(cachedRaw) : {};
       devices.forEach(dev => {
-        fetch("http://127.0.0.1:8000/api/servers", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: dev.id,
-            name: dev.name,
-            ip: dev.bmcIp,
-            vendor: dev.category,
-            username: dev.bmcUsername,
-            password: dev.bmcPassword,
-            rack: dev.rack
-          })
-        }).catch(() => {
-          fetch("/api/local/fleet", {
+        const itemDetail = {
+          serialNumber: dev.serialNumber || dev.serial || "N/A",
+          model: dev.model || "N/A",
+          manufacturer: dev.manufacturer || dev.vendor || "Tyrone Systems",
+          bmcVersion: dev.bmcFw || dev.bmcVersion || "N/A",
+          biosVersion: dev.biosVersion || "N/A",
+          cpuCount: dev.specs?.cpu || "N/A",
+          totalMemory: dev.specs?.memory || "N/A",
+          osInfo: "N/A"
+        };
+        cacheObj[dev.id] = itemDetail;
+        if (dev.bmcIp) {
+          cacheObj[dev.bmcIp] = itemDetail;
+        }
+      });
+      localStorage.setItem("tyrone_global_inv_cache", JSON.stringify(cacheObj));
+    } catch (err) {
+      console.warn("Error updating localStorage caches:", err);
+    }
+
+    // 3. Backend persistence for each server (await all posts)
+    try {
+      await Promise.all(devices.map(async (dev) => {
+        const payload = {
+          id: dev.id,
+          name: dev.name,
+          ip: dev.bmcIp,
+          vendor: (dev.category === "AS" || String(dev.vendor || "").toLowerCase().includes("asrock")) ? "AS" : "SM",
+          username: dev.bmcUsername || dev.username || "admin",
+          password: dev.bmcPassword || dev.password || "netweb@123",
+          rack: dev.rack || "Rack 1"
+        };
+        try {
+          const res = await fetch("/api/servers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) {
+            await fetch("/api/local/fleet", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(updatedFleet)
+            }).catch(() => {});
+          }
+        } catch {
+          await fetch("/api/local/fleet", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(updatedFleet)
           }).catch(() => {});
-        });
-      });
-
-      // 4. Dispatch events for instant UI update
-      window.dispatchEvent(new CustomEvent("fleet-updated", { detail: { devices } }));
-      window.dispatchEvent(new CustomEvent("inventory-updated", { detail: { devices } }));
-      window.dispatchEvent(new CustomEvent("hierarchy-updated"));
+        }
+      }));
     } catch (err) {
-      console.warn("Error persisting batch devices to localStorage:", err);
+      console.warn("Error persisting devices to backend:", err);
     }
+
+    // 4. Dispatch events for instant UI update
+    window.dispatchEvent(new CustomEvent("fleet-updated", { detail: { newDevice: devices[0], devices } }));
+    window.dispatchEvent(new CustomEvent("inventory-updated", { detail: { newDevice: devices[0], devices } }));
+    window.dispatchEvent(new CustomEvent("hierarchy-updated"));
   };
 
   return (

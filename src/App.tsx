@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { ServerInventory } from "./components/ServerInventory";
 import { RedfishService, validateBmcCredentials } from "./services/redfishService";
 import { Dashboard } from "./components/Dashboard";
-import { GlobalInventory } from "./components/GlobalInventory";
+import { GlobalInventory, GLOBAL_INVENTORY_CACHE_STORE } from "./components/GlobalInventory";
 import { HierarchyView } from "./components/HierarchyView";
 import { EventsView } from "./components/EventsView";
 import { ReliabilityView } from "./components/ReliabilityView";
@@ -500,7 +500,13 @@ export default function App() {
           deratedPowerW: item.deratedPowerW || item.powerW || 750,
           powerW: item.powerW || item.deratedPowerW || 750,
           isCustom: true,
-          rack: item.rack || ""
+          rack: item.rack || "",
+          vendor: item.vendor || item.category || "SM",
+          category: item.category || item.vendor || "SM",
+          model: item.model,
+          serialNumber: item.serialNumber || item.serial,
+          chassisUri: item.chassisUri,
+          specs: item.specs
         };
       });
 
@@ -524,6 +530,7 @@ export default function App() {
           const customOverride = mappedFleet.find(f => f.id === env.id || f.bmcIp === env.bmcIp);
           if (customOverride && !isServerDeleted(customOverride)) {
             merged.push({
+              ...env,
               ...customOverride,
               isCustom: true
             });
@@ -835,6 +842,10 @@ export default function App() {
       setNodeOsSshPort(22);
 
       setShowAddNodeModal(false);
+      
+      // Request background refresh of the specific new node from the backend immediately without reloading the UI
+      fetch(`/api/inventory?id=${newNode.id}`).catch(() => null);
+
       fetchServers();
     } catch (err: any) {
       console.error("Error saving new node:", err);
@@ -1002,6 +1013,9 @@ export default function App() {
       }
     } catch (_) { }
 
+    // 4. Invalidate frontend cache store
+    delete GLOBAL_INVENTORY_CACHE_STORE[id];
+
     setServers(prev => prev.filter(s => s.id !== id));
     window.dispatchEvent(new CustomEvent("fleet-updated"));
     window.dispatchEvent(new CustomEvent("hierarchy-updated"));
@@ -1066,6 +1080,11 @@ export default function App() {
         localStorage.setItem("tyrone_server_racks", JSON.stringify(sRacks));
       }
     } catch (_) { }
+
+    // 4. Invalidate frontend cache store
+    ids.forEach(id => {
+      delete GLOBAL_INVENTORY_CACHE_STORE[id];
+    });
 
     setServers(prev => prev.filter(s => !idSet.has(s.id)));
     window.dispatchEvent(new CustomEvent("fleet-updated"));
@@ -1699,7 +1718,54 @@ export default function App() {
       <AddDeviceModal
         isOpen={showAddNodeModal}
         onClose={() => setShowAddNodeModal(false)}
-        onAddDevice={() => {
+        onAddDevice={(newDev) => {
+          if (newDev) {
+            const devIp = (newDev.bmcIp || newDev.ip || "").trim();
+            const devId = newDev.id || `srv-${devIp}`;
+            try {
+              const rawDel = localStorage.getItem("tyrone_deleted_keys");
+              if (rawDel) {
+                const delSet = new Set<string>(JSON.parse(rawDel));
+                const ipLower = devIp.toLowerCase();
+                const toRemove: string[] = [];
+                delSet.forEach(k => {
+                  const lk = String(k).toLowerCase();
+                  if (lk === devId.toLowerCase() || (ipLower && (lk === ipLower || lk.includes(ipLower) || ipLower.includes(lk)))) {
+                    toRemove.push(k);
+                  }
+                });
+                toRemove.forEach(k => delSet.delete(k));
+                localStorage.setItem("tyrone_deleted_keys", JSON.stringify(Array.from(delSet)));
+              }
+            } catch (_) {}
+
+            const devObj: ServerProfile = {
+              id: devId,
+              name: newDev.name || `Server (${devIp})`,
+              bmcIp: devIp,
+              bmcUsername: newDev.bmcUsername || newDev.username || "admin",
+              bmcPassword: newDev.bmcPassword || newDev.password || "",
+              osIp: newDev.osIp || devIp,
+              osUsername: newDev.osUsername || "root",
+              osPassword: newDev.osPassword || "",
+              osSshPort: 22,
+              weight: newDev.weight || newDev.weightKg || "22.8 kg",
+              weightKg: newDev.weightKg || newDev.weight || "22.8 kg",
+              size: newDev.size || newDev.sizeU || "2U",
+              sizeU: newDev.sizeU || newDev.size || "2U",
+              deratedPowerW: newDev.deratedPowerW || newDev.powerW || 750,
+              powerW: newDev.powerW || newDev.deratedPowerW || 750,
+              isCustom: true,
+              rack: newDev.rack || "Rack 1",
+              model: newDev.model,
+              vendor: newDev.vendor || newDev.category || "SM",
+              category: newDev.category || "SM",
+              serialNumber: newDev.serialNumber || newDev.serial,
+              chassisUri: newDev.chassisUri
+            };
+            setServers(prev => [...prev.filter(s => s.id !== devId && s.bmcIp !== devIp), devObj]);
+            setActiveServerId(devId);
+          }
           fetchServers();
           setShowAddNodeModal(false);
         }}
