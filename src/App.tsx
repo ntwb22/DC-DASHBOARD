@@ -1511,101 +1511,85 @@ export default function App() {
               </button>
             </div>
           ) : (
-            <AnimatePresence mode="wait">
-              {activeTab === "dashboard" && (
-                <motion.div key="tab-dashboard" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full">
-                  <Dashboard
-                    servers={servers}
-                    serverStatuses={serverStatuses}
-                    alerts={alerts}
-                    onSelectServer={handleSelectServer}
-                  />
-                </motion.div>
-              )}
+            // Keep-alive panels: all views stay mounted; only CSS display toggles.
+            // This prevents component tree destruction on tab switch, which was
+            // causing module-level caches (GLOBAL_INVENTORY_CACHE_STORE, etc.)
+            // to re-initialize and useEffect hooks to re-fire network requests.
+            <div className="w-full">
+              <div style={{ display: activeTab === "dashboard" ? undefined : "none" }}>
+                <Dashboard
+                  servers={servers}
+                  serverStatuses={serverStatuses}
+                  alerts={alerts}
+                  onSelectServer={handleSelectServer}
+                />
+              </div>
 
-              {activeTab === "hierarchy" && (
-                <motion.div key="tab-hierarchy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full">
-                  <ErrorBoundary>
-                    <HierarchyView
-                      servers={servers}
-                      serverStatuses={serverStatuses}
-                      onSelectServer={handleSelectServer}
-                      onOpenInventoryDetails={(id) => {
-                        if (id) setActiveServerId(id);
-                        setActiveTab("inventory_details");
-                      }}
-                      selectedServerId={activeServerId}
-                      alerts={alerts}
-                      onEditServer={(server) => handleStartEditNode(server)}
-                    />
-                  </ErrorBoundary>
-                </motion.div>
-              )}
-
-              {activeTab === "global_inventory" && (
-                <motion.div key="tab-global_inventory" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full">
-                  <GlobalInventory
+              <div style={{ display: activeTab === "hierarchy" ? undefined : "none" }}>
+                <ErrorBoundary>
+                  <HierarchyView
                     servers={servers}
                     serverStatuses={serverStatuses}
                     onSelectServer={handleSelectServer}
-                    onAddServer={() => setShowAddNodeModal(true)}
-                    onEditServer={(server) => handleStartEditNode(server)}
-                    onDeleteServer={(id) => handleDeleteNode(id)}
-                    onDeleteServers={(ids) => handleDeleteNodes(ids)}
-                  />
-                </motion.div>
-              )}
-
-              {activeTab === "events" && (
-                <motion.div key="tab-events" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full">
-                  <EventsView
-                    alerts={alerts}
-                    onClearAlerts={clearAlertHistory}
-                    onScan={() => runHardwareScan(true)}
-                    isScanning={isScanning}
-                    lastScanTime={lastScanTime}
-                    onSelectServer={handleSelectServer}
-                    servers={servers}
-                  />
-                </motion.div>
-              )}
-
-
-
-              {activeTab === "reliability" && (
-                <motion.div key="tab-reliability" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full">
-                  <ReliabilityView servers={servers} serverStatuses={serverStatuses} onSelectServer={handleSelectServer} />
-                </motion.div>
-              )}
-
-              {activeTab === "sustainability" && (
-                <motion.div key="tab-sustainability" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full">
-                  <SustainabilityView servers={servers} alerts={alerts} serverStatuses={serverStatuses} />
-                </motion.div>
-              )}
-
-
-
-              {activeTab === "reports" && (
-                <motion.div key="tab-reports" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full flex-1 flex flex-col">
-                  <ReportsView servers={servers} />
-                </motion.div>
-              )}
-
-              {activeTab === "settings" && (
-                <motion.div key="tab-settings" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full">
-                  <SettingsView
-                    activeUsername={loginUsername || localStorage.getItem("tyrone_user") || "admin"}
-                    onUpdateUsername={(newName) => {
-                      setLoginUsername(newName);
-                      try {
-                        localStorage.setItem("tyrone_user", newName);
-                      } catch (_) { }
+                    onOpenInventoryDetails={(id) => {
+                      if (id) setActiveServerId(id);
+                      setActiveTab("inventory_details");
                     }}
+                    selectedServerId={activeServerId}
+                    alerts={alerts}
+                    onEditServer={(server) => handleStartEditNode(server)}
                   />
-                </motion.div>
-              )}
-            </AnimatePresence>
+                </ErrorBoundary>
+              </div>
+
+              <div style={{ display: activeTab === "global_inventory" ? undefined : "none" }}>
+                <GlobalInventory
+                  servers={servers}
+                  serverStatuses={serverStatuses}
+                  onSelectServer={handleSelectServer}
+                  onAddServer={() => setShowAddNodeModal(true)}
+                  onEditServer={(server) => handleStartEditNode(server)}
+                  onDeleteServer={(id) => handleDeleteNode(id)}
+                  onDeleteServers={(ids) => handleDeleteNodes(ids)}
+                />
+              </div>
+
+              <div style={{ display: activeTab === "events" ? undefined : "none" }}>
+                <EventsView
+                  alerts={alerts}
+                  onClearAlerts={clearAlertHistory}
+                  onScan={() => runHardwareScan(true)}
+                  isScanning={isScanning}
+                  lastScanTime={lastScanTime}
+                  onSelectServer={handleSelectServer}
+                  servers={servers}
+                />
+              </div>
+
+              <div style={{ display: activeTab === "reliability" ? undefined : "none" }}>
+                <ReliabilityView servers={servers} serverStatuses={serverStatuses} onSelectServer={handleSelectServer} />
+              </div>
+
+              <div style={{ display: activeTab === "sustainability" ? undefined : "none" }}>
+                <SustainabilityView servers={servers} alerts={alerts} serverStatuses={serverStatuses} />
+              </div>
+
+              <div style={{ display: activeTab === "reports" ? undefined : "none" }} className="flex-1 flex flex-col">
+                <ReportsView servers={servers} />
+              </div>
+
+              <div style={{ display: activeTab === "settings" ? undefined : "none" }}>
+                <SettingsView
+                  activeUsername={loginUsername || localStorage.getItem("tyrone_user") || "admin"}
+                  onUpdateUsername={(newName) => {
+                    setLoginUsername(newName);
+                    try {
+                      localStorage.setItem("tyrone_user", newName);
+                    } catch (_) { }
+                  }}
+                />
+              </div>
+            </div>
           )}
         </main>
       </div>

@@ -86,6 +86,21 @@ export function AddDeviceModal({
   };
 
 
+  const quickValidateAndFetch = async (ip: string, u: string, p: string, cat: any) => {
+    const timeoutMs = 2000;
+    const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs));
+    const validatePromise = (async () => {
+      try {
+        await validateBmcCredentials(ip, u, p, cat);
+        return await fetchServerDetailsForAddition(ip, u, p, cat);
+      } catch (err) {
+        console.warn("BMC ping/connection returned warning:", err);
+        return null;
+      }
+    })();
+    return (await Promise.race([validatePromise, timeoutPromise])) as any;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
@@ -106,13 +121,7 @@ export function AddDeviceModal({
       const deviceName = trimmedName || `Tyrone Node (${deviceIp})`;
 
       setIsSubmitting(true);
-      let fetchedInfo: any = null;
-      try {
-        await validateBmcCredentials(deviceIp, userStr, passStr, category);
-        fetchedInfo = await fetchServerDetailsForAddition(deviceIp, userStr, passStr, category);
-      } catch (err: any) {
-        console.warn("BMC ping/connection returned warning, creating device profile:", err);
-      }
+      const fetchedInfo = await quickValidateAndFetch(deviceIp, userStr, passStr, category);
       setIsSubmitting(false);
 
       const generatedSerial = serialNumber.trim() || fetchedInfo?.serialNumber || undefined;
@@ -171,15 +180,9 @@ export function AddDeviceModal({
       const createdDevices: any[] = [];
       const timestamp = Date.now();
 
-      // Probe first IP to see if credentials work
+      // Probe first IP to see if credentials work with fast timeout
       const firstIp = parsedBulkIps[0];
-      let firstFetchedInfo: any = null;
-      try {
-        await validateBmcCredentials(firstIp, userStr, passStr, category);
-        firstFetchedInfo = await fetchServerDetailsForAddition(firstIp, userStr, passStr, category);
-      } catch (err: any) {
-        console.warn("First BMC ping warning in bulk add:", err);
-      }
+      const firstFetchedInfo = await quickValidateAndFetch(firstIp, userStr, passStr, category);
       setIsSubmitting(false);
 
       parsedBulkIps.forEach((ip, idx) => {
@@ -298,6 +301,7 @@ export function AddDeviceModal({
 
       // 4. Dispatch events for instant UI update
       window.dispatchEvent(new CustomEvent("fleet-updated", { detail: { devices } }));
+      window.dispatchEvent(new CustomEvent("inventory-updated", { detail: { devices } }));
       window.dispatchEvent(new CustomEvent("hierarchy-updated"));
     } catch (err) {
       console.warn("Error persisting batch devices to localStorage:", err);

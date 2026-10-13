@@ -33,10 +33,12 @@ interface EventSubscription {
   created: string;
 }
 
+let GLOBAL_EVENTS_CACHE_STORE: HardwareLog[] = [];
+
 export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScanTime, onSelectServer, servers = [] }: EventsViewProps) {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
-  const [liveFetchedLogs, setLiveFetchedLogs] = useState<HardwareLog[]>([]);
+  const [liveFetchedLogs, setLiveFetchedLogs] = useState<HardwareLog[]>(() => GLOBAL_EVENTS_CACHE_STORE);
   const [isRefreshingLogs, setIsRefreshingLogs] = useState<boolean>(false);
   const [selectedSeverityFilter, setSelectedSeverityFilter] = useState<string>("All");
   const [fetchFullHistory, setFetchFullHistory] = useState<boolean>(false);
@@ -103,7 +105,9 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
       const allBmcLogs = bmcResults.flat();
 
       const merged = [...allBmcLogs, ...backendLogs];
-      setLiveFetchedLogs((fetchFullHistory || pullFull) ? merged : merged.slice(0, 50));
+      const finalLogs = (fetchFullHistory || pullFull) ? merged : merged.slice(0, 50);
+      GLOBAL_EVENTS_CACHE_STORE = finalLogs;
+      setLiveFetchedLogs(finalLogs);
     } catch (_) {
     } finally {
       setIsRefreshingLogs(false);
@@ -111,7 +115,9 @@ export function EventsView({ alerts, onClearAlerts, onScan, isScanning, lastScan
   };
 
   useEffect(() => {
-    fetchLiveLogs();
+    if (GLOBAL_EVENTS_CACHE_STORE.length === 0) {
+      fetchLiveLogs();
+    }
     const handleLiveEvent = () => {
       fetchLiveLogs();
     };

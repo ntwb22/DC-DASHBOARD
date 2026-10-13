@@ -39,7 +39,7 @@ class RedfishHttpClientPool:
             max_connections=max_connections,
             keepalive_expiry=30.0
         )
-        self.timeout = httpx.Timeout(5.0, connect=3.0)
+        self.timeout = httpx.Timeout(15.0, connect=5.0)
         self._client: Optional[httpx.AsyncClient] = None
 
     def get_client(self) -> httpx.AsyncClient:
@@ -57,37 +57,22 @@ class RedfishHttpClientPool:
 
 http_pool = RedfishHttpClientPool()
 
-# Session Token Cache: bmc_ip -> {"token": str, "location": str, "created_at": float}
-SESSION_TOKEN_CACHE: Dict[str, Dict[str, Any]] = {}
+from redfish_backend import REDFISH_BACKEND_SESSION_CACHE, get_or_acquire_session_context
 
-async def get_or_acquire_session_token(client: httpx.AsyncClient, bmc_ip: str, username: str, password: str) -> Optional[str]:
-    """Acquires or reuses X-Auth-Token via /redfish/v1/SessionService/Sessions."""
-    now = time.time()
-    cached = SESSION_TOKEN_CACHE.get(bmc_ip)
-    if cached and (now - cached["created_at"] < 1500): # 25 minute TTL
-        return cached["token"]
+# Session Token Cache: bmc_ip -> {"token": str, "cookies": dict, "location": str, "created_at": float}
+SESSION_TOKEN_CACHE: Dict[str, Dict[str, Any]] = REDFISH_BACKEND_SESSION_CACHE
 
-    clean_ip = bmc_ip.lstrip("http://").lstrip("https://").strip()
-    base_url = f"https://{clean_ip}"
-    url = f"{base_url}/redfish/v1/SessionService/Sessions"
+async def get_or_acquire_session_token(client: httpx.AsyncClient, bmc_ip: str, username: str, password: str, force_refresh: bool = False) -> Optional[str]:
+    """Acquires or reuses X-Auth-Token via get_or_acquire_session_context with lock protection."""
+    from redfish_backend import get_or_acquire_session_context
+    ctx = await get_or_acquire_session_context(None, bmc_ip, username, password, force_refresh=force_refresh)
+    return ctx.get("token") if isinstance(ctx, dict) else None
 
-    try:
-        resp = await client.post(
-            url,
-            json={"UserName": username, "Password": password},
-            headers={"Content-Type": "application/json"},
-            timeout=5.0
-        )
-        if resp.status_code in (200, 201):
-            token = resp.headers.get("X-Auth-Token") or resp.json().get("Token")
-            location = resp.headers.get("Location")
-            if token:
-                SESSION_TOKEN_CACHE[bmc_ip] = {"token": token, "location": location, "created_at": now}
-                logger.info(f"[Auth] Acquired X-Auth-Token for BMC {clean_ip}")
-                return token
-    except Exception as e:
-        logger.debug(f"[Auth] Session creation failed for {clean_ip}: {e}")
-    return None
+async def get_or_acquire_session_info(client: httpx.AsyncClient, bmc_ip: str, username: str, password: str, force_refresh: bool = False) -> Tuple[Optional[str], Optional[Dict[str, str]]]:
+    """Acquires or reuses X-Auth-Token and session cookies via get_or_acquire_session_context."""
+    from redfish_backend import get_or_acquire_session_context
+    ctx = await get_or_acquire_session_context(None, bmc_ip, username, password, force_refresh=force_refresh)
+    return (ctx.get("token"), ctx.get("cookies")) if isinstance(ctx, dict) else (None, None)
 
 # ============================================================================
 # 2. Resilience & Circuit Breaker Pattern
@@ -329,6 +314,8 @@ class SSERedfishDaemonWorker:
         self.last_event_id: Optional[str] = None
         self.status: str = "OK"
         self.sse_supported: bool = True
+        self.fallback_poll_interval: float = 10.0
+        self._last_fallback_poll: float = 0.0
 
     async def start(self):
         if self.running:
@@ -354,10 +341,10 @@ class SSERedfishDaemonWorker:
         """Dynamically queries /redfish/v1/EventService to retrieve ServerSentEventUri."""
         event_service_url = f"{base_url}/redfish/v1/EventService"
         try:
-            resp = await client.get(event_service_url, headers=headers, auth=auth, timeout=4.0)
+            resp = await client.get(event_service_url, headers=headers, auth=auth, timeout=15.0)
             if resp.status_code in (401, 403):
                 logger.warning(f"[SSE Auth] 401/403 on EventService discovery for {self.bmc_ip}. Evicting cached token...")
-                SESSION_TOKEN_CACHE.pop(self.bmc_ip, None)
+                await get_or_acquire_session_info(client, self.bmc_ip, self.username, self.password, force_refresh=True)
             elif resp.status_code == 200:
                 data = resp.json()
                 sse_uri = data.get("ServerSentEventUri")
@@ -374,10 +361,12 @@ class SSERedfishDaemonWorker:
         """On-demand SEL (System Event Log) fetcher to retrieve hardware event entries."""
         base_url = f"https://{self.bmc_ip}"
         client = http_pool.get_client()
-        token = await get_or_acquire_session_token(client, self.bmc_ip, self.username, self.password)
+        token, cookies = await get_or_acquire_session_info(client, self.bmc_ip, self.username, self.password)
         headers = {"Accept": "application/json"}
         if token:
             headers["X-Auth-Token"] = token
+        if cookies:
+            headers["Cookie"] = "; ".join([f"{k}={v}" for k, v in cookies.items()])
         auth = None if token else (self.username, self.password)
 
         sel_urls = [
@@ -389,9 +378,9 @@ class SSERedfishDaemonWorker:
         entries = []
         for url in sel_urls:
             try:
-                resp = await client.get(url, headers=headers, auth=auth, timeout=5.0)
+                resp = await client.get(url, headers=headers, auth=auth, timeout=15.0)
                 if resp.status_code in (401, 403):
-                    SESSION_TOKEN_CACHE.pop(self.bmc_ip, None)
+                    await get_or_acquire_session_info(client, self.bmc_ip, self.username, self.password, force_refresh=True)
                 elif resp.status_code == 200:
                     data = resp.json()
                     entries = data.get("Members", [])
@@ -401,25 +390,130 @@ class SSERedfishDaemonWorker:
                 logger.debug(f"[SEL Fetch] Notice on {self.bmc_ip}: {e}")
         return entries
 
+    async def _execute_rest_fallback_poll(self):
+        """
+        Fallback REST polling when SSE stream fails or CircuitBreaker is OPEN.
+        Fetches lightweight GET requests to thermal and system endpoints
+        (/redfish/v1/Chassis/Self/Thermal, /redfish/v1/Systems/Self)
+        so dashboard panels and tables continue updating smoothly.
+        """
+        clean_ip = self.bmc_ip
+        base_url = f"https://{clean_ip}"
+        client = http_pool.get_client()
+
+        resolved_paths = await db.get_resolved_paths(clean_ip) or {}
+        s_path = resolved_paths.get("systems", "/redfish/v1/Systems/Self")
+        c_path = resolved_paths.get("chassis", "/redfish/v1/Chassis/Self")
+
+        token, cookies = await get_or_acquire_session_info(client, clean_ip, self.username, self.password)
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["X-Auth-Token"] = token
+        if cookies:
+            headers["Cookie"] = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+        auth = None if token else (self.username, self.password)
+
+        poll_success = False
+
+        # Lightweight GET 1: Thermal metrics (/redfish/v1/Chassis/Self/Thermal)
+        thermal_path = f"{c_path}/Thermal" if not c_path.endswith("/Thermal") else c_path
+        thermal_url = f"{base_url}{thermal_path}"
+        try:
+            resp = await client.get(thermal_url, headers=headers, auth=auth, timeout=15.0)
+            if resp.status_code in (401, 403):
+                token, cookies = await get_or_acquire_session_info(client, clean_ip, self.username, self.password, force_refresh=True)
+                if token:
+                    headers["X-Auth-Token"] = token
+                if cookies:
+                    headers["Cookie"] = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+                auth = None if token else (self.username, self.password)
+                resp = await client.get(thermal_url, headers=headers, auth=auth, timeout=15.0)
+
+            if resp.status_code == 200:
+                poll_success = True
+                thermal_data = resp.json()
+                inv = await db.get_server_inventory(self.server_id) or {}
+                raw_inv = inv.get("inventory_data", {})
+                raw_inv["thermal"] = thermal_data
+                await db.upsert_server_inventory(self.server_id, self.vendor, raw_inv, {})
+            elif resp.status_code == 404 and "/Chassis/Self" in thermal_url:
+                fb_url = thermal_url.replace("/Chassis/Self", "/Chassis/1")
+                resp_fb = await client.get(fb_url, headers=headers, auth=auth, timeout=15.0)
+                if resp_fb.status_code == 200:
+                    poll_success = True
+                    thermal_data = resp_fb.json()
+                    inv = await db.get_server_inventory(self.server_id) or {}
+                    raw_inv = inv.get("inventory_data", {})
+                    raw_inv["thermal"] = thermal_data
+                    await db.upsert_server_inventory(self.server_id, self.vendor, raw_inv, {})
+        except Exception as e:
+            logger.debug(f"[REST Fallback] Thermal poll error for {clean_ip}: {e}")
+
+        # Lightweight GET 2: System info (/redfish/v1/Systems/Self)
+        sys_url = f"{base_url}{s_path}"
+        try:
+            resp = await client.get(sys_url, headers=headers, auth=auth, timeout=15.0)
+            if resp.status_code == 200:
+                poll_success = True
+                sys_data = resp.json()
+                inv = await db.get_server_inventory(self.server_id) or {}
+                raw_inv = inv.get("inventory_data", {})
+                raw_inv["system"] = sys_data
+                if "Status" in sys_data and isinstance(sys_data["Status"], dict):
+                    health = sys_data["Status"].get("Health", "OK")
+                    await db.patch_server_health_from_event(self.server_id, health, f"REST Fallback Poll System Health: {health}", "RESTPoll")
+                await db.upsert_server_inventory(self.server_id, self.vendor, raw_inv, {})
+            elif resp.status_code == 404 and "/Systems/Self" in sys_url:
+                fb_url = sys_url.replace("/Systems/Self", "/Systems/1")
+                resp_fb = await client.get(fb_url, headers=headers, auth=auth, timeout=15.0)
+                if resp_fb.status_code == 200:
+                    poll_success = True
+                    sys_data = resp_fb.json()
+                    inv = await db.get_server_inventory(self.server_id) or {}
+                    raw_inv = inv.get("inventory_data", {})
+                    raw_inv["system"] = sys_data
+                    if "Status" in sys_data and isinstance(sys_data["Status"], dict):
+                        health = sys_data["Status"].get("Health", "OK")
+                        await db.patch_server_health_from_event(self.server_id, health, f"REST Fallback Poll System Health: {health}", "RESTPoll")
+                    await db.upsert_server_inventory(self.server_id, self.vendor, raw_inv, {})
+        except Exception as e:
+            logger.debug(f"[REST Fallback] System poll error for {clean_ip}: {e}")
+
+        if poll_success:
+            await self.update_last_seen()
+            logger.info(f"[REST Fallback] Poll completed for server {self.server_id} ({clean_ip}). Panels updated successfully.")
+
     async def _daemon_loop(self):
-        """Persistent SSE streaming loop with circuit breaking and state recovery."""
+        """Persistent SSE streaming loop with circuit breaking, REST fallback polling, and state recovery."""
         base_url = f"https://{self.bmc_ip}"
 
         while self.running:
             if not self.sse_supported:
-                await asyncio.sleep(3600.0)
+                now = time.time()
+                if now - self._last_fallback_poll >= self.fallback_poll_interval:
+                    self._last_fallback_poll = now
+                    logger.info(f"[REST Polling Mode] SSE unsupported for {self.server_id} ({self.bmc_ip}). Executing REST fallback poll...")
+                    await self._execute_rest_fallback_poll()
+                await asyncio.sleep(1.0)
                 continue
 
             if not self.circuit_breaker.can_execute():
+                now = time.time()
+                if now - self._last_fallback_poll >= self.fallback_poll_interval:
+                    self._last_fallback_poll = now
+                    logger.info(f"[CircuitBreaker Fallback] Circuit OPEN for {self.server_id} ({self.bmc_ip}). Executing REST fallback poll...")
+                    await self._execute_rest_fallback_poll()
                 await asyncio.sleep(1.0)
                 continue
 
             client = http_pool.get_client()
             try:
-                token = await get_or_acquire_session_token(client, self.bmc_ip, self.username, self.password)
+                token, cookies = await get_or_acquire_session_info(client, self.bmc_ip, self.username, self.password)
                 headers = {"Accept": "text/event-stream"}
                 if token:
                     headers["X-Auth-Token"] = token
+                if cookies:
+                    headers["Cookie"] = "; ".join([f"{k}={v}" for k, v in cookies.items()])
                 if self.last_event_id:
                     headers["Last-Event-ID"] = self.last_event_id
 
@@ -428,30 +522,34 @@ class SSERedfishDaemonWorker:
 
                 logger.info(f"[SSE Stream] Connecting to {sse_endpoint} for server {self.server_id}...")
 
-                sse_timeout = httpx.Timeout(connect=5.0, read=None, write=5.0, pool=10.0)
+                sse_timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=15.0)
                 async with client.stream("GET", sse_endpoint, auth=auth, headers=headers, timeout=sse_timeout) as response:
                     if response.status_code in (401, 403):
                         logger.warning(f"[SSE {response.status_code}] Invalid or expired session token on {self.bmc_ip}. Evicting token and retrying re-auth...")
-                        SESSION_TOKEN_CACHE.pop(self.bmc_ip, None)
+                        await get_or_acquire_session_info(client, self.bmc_ip, self.username, self.password, force_refresh=True)
                         self.circuit_breaker.record_failure()
+                        await self._execute_rest_fallback_poll()
 
                     elif response.status_code == 200:
                         self.circuit_breaker.record_success()
                         await self.update_last_seen()
                         await self._parse_sse_stream(response)
                     elif response.status_code in (400, 404, 405, 501):
-                        logger.info(f"[SSE Disabled] Server {self.server_id} ({self.bmc_ip}): BMC returned HTTP {response.status_code} for SSE endpoint. SSE live streaming is not supported on this node. Disabling SSE worker.")
+                        logger.info(f"[SSE Disabled] Server {self.server_id} ({self.bmc_ip}): BMC returned HTTP {response.status_code} for SSE endpoint. SSE live streaming is not supported on this node. Switching to REST polling.")
                         self.sse_supported = False
                         self.circuit_breaker.record_success()
+                        await self._execute_rest_fallback_poll()
                     else:
                         logger.warning(f"[SSE HTTP {response.status_code}] Stream rejected by {self.bmc_ip}")
                         self.circuit_breaker.record_failure()
+                        await self._execute_rest_fallback_poll()
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.warning(f"[SSE Stream Drop] {self.bmc_ip}: {e}")
                 self.circuit_breaker.record_failure()
+                await self._execute_rest_fallback_poll()
 
             await asyncio.sleep(1.0)
 
@@ -604,7 +702,7 @@ class RedfishMonitoringManager:
                 del self.workers[sid]
 
         # Start workers for new servers & trigger initial inventory fetch once on server add
-        for s in servers:
+        for idx, s in enumerate(servers):
             sid = s["id"]
             if sid not in self.workers:
                 worker = SSERedfishDaemonWorker(
@@ -617,16 +715,21 @@ class RedfishMonitoringManager:
                 self.workers[sid] = worker
                 await worker.start()
 
-                # Trigger Tier 1 Inventory fetch ONCE when server is added
-                asyncio.create_task(
-                    fetch_and_cache_inventory(
-                        server_id=sid,
-                        bmc_ip=s["ip"],
-                        username=s.get("username", "admin"),
-                        password=s.get("password", "netweb@123"),
-                        vendor=s.get("vendor", "SM")
-                    )
-                )
+                async def _staggered_initial_fetch(target_idx: int, target_server: dict):
+                    if target_idx > 0:
+                        await asyncio.sleep(random.uniform(1.0, 2.0))
+                    try:
+                        await fetch_and_cache_inventory(
+                            server_id=target_server["id"],
+                            bmc_ip=target_server["ip"],
+                            username=target_server.get("username", "admin"),
+                            password=target_server.get("password", "netweb@123"),
+                            vendor=target_server.get("vendor", "SM")
+                        )
+                    except Exception as e:
+                        logger.warning(f"[Staggered Initial Fetch] Error fetching inventory for {target_server['id']}: {e}")
+
+                asyncio.create_task(_staggered_initial_fetch(idx, s))
 
     async def on_server_added(self, server_id: str, name: str, ip: str, vendor: str, username: str, password: str, rack: str = "Rack 1"):
         """Triggered when a user adds a new server."""
@@ -635,21 +738,24 @@ class RedfishMonitoringManager:
         await self.sync_servers(servers)
 
     async def on_manual_refresh(self, server_id: Optional[str] = None):
-        """Triggered when a user clicks manual refresh in the UI."""
+        """Triggered when a user clicks manual refresh in the UI or on background loops."""
         servers = await db.get_all_servers()
         targets = [s for s in servers if s["id"] == server_id] if server_id else servers
-        tasks = [
-            fetch_and_cache_inventory(
-                server_id=s["id"],
-                bmc_ip=s["ip"],
-                username=s.get("username", "admin"),
-                password=s.get("password", "netweb@123"),
-                vendor=s.get("vendor", "SM")
-            )
-            for s in targets
-        ]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        for idx, s in enumerate(targets):
+            if idx > 0:
+                delay = random.uniform(1.0, 2.0)
+                logger.info(f"[Staggered Polling] Delaying next server inventory fetch ({s['id']}) by {delay:.2f}s...")
+                await asyncio.sleep(delay)
+            try:
+                await fetch_and_cache_inventory(
+                    server_id=s["id"],
+                    bmc_ip=s["ip"],
+                    username=s.get("username", "admin"),
+                    password=s.get("password", "netweb@123"),
+                    vendor=s.get("vendor", "SM")
+                )
+            except Exception as e:
+                logger.warning(f"[Staggered Polling] Error fetching inventory for {s['id']}: {e}")
 
     async def _24h_inventory_loop(self):
         """Background schedule triggering Tier 1 inventory caching every 24 hours."""
@@ -664,7 +770,7 @@ redfish_manager = RedfishMonitoringManager()
 # 7. Runnable Self-Check Test Suite (Ponytail AGENTS.md Rule Compliance)
 # ============================================================================
 async def _run_self_check():
-    """Runs a minimal self-check verifying circuit breaker, inventory caching, and watchdog."""
+    """Runs a minimal self-check verifying circuit breaker, inventory caching, watchdog, and REST fallback polling."""
     print("=== Running Redfish Monitoring Backend Self-Check ===")
 
     # 1. Test Circuit Breaker
@@ -687,6 +793,29 @@ async def _run_self_check():
     await worker.update_last_seen()
     assert worker.status == "OK", "Worker status should reset to OK on new activity"
     print(" Silent BMC Watchdog test passed!")
+
+    # 3. Test Session Token & Cookie Cache Persistence
+    test_ip = "192.168.1.100"
+    ctx = {
+        "token": "mock-token-abc",
+        "cookies": {"SESSIONID": "xyz123"},
+        "location": "/redfish/v1/SessionService/Sessions/1",
+        "created_at": time.time()
+    }
+    SESSION_TOKEN_CACHE[test_ip] = ctx
+    fetched_tok = await get_or_acquire_session_token(http_pool.get_client(), test_ip, "admin", "password")
+    assert fetched_tok == "mock-token-abc", "Persistent session token caching failed!"
+    tok, cks = await get_or_acquire_session_info(http_pool.get_client(), test_ip, "admin", "password")
+    assert cks == {"SESSIONID": "xyz123"}, "Session cookie caching failed!"
+    print(" Persistent Session Token & Cookie Cache test passed!")
+
+    # 4. Test REST Fallback Polling Trigger on Circuit Breaker OPEN
+    worker.circuit_breaker.state = CircuitState.OPEN
+    worker.circuit_breaker.next_attempt_time = time.time() + 60.0
+    worker._last_fallback_poll = 0.0
+    assert worker.circuit_breaker.can_execute() == False
+    assert hasattr(worker, "_execute_rest_fallback_poll"), "Worker missing _execute_rest_fallback_poll method!"
+    print(" REST Fallback Polling trigger test passed!")
 
     print("=== All Redfish Monitoring Self-Checks Passed Successfully! ===")
 

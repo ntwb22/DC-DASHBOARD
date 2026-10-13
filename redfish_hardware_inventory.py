@@ -89,12 +89,12 @@ class AsyncRedfishBMCClient:
     5-second timeouts, session token auth, and fallback candidate path resolution.
     """
 
-    def __init__(self, bmc_ip: str, username: str, password: str, timeout: float = 5.0):
+    def __init__(self, bmc_ip: str, username: str, password: str, timeout: float = 15.0):
         self.raw_ip = bmc_ip.strip()
         self.username = username.strip()
         self.password = password
         self.timeout_sec = timeout
-        self.timeout_config = httpx.Timeout(timeout, connect=2.0)
+        self.timeout_config = httpx.Timeout(timeout, connect=5.0)
 
         # Normalize Base URL
         if not self.raw_ip.startswith("http://") and not self.raw_ip.startswith("https://"):
@@ -249,7 +249,7 @@ class AsyncRedfishHardwareInventory:
         logger.info(f"🔄 [CACHE MISS] Fetching fresh hardware inventory asynchronously from BMC {self.bmc_ip}...")
         t0 = time.perf_counter()
 
-        async with httpx.AsyncClient(verify=False, timeout=5.0) as http_client:
+        async with httpx.AsyncClient(verify=False, timeout=15.0) as http_client:
             await self.client._authenticate(http_client)
 
             # 1. Discover System and Chassis URIs concurrently

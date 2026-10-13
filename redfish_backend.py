@@ -282,64 +282,108 @@ async def logout_backend_session(session: aiohttp.ClientSession, base_url: str, 
     except Exception as ex:
         logger.debug(f"[Auth Logout] Session logout notice for {base_url}: {ex}")
 
-async def get_or_acquire_backend_session(session: aiohttp.ClientSession, base_url: str, username: str, password: str, force_refresh: bool = False) -> Optional[str]:
-    """Acquires or reuses X-Auth-Token via /redfish/v1/SessionService/Sessions for backend poller operations with lock protection."""
+async def get_or_acquire_session_context(session: Optional[aiohttp.ClientSession], base_url_or_ip: str, username: str, password: str, force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    Maintains an in-memory thread-safe cache of active X-Auth-Token and session cookies per BMC IP.
+    Reuses cached session tokens and cookies across requests and only re-authenticates (POST /Sessions)
+    when a 401 or 403 error is explicitly encountered or force_refresh is requested under lock.
+    """
     now = time.time()
+    clean_ip = base_url_or_ip.lstrip("http://").lstrip("https://").strip().rstrip("/").split(":")[0]
+    base_url = f"https://{clean_ip}"
     cache_key = (base_url, username)
 
-    # If BMC previously rejected session creation due to session limit, reuse Basic Auth directly for 5 minutes
-    if SESSION_LIMIT_COOLDOWN.get(base_url, 0) > now:
-        return None
+    if SESSION_LIMIT_COOLDOWN.get(clean_ip, 0) > now or SESSION_LIMIT_COOLDOWN.get(base_url, 0) > now:
+        return {}
 
     if not force_refresh:
-        cached = REDFISH_BACKEND_SESSION_CACHE.get(cache_key)
-        if cached and (now - cached["created_at"] < 1500): # 25 minute TTL
-            return cached["token"]
+        cached = (
+            REDFISH_BACKEND_SESSION_CACHE.get(cache_key) or
+            REDFISH_BACKEND_SESSION_CACHE.get(clean_ip) or
+            REDFISH_BACKEND_SESSION_CACHE.get(base_url)
+        )
+        if cached and (now - cached.get("created_at", 0) < 1500):
+            return cached
 
     async with SESSION_BACKEND_LOCK:
         now = time.time()
-        cached = REDFISH_BACKEND_SESSION_CACHE.get(cache_key)
-        # Even if force_refresh is requested, if token was acquired within the last 15s, reuse it
-        if cached and (now - cached["created_at"] < 15 or (not force_refresh and now - cached["created_at"] < 1500)):
-            return cached["token"]
-
-        # Clean up old session on BMC if forcing refresh
-        if force_refresh and cached:
-            old_info = REDFISH_BACKEND_SESSION_CACHE.pop(cache_key, None)
-            if old_info:
-                asyncio.create_task(logout_backend_session(session, base_url, old_info))
+        cached = (
+            REDFISH_BACKEND_SESSION_CACHE.get(cache_key) or
+            REDFISH_BACKEND_SESSION_CACHE.get(clean_ip) or
+            REDFISH_BACKEND_SESSION_CACHE.get(base_url)
+        )
+        if cached and (now - cached.get("created_at", 0) < 15 or (not force_refresh and now - cached.get("created_at", 0) < 1500)):
+            return cached
 
         session_url = normalize_redfish_url(base_url, "/redfish/v1/SessionService/Sessions")
         payload = {"UserName": username, "Password": password}
+
+        close_session = False
+        if session is None or session.closed:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+            connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=10)
+            session = aiohttp.ClientSession(connector=connector)
+            close_session = True
+
         try:
-            async with session.post(session_url, json=payload, headers={"Content-Type": "application/json"}, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
+            async with session.post(session_url, json=payload, headers={"Content-Type": "application/json"}, timeout=aiohttp.ClientTimeout(total=15.0)) as resp:
                 if resp.status in (200, 201):
                     token = resp.headers.get("X-Auth-Token")
                     location = resp.headers.get("Location")
+
+                    cookies = {}
+                    if hasattr(resp, "cookies") and resp.cookies:
+                        for k, v in resp.cookies.items():
+                            cookies[k] = v.value
+                    set_cookie_hdrs = resp.headers.getall("Set-Cookie", [])
+                    for sc in set_cookie_hdrs:
+                        cookie_part = sc.split(";")[0]
+                        if "=" in cookie_part:
+                            ck_name, ck_val = cookie_part.split("=", 1)
+                            cookies[ck_name.strip()] = ck_val.strip()
+
                     if not token:
                         try:
                             body = await resp.json()
                             token = body.get("Token") or body.get("X-Auth-Token") or body.get("SessionToken")
                         except Exception:
                             token = None
-                    if token:
-                        REDFISH_BACKEND_SESSION_CACHE[cache_key] = {"token": token, "location": location, "created_at": now}
-                        logger.info(f"[Auth Cache] Acquired & cached X-Auth-Token for BMC {base_url}")
-                        return token
+
+                    ctx_data = {
+                        "token": token,
+                        "cookies": cookies if cookies else None,
+                        "location": location,
+                        "created_at": now
+                    }
+                    REDFISH_BACKEND_SESSION_CACHE[cache_key] = ctx_data
+                    REDFISH_BACKEND_SESSION_CACHE[clean_ip] = ctx_data
+                    REDFISH_BACKEND_SESSION_CACHE[base_url] = ctx_data
+                    logger.info(f"[Auth Cache] Acquired & cached active X-Auth-Token/cookies for BMC {clean_ip}")
+                    return ctx_data
+
                 elif resp.status in (400, 403, 500, 507):
-                    # BMC session limit reached or session creation disabled - enter 5-minute Basic Auth cooldown
                     text = await resp.text()
                     if "session" in text.lower() or "limit" in text.lower() or resp.status in (400, 403):
+                        SESSION_LIMIT_COOLDOWN[clean_ip] = now + 300.0
                         SESSION_LIMIT_COOLDOWN[base_url] = now + 300.0
-                        logger.info(f"[Auth Cooldown] Session limit reached on {base_url}. Using Basic Auth fallback for 5 min.")
+                        logger.info(f"[Auth Cooldown] Session limit reached on {clean_ip}. Using Basic Auth fallback for 5 min.")
         except Exception as e:
-            logger.debug(f"[Auth Cache] Session creation notice for {base_url}: {e}")
-        
-        # Return existing cached token if available to prevent hitting BMC session limit
-        if cached and cached.get("token"):
-            return cached["token"]
+            logger.debug(f"[Auth Cache] Session creation notice for {clean_ip}: {e}")
+        finally:
+            if close_session and not session.closed:
+                await session.close()
 
-        return None
+        if cached and (cached.get("token") or cached.get("cookies")):
+            return cached
+
+        return {}
+
+async def get_or_acquire_backend_session(session: aiohttp.ClientSession, base_url: str, username: str, password: str, force_refresh: bool = False) -> Optional[str]:
+    """Acquires or reuses X-Auth-Token via get_or_acquire_session_context with lock protection."""
+    ctx = await get_or_acquire_session_context(session, base_url, username, password, force_refresh=force_refresh)
+    return ctx.get("token") if isinstance(ctx, dict) else None
 
 class RedfishClient:
     """
@@ -400,42 +444,11 @@ class RedfishClient:
         return self.chassis_uri
 
     async def refresh_token(self, client: httpx.AsyncClient, force_refresh: bool = False):
-        """Acquires and strictly caches a fresh session token in global cache with lock protection."""
-        now = time.time()
-        cache_key = (self.base_url, self.username)
-        if not force_refresh:
-            cached = REDFISH_BACKEND_SESSION_CACHE.get(cache_key)
-            if cached and (now - cached["created_at"] < 1500):
-                self.token = cached["token"]
-                return self.token
-
-        async with SESSION_BACKEND_LOCK:
-            now = time.time()
-            cached = REDFISH_BACKEND_SESSION_CACHE.get(cache_key)
-            if cached and (now - cached["created_at"] < 15 or (not force_refresh and now - cached["created_at"] < 1500)):
-                self.token = cached["token"]
-                return self.token
-
-            try:
-                res = await client.post(
-                    f"{self.base_url}/redfish/v1/SessionService/Sessions", 
-                    json={"UserName": self.username, "Password": self.password},
-                    timeout=5.0
-                )
-                if res.status_code in [200, 201]:
-                    tok = res.headers.get("X-Auth-Token") or res.json().get("SessionToken") or res.json().get("Token")
-                    if tok:
-                        self.token = tok
-                        REDFISH_BACKEND_SESSION_CACHE[cache_key] = {"token": tok, "created_at": now}
-                        logger.info(f"[RedfishClient Cache] Acquired & cached X-Auth-Token for BMC {self.base_url}")
-                        return tok
-            except Exception as e:
-                logger.debug(f"[RedfishClient Cache] Failed to acquire token for {self.base_url}: {e}")
-
-            if cached and cached.get("token"):
-                self.token = cached["token"]
-                return self.token
-            return None
+        """Acquires and strictly caches a fresh session token & cookies in global cache with lock protection."""
+        ctx = await get_or_acquire_session_context(None, self.base_url, self.username, self.password, force_refresh=force_refresh)
+        self.token = ctx.get("token")
+        self.cookies = ctx.get("cookies")
+        return self.token
 
     async def request(self, method: str, endpoint: str, client: httpx.AsyncClient, **kwargs) -> httpx.Response:
         """Executes requests with automatic token management and race-condition locking on 401/403."""
@@ -588,13 +601,19 @@ class RedfishBMCClient:
                         logger.error(f"Failed to route local request to Express mock: {e}")
 
             req_headers = {}
-            # Session reuse: acquire or retrieve X-Auth-Token
-            token = await get_or_acquire_backend_session(session, self.base_url, self.username, self.password)
+            # Session reuse: acquire or retrieve X-Auth-Token & session cookies
+            session_ctx = await get_or_acquire_session_context(session, self.base_url, self.username, self.password)
+            token = session_ctx.get("token")
+            cookies = session_ctx.get("cookies")
             if token:
                 req_headers["X-Auth-Token"] = token
                 auth_arg = None
             else:
                 auth_arg = self.auth
+
+            if cookies:
+                cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+                req_headers["Cookie"] = cookie_str
 
             if req_method in ("PATCH", "PUT"):
                 try:
@@ -614,14 +633,16 @@ class RedfishBMCClient:
                         # Session validation / Re-auth on 401 / 403 wrapped in lock protection
                         if response.status in (401, 403) and attempt == 0:
                             logger.warning(f"[401/403] Session expired or invalid on {self.base_url}. Re-authenticating with lock protection...")
-                            async with SESSION_BACKEND_LOCK:
-                                REDFISH_BACKEND_SESSION_CACHE.pop((self.base_url, self.username), None)
-                                token = await get_or_acquire_backend_session(session, self.base_url, self.username, self.password, force_refresh=True)
+                            session_ctx = await get_or_acquire_session_context(session, self.base_url, self.username, self.password, force_refresh=True)
+                            token = session_ctx.get("token")
+                            cookies = session_ctx.get("cookies")
                             if token:
                                 req_headers["X-Auth-Token"] = token
                                 auth_arg = None
                             else:
                                 auth_arg = self.auth
+                            if cookies:
+                                req_headers["Cookie"] = "; ".join([f"{k}={v}" for k, v in cookies.items()])
                             continue
 
                         if response.status in (200, 201, 202, 204):
@@ -1017,7 +1038,7 @@ class RedfishBMCClient:
         logger.info(f"Executing System Reset action {mapped_action} -> POST {action_url}")
         return await self._request("POST", action_url, payload)
 
-    async def _resolve_collection_or_list(self, field_value: Any, timeout: float = 5.0) -> List[Dict[str, Any]]:
+    async def _resolve_collection_or_list(self, field_value: Any, timeout: float = 15.0) -> List[Dict[str, Any]]:
         from typing import Any
         if not field_value:
             return []
@@ -1030,7 +1051,7 @@ class RedfishBMCClient:
             logger.warning(f"Error expanding collection field: {e}")
             return []
 
-    async def _do_resolve_collection_or_list(self, field_value: Any, timeout: float = 5.0) -> List[Dict[str, Any]]:
+    async def _do_resolve_collection_or_list(self, field_value: Any, timeout: float = 15.0) -> List[Dict[str, Any]]:
         if isinstance(field_value, list):
             tasks = [self._request("GET", m["@odata.id"]) for m in field_value if isinstance(m, dict) and "@odata.id" in m]
             if not tasks:
@@ -1042,7 +1063,7 @@ class RedfishBMCClient:
                 return await self._get_collection_members(field_value["@odata.id"], timeout=timeout)
         return []
 
-    async def _get_collection_members(self, coll_url: Optional[str], timeout: float = 5.0) -> List[Dict[str, Any]]:
+    async def _get_collection_members(self, coll_url: Optional[str], timeout: float = 15.0) -> List[Dict[str, Any]]:
         if not coll_url:
             return []
         try:
@@ -1091,7 +1112,7 @@ class RedfishBMCClient:
     async def get_detailed_os_inventory(self) -> Dict[str, Any]:
         """
         Gathers full Redfish telemetry payload to build a detailed OS inventory matrix.
-        Includes 5-second short timeout protection on storage expansion to avoid exceeding 25s threshold.
+        Includes 15-second timeout protection on storage expansion to avoid premature timeouts.
         """
         root = await self._request("GET", "/redfish/v1/")
         if "error" in root:
@@ -1115,11 +1136,11 @@ class RedfishBMCClient:
         
         # 1. Processors
         proc_val = system.get("Processors")
-        tasks.append(self._resolve_collection_or_list(proc_val, timeout=5.0))
+        tasks.append(self._resolve_collection_or_list(proc_val, timeout=15.0))
         
         # 2. Memory
         mem_val = system.get("Memory")
-        tasks.append(self._resolve_collection_or_list(mem_val, timeout=5.0))
+        tasks.append(self._resolve_collection_or_list(mem_val, timeout=15.0))
         
         # 3. Chassis (for Power and Thermal)
         chassis_val = root.get("Chassis") if isinstance(root, dict) else None
@@ -1128,18 +1149,18 @@ class RedfishBMCClient:
         
         # 4. Ethernet
         eth_val = system.get("EthernetInterfaces")
-        tasks.append(self._resolve_collection_or_list(eth_val, timeout=5.0))
+        tasks.append(self._resolve_collection_or_list(eth_val, timeout=15.0))
         
         # 5. PCIe
         links_val = system.get("Links")
         pcie_val = system.get("PCIeDevices")
         if not pcie_val and isinstance(links_val, dict):
             pcie_val = links_val.get("PCIeDevices")
-        tasks.append(self._resolve_collection_or_list(pcie_val, timeout=5.0))
+        tasks.append(self._resolve_collection_or_list(pcie_val, timeout=15.0))
         
-        # 6. Storage (5.0s short timeout protection to defer heavy nested expansion if slow)
+        # 6. Storage (15.0s timeout protection to defer heavy nested expansion if slow)
         storage_val = system.get("Storage")
-        tasks.append(self._resolve_collection_or_list(storage_val, timeout=5.0))
+        tasks.append(self._resolve_collection_or_list(storage_val, timeout=15.0))
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
@@ -1272,14 +1293,14 @@ class RedfishBMCClient:
     async def get_raid_config(self) -> Dict[str, Any]:
         """
         Fetches storage controller, virtual disks, and physical disks mapping.
-        Defers heavy nested storage expansion if request exceeds 5-second short timeout limit.
+        Defers heavy nested storage expansion if request exceeds 15-second timeout limit.
         """
         storage_url = "/redfish/v1/Systems/1/Storage"
         try:
-            storage_col = await asyncio.wait_for(self._request("GET", storage_url), timeout=5.0)
+            storage_col = await asyncio.wait_for(self._request("GET", storage_url), timeout=15.0)
         except asyncio.TimeoutError:
-            logger.warning(f"[Timeout Guard] Storage collection fetch timed out (5s) on BMC {self.bmc_ip}. Deferring nested expansion.")
-            return {"success": True, "deferred": True, "message": "Storage expansion deferred due to 5s timeout limit", "controllers": []}
+            logger.warning(f"[Timeout Guard] Storage collection fetch timed out (15s) on BMC {self.bmc_ip}. Deferring nested expansion.")
+            return {"success": True, "deferred": True, "message": "Storage expansion deferred due to 15s timeout limit", "controllers": []}
 
         if "error" in storage_col:
             return {"success": False, "error": "Failed to fetch storage collection", "controllers": []}
@@ -1290,9 +1311,9 @@ class RedfishBMCClient:
         for i, member in enumerate(members):
             ctrl_id = member["@odata.id"]
             try:
-                ctrl_data = await asyncio.wait_for(self._request("GET", ctrl_id), timeout=5.0)
+                ctrl_data = await asyncio.wait_for(self._request("GET", ctrl_id), timeout=15.0)
             except asyncio.TimeoutError:
-                logger.warning(f"[Timeout Guard] Storage controller fetch timed out (5s) for {ctrl_id}")
+                logger.warning(f"[Timeout Guard] Storage controller fetch timed out (15s) for {ctrl_id}")
                 continue
 
             if "error" in ctrl_data:
@@ -1313,32 +1334,32 @@ class RedfishBMCClient:
             if storage_controllers:
                 controller_obj["firmware"] = storage_controllers[0].get("FirmwareVersion", "Active Live Mode")
                 
-            # Fetch Drives (Physical Disks) with short timeout limit (5s)
+            # Fetch Drives (Physical Disks) with 15s timeout limit
             drives_refs = ctrl_data.get("Drives", [])
             drive_tasks = [self._request("GET", d["@odata.id"]) for d in drives_refs if isinstance(d, dict) and "@odata.id" in d]
             if drive_tasks:
                 try:
-                    drives_res = await asyncio.wait_for(asyncio.gather(*drive_tasks, return_exceptions=True), timeout=5.0)
+                    drives_res = await asyncio.wait_for(asyncio.gather(*drive_tasks, return_exceptions=True), timeout=15.0)
                     drives_data = [d for d in drives_res if not isinstance(d, Exception) and "error" not in d]
                 except asyncio.TimeoutError:
-                    logger.warning(f"[Timeout Guard] Drives enumeration timed out (5s) for controller {ctrl_id}")
+                    logger.warning(f"[Timeout Guard] Drives enumeration timed out (15s) for controller {ctrl_id}")
                     drives_data = []
             else:
                 drives_data = []
             
-            # Fetch Volumes (Virtual Disks) with short timeout limit (5s)
+            # Fetch Volumes (Virtual Disks) with 15s timeout limit
             volumes_ref = ctrl_data.get("Volumes", {}).get("@odata.id")
             volumes_data = []
             if volumes_ref:
                 try:
-                    vol_col = await asyncio.wait_for(self._request("GET", volumes_ref), timeout=5.0)
+                    vol_col = await asyncio.wait_for(self._request("GET", volumes_ref), timeout=15.0)
                     if "error" not in vol_col and "Members" in vol_col and isinstance(vol_col["Members"], list):
                         vol_tasks = [self._request("GET", m["@odata.id"]) for m in vol_col["Members"] if isinstance(m, dict) and "@odata.id" in m]
                         if vol_tasks:
-                            volumes_res = await asyncio.wait_for(asyncio.gather(*vol_tasks, return_exceptions=True), timeout=5.0)
+                            volumes_res = await asyncio.wait_for(asyncio.gather(*vol_tasks, return_exceptions=True), timeout=15.0)
                             volumes_data = [v for v in volumes_res if not isinstance(v, Exception) and "error" not in v]
                 except asyncio.TimeoutError:
-                    logger.warning(f"[Timeout Guard] Volumes enumeration timed out (5s) for controller {ctrl_id}")
+                    logger.warning(f"[Timeout Guard] Volumes enumeration timed out (15s) for controller {ctrl_id}")
                     volumes_data = []
             
             # Helper to format bytes
@@ -1506,13 +1527,13 @@ from typing import Tuple
 
 from db import db
 from sse_engine import sse_manager, ws_clients, sse_queues, broadcast_event
-from redfish_monitor import redfish_manager, SSERedfishDaemonWorker
 
 session_manager = RedfishSessionManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initializes PostgreSQL connection pool and syncs background SSE receivers & monitoring daemons on startup, tearing down on shutdown."""
+    from redfish_monitor import redfish_manager
     await db.initialize()
     await redfish_manager.start()
     servers = await db.get_all_servers()
@@ -2197,7 +2218,7 @@ async def sel_clear(req: SelRequest):
 # Environment variable for internal network HTTP/file server hosting installer ISOs
 ISO_SERVER_BASE_URL = os.getenv("ISO_SERVER_BASE_URL", "http://172.16.0.1:8080/isos")
 
-async def check_iso_url_accessibility(full_url: str, timeout: float = 5.0) -> Tuple[bool, str]:
+async def check_iso_url_accessibility(full_url: str, timeout: float = 15.0) -> Tuple[bool, str]:
     """
     Step 2: URL Accessibility Pre-Check.
     Validates reachability of target ISO URL via HEAD or Range GET request before instructing BMC to mount.
@@ -2528,7 +2549,7 @@ async def redfish_batch_proxy(req: BatchRequest, request: Request):
         try:
             norm_url = normalize_redfish_url(normalized_base_url, path_str)
             rw_url = rewrite_vendor_url(norm_url, target_vendor)
-            req_timeout = 5.0 if "Storage" in path_str else 10.0
+            req_timeout = 15.0
             res = await asyncio.wait_for(client._request("GET", rw_url), timeout=req_timeout)
             return path_str, res
         except asyncio.TimeoutError:
@@ -2737,4 +2758,5 @@ async def websocket_endpoint(websocket: WebSocket):
         active_connections.discard(websocket)
 
 if __name__ == "__main__":
-    uvicorn.run("redfish_backend:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("redfish_backend:app", host="127.0.0.1", port=8000, reload=False)
+
