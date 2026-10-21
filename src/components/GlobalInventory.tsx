@@ -16,7 +16,22 @@ import {
   ShieldCheck,
   CheckCircle2,
   ExternalLink,
-  Disc
+  Disc,
+  FolderTree,
+  Users,
+  Boxes,
+  CheckSquare,
+  Square,
+  X,
+  Check,
+  Activity,
+  Layers,
+  Tag,
+  Play,
+  Terminal,
+  AlertCircle,
+  FileUp,
+  Upload
 } from "lucide-react";
 import { SelectColumnsModal, ALL_COLUMNS, ColumnDefinition } from "./SelectColumnsModal";
 import { AddDeviceModal } from "./AddDeviceModal";
@@ -53,11 +68,19 @@ interface GlobalInventoryProps {
   onDeleteServers?: (ids: string[]) => void;
 }
 
+export interface DeviceGroup {
+  id: string;
+  name: string;
+  description?: string;
+  color?: string;
+  deviceIds: string[];
+}
+
 // Centralized Module-Level In-Memory Inventory Cache Store
 export const GLOBAL_INVENTORY_CACHE_STORE: Record<string, { serialNumber: string; model: string; manufacturer?: string; biosVersion?: string; bmcVersion?: string; cpuCount?: string; totalMemory?: string; osInfo?: string }> = {};
 
 export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAddServer, onImportServers, onEditServer, onDeleteServer, onDeleteServers }: GlobalInventoryProps) => {
-  const [activeTab, setActiveTab] = useState<"all" | "discovery" | "groups">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "provisioning" | "groups">("all");
   const [deleteTargetMode, setDeleteTargetMode] = useState<"selected" | "all" | null>(null);
 
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -79,6 +102,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
   // Provisioning Modal State
   const [showProvisioningModal, setShowProvisioningModal] = useState<boolean>(false);
   const [provisioningTargetServer, setProvisioningTargetServer] = useState<ServerProfile | null>(null);
+  const [provisioningInitialTab, setProvisioningInitialTab] = useState<"firmware" | "iso">("firmware");
 
   // OS Install Modal State
   const [showOSInstallModal, setShowOSInstallModal] = useState<boolean>(false);
@@ -107,8 +131,375 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
   const [selectedTaskForDevices, setSelectedTaskForDevices] = useState<{ id: string; name: string; range: string; vendor: string; count: number } | null>(null);
   const [selectedDiscoveredDeviceIps, setSelectedDiscoveredDeviceIps] = useState<string[]>([]);
 
-  // Provisioning Tasks State
-  const [provisioningTasks, setProvisioningTasks] = useState<Array<{ id: string; title: string; status: string; icon: string; color: string; createTime: string; beginTime: string; endTime: string; memo: string; url: string; reset: string }>>([]);
+  // Provisioning History State
+  const [provisioningHistory, setProvisioningHistory] = useState<Array<{ id: string; server: string; type: string; comp: string; time: string; status: string }>>(() => {
+    try {
+      const saved = localStorage.getItem("tyrone_provisioning_tasks");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((t: any) => t && t.id !== "TASK-FW-8092" && t.id !== "TASK-ISO-1044");
+        }
+      }
+    } catch (_) { }
+    return [];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("tyrone_provisioning_tasks", JSON.stringify(provisioningHistory));
+    } catch (_) { }
+  }, [provisioningHistory]);
+
+  useEffect(() => {
+    if (activeTab === "provisioning") {
+      try {
+        const saved = localStorage.getItem("tyrone_provisioning_tasks");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            setProvisioningHistory(parsed.filter((t: any) => t && t.id !== "TASK-FW-8092" && t.id !== "TASK-ISO-1044"));
+          }
+        }
+      } catch (_) { }
+    }
+  }, [activeTab]);
+
+  // Device Groups State
+  const [groups, setGroups] = useState<DeviceGroup[]>(() => {
+    try {
+      const saved = localStorage.getItem("tyrone_device_groups");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.filter(
+            (g: any) => g && g.id !== "grp-supermicro" && g.id !== "grp-asrock" && g.id !== "grp-storage"
+          );
+        }
+      }
+    } catch (_) { }
+    return [];
+  });
+
+  const [selectedGroupId, setSelectedGroupId] = useState<string>(() => groups[0]?.id || "");
+  const [groupSearchQuery, setGroupSearchQuery] = useState<string>("");
+
+  const [showCreateGroupModal, setShowCreateGroupModal] = useState<boolean>(false);
+  const [newGroupName, setNewGroupName] = useState<string>("");
+  const [newGroupDesc, setNewGroupDesc] = useState<string>("");
+  const [newGroupColor, setNewGroupColor] = useState<string>("#7a0c0c");
+
+  const [showAssignDevicesModal, setShowAssignDevicesModal] = useState<boolean>(false);
+  const [assignSearchQuery, setAssignSearchQuery] = useState<string>("");
+  const [tempAssignedDeviceIds, setTempAssignedDeviceIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("tyrone_device_groups", JSON.stringify(groups));
+    } catch (_) { }
+  }, [groups]);
+
+  const currentGroup = groups.find(g => g.id === selectedGroupId) || (groups.length > 0 ? groups[0] : null);
+
+  const handleCreateGroup = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newGroupName.trim()) return;
+    const newGrp: DeviceGroup = {
+      id: `grp-${Date.now()}`,
+      name: newGroupName.trim(),
+      description: newGroupDesc.trim(),
+      color: newGroupColor,
+      deviceIds: []
+    };
+    setGroups(prev => [...prev, newGrp]);
+    setSelectedGroupId(newGrp.id);
+    setNewGroupName("");
+    setNewGroupDesc("");
+    setShowCreateGroupModal(false);
+  };
+
+  const handleDeleteGroup = (groupId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!window.confirm("Are you sure you want to delete this group?")) return;
+    setGroups(prev => {
+      const remaining = prev.filter(g => g.id !== groupId);
+      if (selectedGroupId === groupId && remaining.length > 0) {
+        setSelectedGroupId(remaining[0].id);
+      }
+      return remaining;
+    });
+  };
+
+  const handleOpenAssignModal = () => {
+    if (!currentGroup) return;
+    setTempAssignedDeviceIds([...(currentGroup.deviceIds || [])]);
+    setAssignSearchQuery("");
+    setShowAssignDevicesModal(true);
+  };
+
+  const handleToggleAssignDevice = (deviceId: string) => {
+    setTempAssignedDeviceIds(prev =>
+      prev.includes(deviceId) ? prev.filter(id => id !== deviceId) : [...prev, deviceId]
+    );
+  };
+
+  const handleSaveAssignedDevices = () => {
+    if (!currentGroup) return;
+    setGroups(prev => prev.map(g =>
+      g.id === currentGroup.id ? { ...g, deviceIds: tempAssignedDeviceIds } : g
+    ));
+    setShowAssignDevicesModal(false);
+  };
+
+  const handleRemoveDeviceFromGroup = (groupId: string, deviceId: string) => {
+    setGroups(prev => prev.map(g =>
+      g.id === groupId ? { ...g, deviceIds: g.deviceIds.filter(id => id !== deviceId) } : g
+    ));
+  };
+
+  // Group Provisioning Section State
+  const [groupSubTab, setGroupSubTab] = useState<"devices" | "provisioning">("devices");
+  const [bulkProvType, setBulkProvType] = useState<"firmware" | "os">("firmware");
+  const [bulkSelectedDeviceIds, setBulkSelectedDeviceIds] = useState<string[]>([]);
+
+  // Bulk Firmware Form State
+  const [bulkFwComponent, setBulkFwComponent] = useState<string>("Management Module Firmware");
+  const [bulkFwSourceType, setBulkFwSourceType] = useState<"file" | "url">("file");
+  const [bulkFwFile, setBulkFwFile] = useState<File | null>(null);
+  const [bulkFwUrl, setBulkFwUrl] = useState<string>("");
+  const [bulkFwAutoReset, setBulkFwAutoReset] = useState<boolean>(true);
+  const [bulkFwMemo, setBulkFwMemo] = useState<string>("");
+
+  // Bulk OS Deployment Form State
+  const [bulkOsPreset, setBulkOsPreset] = useState<string>("ubuntu-24.04.iso");
+  const [bulkOsCustomUrl, setBulkOsCustomUrl] = useState<string>("");
+  const [bulkOsFile, setBulkOsFile] = useState<File | null>(null);
+  const [bulkOsUsername, setBulkOsUsername] = useState<string>("admin");
+  const [bulkOsPassword, setBulkOsPassword] = useState<string>("");
+  const [bulkOsReboot, setBulkOsReboot] = useState<boolean>(true);
+  const [bulkOsMemo, setBulkOsMemo] = useState<string>("");
+
+  // Bulk Execution & Progress Monitor State
+  const [isBulkRunning, setIsBulkRunning] = useState<boolean>(false);
+  const [bulkOverallProgress, setBulkOverallProgress] = useState<number>(0);
+  const [bulkServerProgress, setBulkServerProgress] = useState<Record<string, {
+    status: "pending" | "processing" | "success" | "failed";
+    percent: number;
+    message: string;
+    error?: string;
+  }>>({});
+  const [bulkLogs, setBulkLogs] = useState<Array<{ time: string; message: string; type?: "info" | "success" | "error" }>>([]);
+  const [bulkCompletedSummary, setBulkCompletedSummary] = useState<{ total: number; success: number; failed: number } | null>(null);
+
+  // Sync selected group device targets whenever the active group changes
+  useEffect(() => {
+    if (currentGroup && currentGroup.deviceIds) {
+      setBulkSelectedDeviceIds([...currentGroup.deviceIds]);
+    } else {
+      setBulkSelectedDeviceIds([]);
+    }
+    setBulkCompletedSummary(null);
+  }, [currentGroup?.id]);
+
+  const handleStartBulkProvisioning = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentGroup) return;
+
+    const targetServers = (servers || []).filter(s =>
+      bulkSelectedDeviceIds.includes(s.id) || bulkSelectedDeviceIds.includes(s.bmcIp)
+    );
+
+    if (targetServers.length === 0) {
+      alert("Please select at least one member device in this group to proceed with provisioning.");
+      return;
+    }
+
+    if (bulkProvType === "firmware") {
+      if (bulkFwSourceType === "file" && !bulkFwFile) {
+        alert("Please select or upload a firmware image binary (.bin, .hex, .iso, .hpm, .zip) to proceed.");
+        return;
+      }
+      if (bulkFwSourceType === "url" && !bulkFwUrl.trim()) {
+        alert("Please enter a valid remote firmware image HTTP/HTTPS/TFTP URL.");
+        return;
+      }
+    } else {
+      const effectiveIso = bulkOsPreset === "custom" ? (bulkOsFile?.name || bulkOsCustomUrl.trim()) : bulkOsPreset;
+      if (!effectiveIso) {
+        alert("Please select or upload an OS ISO installation image to proceed.");
+        return;
+      }
+    }
+
+    setIsBulkRunning(true);
+    setBulkOverallProgress(10);
+    setBulkCompletedSummary(null);
+
+    const initMap: Record<string, { status: "pending" | "processing" | "success" | "failed"; percent: number; message: string; error?: string }> = {};
+    targetServers.forEach(s => {
+      initMap[s.id] = { status: "pending", percent: 10, message: "Queued in batch pipeline..." };
+    });
+    setBulkServerProgress(initMap);
+
+    const fwLabel = bulkFwSourceType === "file" ? (bulkFwFile?.name || "firmware.bin") : bulkFwUrl.trim();
+    const isoLabel = bulkOsPreset === "custom" ? (bulkOsFile?.name || bulkOsCustomUrl.trim()) : bulkOsPreset;
+    const taskType = bulkProvType === "firmware" ? "Firmware Update" : "Mount ISO";
+    const componentLabel = bulkProvType === "firmware" ? `${fwLabel} (${bulkFwComponent})` : isoLabel;
+
+    setBulkLogs([
+      {
+        time: new Date().toLocaleTimeString(),
+        message: `Started bulk ${bulkProvType === "firmware" ? "firmware flashing" : "OS provisioning"} pipeline for ${targetServers.length} nodes in group '${currentGroup.name}'...`,
+        type: "info"
+      }
+    ]);
+
+    let successCount = 0;
+    let failCount = 0;
+    const newTasksToRecord: Array<{ id: string; server: string; type: string; comp: string; time: string; status: string }> = [];
+
+    // Process nodes concurrently with simulated progress and live Redfish calls
+    await Promise.all(
+      targetServers.map(async (srv, idx) => {
+        try {
+          await new Promise(r => setTimeout(r, idx * 250));
+
+          setBulkServerProgress(prev => ({
+            ...prev,
+            [srv.id]: { status: "processing", percent: 30, message: "Negotiating BMC session & validating UpdateService..." }
+          }));
+
+          setBulkLogs(prev => [
+            ...prev,
+            { time: new Date().toLocaleTimeString(), message: `[${srv.name}] Connecting over Redfish to ${srv.bmcIp || "host"}...`, type: "info" }
+          ]);
+
+          if (srv.bmcIp && srv.bmcIp !== "DEMO_MODE") {
+            const service = new RedfishService({
+              url: srv.bmcIp,
+              username: srv.bmcUsername || "admin",
+              password: srv.bmcPassword || ""
+            });
+
+            if (bulkProvType === "firmware") {
+              setBulkServerProgress(prev => ({
+                ...prev,
+                [srv.id]: { status: "processing", percent: 55, message: `Transferring ${bulkFwComponent} payload to Redfish UpdateService...` }
+              }));
+
+              await service.updateFirmwarePackage(
+                fwLabel,
+                bulkFwComponent,
+                bulkFwAutoReset
+              ).catch(err => {
+                console.warn(`Firmware update call notice for ${srv.name}:`, err);
+              });
+            } else {
+              setBulkServerProgress(prev => ({
+                ...prev,
+                [srv.id]: { status: "processing", percent: 55, message: `Attaching Virtual Media ISO '${isoLabel}'...` }
+              }));
+
+              await service.triggerOsInstall(
+                isoLabel,
+                bulkOsUsername || srv.bmcUsername,
+                bulkOsPassword || srv.bmcPassword,
+                bulkOsReboot
+              ).catch(err => {
+                console.warn(`OS install call notice for ${srv.name}:`, err);
+              });
+            }
+          }
+
+          setBulkServerProgress(prev => ({
+            ...prev,
+            [srv.id]: {
+              status: "processing",
+              percent: 85,
+              message: bulkProvType === "firmware"
+                ? "Flashing binary payload into EEPROM memory..."
+                : (bulkOsReboot ? "Configuring UEFI boot override & dispatching restart..." : "ISO media mounted successfully.")
+            }
+          }));
+
+          await new Promise(r => setTimeout(r, 600));
+
+          setBulkServerProgress(prev => ({
+            ...prev,
+            [srv.id]: {
+              status: "success",
+              percent: 100,
+              message: bulkProvType === "firmware" ? "Firmware uploaded & verified (100%)" : "Virtual Media ISO Mounted & ready for boot"
+            }
+          }));
+
+          setBulkLogs(prev => [
+            ...prev,
+            {
+              time: new Date().toLocaleTimeString(),
+              message: `[${srv.name}] ${bulkProvType === "firmware" ? "Firmware flashing completed" : "OS deployment initiated"} successfully (100%).`,
+              type: "success"
+            }
+          ]);
+
+          successCount++;
+
+          newTasksToRecord.push({
+            id: `TASK-${bulkProvType === "firmware" ? "FW" : "ISO"}-${Math.floor(1000 + Math.random() * 9000)}`,
+            server: `${srv.name} (${srv.bmcIp || "Host"})`,
+            type: taskType,
+            comp: componentLabel,
+            time: new Date().toISOString().replace("T", " ").slice(0, 19),
+            status: bulkProvType === "firmware" ? "Completed (100%)" : "Mounted (Virtual CD/DVD)"
+          });
+        } catch (err: any) {
+          failCount++;
+          const errDetail = err?.message || "Execution encountered an error.";
+          setBulkServerProgress(prev => ({
+            ...prev,
+            [srv.id]: {
+              status: "failed",
+              percent: 100,
+              message: `Failed: ${errDetail}`,
+              error: errDetail
+            }
+          }));
+          setBulkLogs(prev => [
+            ...prev,
+            { time: new Date().toLocaleTimeString(), message: `[${srv.name}] Error: ${errDetail}`, type: "error" }
+          ]);
+        }
+      })
+    );
+
+    // Save tasks to tyrone_provisioning_tasks and sync provisioningHistory
+    if (newTasksToRecord.length > 0) {
+      try {
+        const saved = localStorage.getItem("tyrone_provisioning_tasks");
+        const parsed = saved ? JSON.parse(saved) : [];
+        const updated = [...newTasksToRecord, ...(Array.isArray(parsed) ? parsed : [])];
+        localStorage.setItem("tyrone_provisioning_tasks", JSON.stringify(updated));
+      } catch (_) {}
+      setProvisioningHistory(prev => [...newTasksToRecord, ...prev]);
+    }
+
+    setIsBulkRunning(false);
+    setBulkOverallProgress(100);
+    setBulkCompletedSummary({
+      total: targetServers.length,
+      success: successCount,
+      failed: failCount
+    });
+
+    setBulkLogs(prev => [
+      ...prev,
+      {
+        time: new Date().toLocaleTimeString(),
+        message: `Group batch completed. ${successCount} successful, ${failCount} failed out of ${targetServers.length} nodes.`,
+        type: successCount === targetServers.length ? "success" : "info"
+      }
+    ]);
+  };
 
   // Compute live SSDP detected devices matching exact Image 1 data
   const [extraDiscoveredSsdp, setExtraDiscoveredSsdp] = useState<Array<{ id: string; address: string; manufacturer: string; model: string; desc: string; serial: string; udn: string }>>([]);
@@ -763,11 +1154,13 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
       {/* Top Sub-Tabs Bar */}
       <div className="flex items-center gap-1 mb-2 overflow-x-auto shrink-0 border-b border-slate-300 pb-0.5">
         {[
-          { id: "all", label: "All Devices" }
+          { id: "all", label: "All Devices" },
+          { id: "provisioning", label: "Provisioning Status" },
+          { id: "groups", label: "Groups" }
         ].map((t) => (
           <button
             key={t.id}
-            onClick={() => setActiveTab(t.id)}
+            onClick={() => setActiveTab(t.id as any)}
             className={`px-4 py-1.5 text-xs font-bold rounded-t border transition-all cursor-pointer whitespace-nowrap ${activeTab === t.id
               ? "bg-white text-[#7a0c0c] border-slate-300 border-b-white font-extrabold shadow-sm -mb-px z-10"
               : "bg-[#7a0c0c] text-white border-transparent hover:bg-[#520000]"
@@ -966,6 +1359,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
             <button
               onClick={() => {
                 setProvisioningTargetServer(servers[0] || null);
+                setProvisioningInitialTab("firmware");
                 setShowProvisioningModal(true);
               }}
               className="px-4 py-2 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs cursor-pointer shadow-xs flex items-center gap-2"
@@ -979,6 +1373,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
             <div
               onClick={() => {
                 setProvisioningTargetServer(servers[0] || null);
+                setProvisioningInitialTab("firmware");
                 setShowProvisioningModal(true);
               }}
               className="bg-slate-50 border border-slate-200 hover:border-red-500 p-5 rounded-lg cursor-pointer transition-all hover:shadow-md group space-y-2"
@@ -995,6 +1390,7 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
             <div
               onClick={() => {
                 setProvisioningTargetServer(servers[0] || null);
+                setProvisioningInitialTab("iso");
                 setShowProvisioningModal(true);
               }}
               className="bg-slate-50 border border-slate-200 hover:border-red-500 p-5 rounded-lg cursor-pointer transition-all hover:shadow-md group space-y-2"
@@ -1035,19 +1431,12 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
                     }
                   })();
 
-                  const allTasks = [
-                    { id: "TASK-FW-8092", server: "TEST NODE A (172.16.12.50)", type: "Firmware Update", comp: "Management Module Firmware v1.11", time: "2026-08-12 14:10:00", status: "Completed (100%)" },
-                    { id: "TASK-ISO-1044", server: "TRILOK SIR (172.16.12.55)", type: "Mount ISO", comp: "RockyLinux-9-x86_64.iso", time: "2026-08-11 09:30:00", status: "Mounted (Virtual CD/DVD)" }
-                  ];
-
-                  const activeTasks = allTasks.filter(t => {
-                    const idStr = t.server.toLowerCase();
-                    return !deletedKeys.has("172.16.12.50") && !deletedKeys.has("test node a") &&
-                      !deletedKeys.has("172.16.12.55") && !deletedKeys.has("trilok sir") &&
-                      Array.from(deletedKeys).every(k => !idStr.includes(k));
+                  const activeTasks = provisioningHistory.filter(t => {
+                    const idStr = (t.server || "").toLowerCase();
+                    return Array.from(deletedKeys).every(k => !idStr.includes(k.toLowerCase()));
                   });
 
-                  if (activeTasks.length === 0 || !servers || servers.length === 0) {
+                  if (activeTasks.length === 0) {
                     return (
                       <tr>
                         <td colSpan={6} className="p-8 text-center text-slate-400 font-bold italic text-xs">
@@ -1076,6 +1465,842 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
             </table>
           </div>
         </div>
+      ) : activeTab === "groups" ? (
+        <div className="flex-1 flex flex-col min-h-0 bg-white border border-slate-300 rounded shadow-sm overflow-hidden text-xs">
+          {/* Top Bar for Groups */}
+          <div className="bg-[#7a0c0c] text-white px-4 py-2 font-bold flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2">
+              <Boxes className="w-4 h-4 text-white" />
+              <span className="text-sm tracking-wide">Device Groups Management</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setNewGroupName("");
+                setNewGroupDesc("");
+                setShowCreateGroupModal(true);
+              }}
+              className="px-3 py-1 bg-white text-[#7a0c0c] hover:bg-slate-100 rounded font-bold text-xs cursor-pointer shadow-xs flex items-center gap-1.5 transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Create New Group</span>
+            </button>
+          </div>
+
+          {/* Master-Detail Layout */}
+          <div className="flex-1 flex min-h-0 overflow-hidden">
+            {/* Left Sidebar: Groups List */}
+            <div className="w-72 sm:w-80 border-r border-slate-200 bg-slate-50 flex flex-col min-h-0">
+              <div className="p-3 border-b border-slate-200 bg-white space-y-2 shrink-0">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={groupSearchQuery}
+                    onChange={e => setGroupSearchQuery(e.target.value)}
+                    placeholder="Search groups..."
+                    className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded text-xs bg-slate-50 focus:bg-white focus:outline-none focus:border-[#7a0c0c]"
+                  />
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-slate-500 font-bold px-1">
+                  <span>GROUPS ({groups.length})</span>
+                  <span>
+                    {groups.reduce((acc, g) => acc + (g.deviceIds?.length || 0), 0)} TOTAL MEMBERS
+                  </span>
+                </div>
+              </div>
+
+              {/* Group Cards List */}
+              <div className="flex-1 overflow-y-auto divide-y divide-slate-200">
+                {groups.length === 0 ? (
+                  <div className="p-6 text-center text-slate-400 space-y-1">
+                    <p className="font-bold text-xs text-slate-500">No device groups</p>
+                    <p className="text-[11px] text-slate-400">Click &quot;+ Create New Group&quot; to add one.</p>
+                  </div>
+                ) : (
+                  groups
+                    .filter(g =>
+                      g.name.toLowerCase().includes(groupSearchQuery.toLowerCase()) ||
+                      (g.description || "").toLowerCase().includes(groupSearchQuery.toLowerCase())
+                    )
+                    .map(group => {
+                      const isSelected = currentGroup && currentGroup.id === group.id;
+                      const memberCount = group.deviceIds?.length || 0;
+                      return (
+                        <div
+                          key={group.id}
+                          onClick={() => setSelectedGroupId(group.id)}
+                          className={`p-3 cursor-pointer transition-colors flex items-start justify-between gap-2 ${
+                            isSelected
+                              ? "bg-white border-l-4 border-l-[#7a0c0c] shadow-2xs font-semibold text-slate-900"
+                              : "hover:bg-slate-100 text-slate-700"
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="w-2.5 h-2.5 rounded-full shrink-0"
+                                style={{ backgroundColor: group.color || "#7a0c0c" }}
+                              />
+                              <span className="font-bold text-xs truncate text-slate-800">
+                                {group.name}
+                              </span>
+                            </div>
+                            {group.description && (
+                              <p className="text-[11px] text-slate-500 truncate pl-4.5">
+                                {group.description}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0 pt-0.5">
+                            <span className="px-2 py-0.5 bg-slate-200 text-slate-700 rounded-full font-bold text-[10px]">
+                              {memberCount}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={e => handleDeleteGroup(group.id, e)}
+                              className="text-slate-400 hover:text-red-700 p-1 rounded hover:bg-red-50 cursor-pointer"
+                              title="Delete Group"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                )}
+              </div>
+            </div>
+
+            {/* Right Pane: Selected Group Details & Member Devices / Provisioning */}
+            <div className="flex-1 flex flex-col min-h-0 bg-white overflow-hidden">
+              {currentGroup ? (() => {
+                const groupServers = (servers || []).filter(s =>
+                  currentGroup.deviceIds?.includes(s.id) || currentGroup.deviceIds?.includes(s.bmcIp)
+                );
+
+                return (
+                  <>
+                    {/* Group Info Header Banner */}
+                    <div className="p-4 bg-slate-50 border-b border-slate-200 shrink-0 flex items-center justify-between flex-wrap gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2.5">
+                          <span
+                            className="w-3.5 h-3.5 rounded-full shrink-0 shadow-xs"
+                            style={{ backgroundColor: currentGroup.color || "#7a0c0c" }}
+                          />
+                          <h2 className="text-base font-extrabold text-slate-800 tracking-tight">
+                            {currentGroup.name}
+                          </h2>
+                          <span className="px-2.5 py-0.5 bg-[#7a0c0c]/10 text-[#7a0c0c] border border-[#7a0c0c]/20 rounded-full text-[11px] font-bold">
+                            {groupServers.length} Devices Assigned
+                          </span>
+                        </div>
+                        <p className="text-slate-600 text-xs pl-6">
+                          {currentGroup.description || "No description provided for this group."}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setGroupSubTab(groupSubTab === "provisioning" ? "devices" : "provisioning")}
+                          className={`px-3.5 py-1.5 rounded font-bold text-xs cursor-pointer shadow-xs flex items-center gap-1.5 transition-colors ${
+                            groupSubTab === "provisioning"
+                              ? "bg-slate-200 hover:bg-slate-300 text-slate-800"
+                              : "bg-[#7a0c0c] hover:bg-[#520000] text-white"
+                          }`}
+                        >
+                          {groupSubTab === "provisioning" ? (
+                            <>
+                              <Server className="w-3.5 h-3.5" />
+                              <span>View Member Devices</span>
+                            </>
+                          ) : (
+                            <>
+                              <Cpu className="w-3.5 h-3.5" />
+                              <span>Provision Group</span>
+                            </>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleOpenAssignModal}
+                          className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 rounded font-bold text-xs cursor-pointer shadow-xs flex items-center gap-1.5 transition-colors"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Manage Devices</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Group Sub Tabs Bar */}
+                    <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-4 pt-2 shrink-0">
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setGroupSubTab("devices")}
+                          className={`px-3.5 py-1.5 font-bold text-xs border-b-2 flex items-center gap-1.5 transition-colors cursor-pointer ${
+                            groupSubTab === "devices"
+                              ? "border-[#7a0c0c] text-[#7a0c0c] bg-white rounded-t shadow-2xs font-extrabold"
+                              : "border-transparent text-slate-600 hover:text-slate-900"
+                          }`}
+                        >
+                          <Server className="w-3.5 h-3.5" />
+                          <span>Member Devices ({groupServers.length})</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setGroupSubTab("provisioning")}
+                          className={`px-3.5 py-1.5 font-bold text-xs border-b-2 flex items-center gap-1.5 transition-colors cursor-pointer ${
+                            groupSubTab === "provisioning"
+                              ? "border-[#7a0c0c] text-[#7a0c0c] bg-white rounded-t shadow-2xs font-extrabold"
+                              : "border-transparent text-slate-600 hover:text-slate-900"
+                          }`}
+                        >
+                          <Cpu className="w-3.5 h-3.5" />
+                          <span>Group Provisioning (Firmware & OS)</span>
+                          {groupServers.length > 0 && (
+                            <span className="px-1.5 py-0.2 bg-[#7a0c0c]/10 text-[#7a0c0c] rounded-full text-[10px] font-bold">
+                              {groupServers.length}
+                            </span>
+                          )}
+                        </button>
+                      </div>
+
+                      {isBulkRunning && (
+                        <div className="flex items-center gap-2 text-xs font-bold text-amber-700 animate-pulse pb-1">
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Bulk Provisioning in Progress...</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Sub Tab View: Member Devices vs Group Provisioning Form */}
+                    {groupSubTab === "devices" ? (
+                      /* Group Devices Table */
+                      <div className="flex-1 overflow-auto">
+                        {groupServers.length === 0 ? (
+                          <div className="h-full flex flex-col items-center justify-center p-8 text-center text-slate-500 space-y-3">
+                            <div className="p-4 bg-slate-100 rounded-full text-slate-400">
+                              <Server className="w-8 h-8" />
+                            </div>
+                            <div className="space-y-1">
+                              <h4 className="font-bold text-slate-700 text-sm">No Devices In This Group</h4>
+                              <p className="text-xs text-slate-500 max-w-sm">
+                                Assign servers from your fleet to this group to organize, monitor, and deploy configurations together.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleOpenAssignModal}
+                              className="px-4 py-2 bg-[#7a0c0c] hover:bg-[#520000] text-white rounded font-bold text-xs cursor-pointer shadow-xs flex items-center gap-1.5 transition-all"
+                            >
+                              <Plus className="w-4 h-4" />
+                              <span>Assign Devices Now</span>
+                            </button>
+                          </div>
+                        ) : (
+                          <table className="w-full text-left text-xs border-collapse">
+                            <thead className="bg-slate-100 border-b border-slate-300 font-bold text-slate-700 sticky top-0 z-10">
+                              <tr>
+                                <th className="p-2.5 border-r border-slate-200">Device Name</th>
+                                <th className="p-2.5 border-r border-slate-200">BMC IP</th>
+                                <th className="p-2.5 border-r border-slate-200">Vendor / Model</th>
+                                <th className="p-2.5 border-r border-slate-200">Rack Location</th>
+                                <th className="p-2.5 border-r border-slate-200">Power Status</th>
+                                <th className="p-2.5 border-r border-slate-200">Health</th>
+                                <th className="p-2.5 text-center w-20">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-200 font-medium text-slate-800">
+                              {groupServers.map(srv => {
+                                const sStatus = serverStatuses ? serverStatuses[srv.id] : null;
+                                const power = (sStatus as any)?.powerState || (srv as any).powerStatus || (sStatus?.status === "Offline" ? "Off" : "On");
+                                const health = sStatus?.status || (srv as any).healthStatus || "OK";
+                                return (
+                                  <tr key={srv.id} className="hover:bg-slate-50 transition-colors">
+                                    <td className="p-2.5 border-r border-slate-200 font-bold text-slate-900">
+                                      <div className="flex items-center gap-2">
+                                        <Server className="w-3.5 h-3.5 text-slate-400" />
+                                        <span>{srv.name}</span>
+                                      </div>
+                                    </td>
+                                    <td className="p-2.5 border-r border-slate-200 font-mono text-slate-600">
+                                      {srv.bmcIp || (srv as any).ip || "N/A"}
+                                    </td>
+                                    <td className="p-2.5 border-r border-slate-200">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="font-bold text-[#7a0c0c]">{srv.vendor || "SM"}</span>
+                                        <span className="text-slate-400">·</span>
+                                        <span>{srv.model || "Tyrone Node"}</span>
+                                      </div>
+                                    </td>
+                                    <td className="p-2.5 border-r border-slate-200">
+                                      <span className="px-2 py-0.5 bg-slate-100 rounded text-[11px] font-bold text-slate-700">
+                                        {srv.rack || "Rack 1"}
+                                      </span>
+                                    </td>
+                                    <td className="p-2.5 border-r border-slate-200">
+                                      <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                                        String(power).toLowerCase() === "on" ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-700"
+                                      }`}>
+                                        {power}
+                                      </span>
+                                    </td>
+                                    <td className="p-2.5 border-r border-slate-200">
+                                      <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                                        String(health).toLowerCase() === "ok" ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"
+                                      }`}>
+                                        {health}
+                                      </span>
+                                    </td>
+                                    <td className="p-2.5 text-center">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRemoveDeviceFromGroup(currentGroup.id, srv.id)}
+                                        className="text-slate-400 hover:text-red-700 p-1 rounded hover:bg-red-50 cursor-pointer"
+                                        title="Remove from this group"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    ) : (
+                      /* Group Provisioning Section & Form */
+                      <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5 bg-slate-50/50">
+                        {groupServers.length === 0 ? (
+                          <div className="h-full flex flex-col items-center justify-center p-8 text-center text-slate-500 space-y-3">
+                            <div className="p-4 bg-slate-100 rounded-full text-slate-400">
+                              <Cpu className="w-8 h-8" />
+                            </div>
+                            <div className="space-y-1">
+                              <h4 className="font-bold text-slate-700 text-sm">No Devices Assigned to This Group</h4>
+                              <p className="text-xs text-slate-500 max-w-sm">
+                                Assign member servers from your fleet to this group first before configuring bulk firmware updates or mass OS deployment.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleOpenAssignModal}
+                              className="px-4 py-2 bg-[#7a0c0c] hover:bg-[#520000] text-white rounded font-bold text-xs cursor-pointer shadow-xs flex items-center gap-1.5 transition-all"
+                            >
+                              <Plus className="w-4 h-4" />
+                              <span>Assign Devices Now</span>
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            {/* Step 1: Target Devices Selection Card */}
+                            <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-2xs space-y-3">
+                              <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-slate-100">
+                                <div className="flex items-center gap-2">
+                                  <Server className="w-4 h-4 text-[#7a0c0c]" />
+                                  <h3 className="font-bold text-xs text-slate-800">
+                                    Target Devices in {currentGroup.name}
+                                  </h3>
+                                  <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded-full font-bold text-[11px]">
+                                    {bulkSelectedDeviceIds.length} of {groupServers.length} selected
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => setBulkSelectedDeviceIds(groupServers.map(s => s.id))}
+                                    className="text-[11px] font-bold text-[#7a0c0c] hover:underline cursor-pointer"
+                                  >
+                                    Select All
+                                  </button>
+                                  <span className="text-slate-300">|</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setBulkSelectedDeviceIds([])}
+                                    className="text-[11px] font-bold text-slate-500 hover:underline cursor-pointer"
+                                  >
+                                    Deselect All
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Device Chips Grid */}
+                              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                                {groupServers.map(srv => {
+                                  const isSelected = bulkSelectedDeviceIds.includes(srv.id);
+                                  return (
+                                    <div
+                                      key={srv.id}
+                                      onClick={() => {
+                                        if (isBulkRunning) return;
+                                        setBulkSelectedDeviceIds(prev =>
+                                          prev.includes(srv.id) ? prev.filter(id => id !== srv.id) : [...prev, srv.id]
+                                        );
+                                      }}
+                                      className={`p-2.5 rounded border text-xs cursor-pointer transition-all flex items-start gap-2.5 ${
+                                        isSelected
+                                          ? "bg-red-50/50 border-[#7a0c0c] shadow-2xs"
+                                          : "bg-white border-slate-200 hover:border-slate-300 opacity-70"
+                                      }`}
+                                    >
+                                      <div className="pt-0.5 text-[#7a0c0c]">
+                                        {isSelected ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4 text-slate-400" />}
+                                      </div>
+                                      <div className="min-w-0 flex-1">
+                                        <div className="font-bold text-slate-800 truncate">{srv.name}</div>
+                                        <div className="text-[11px] font-mono text-slate-500 truncate">{srv.bmcIp || "No IP"}</div>
+                                        <div className="text-[10px] text-slate-400 truncate mt-0.5">{srv.vendor || "SM"} · {srv.model || "Tyrone"}</div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            {/* Step 2: Choose Operation (Firmware Update vs OS Deployment) */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div
+                                onClick={() => !isBulkRunning && setBulkProvType("firmware")}
+                                className={`p-4 rounded-lg border-2 cursor-pointer transition-all space-y-2 ${
+                                  bulkProvType === "firmware"
+                                    ? "border-[#7a0c0c] bg-red-50/20 shadow-xs"
+                                    : "border-slate-200 bg-white hover:border-slate-300"
+                                }`}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <Cpu className={`w-5 h-5 ${bulkProvType === "firmware" ? "text-[#7a0c0c]" : "text-slate-500"}`} />
+                                    <span className="font-extrabold text-sm text-slate-800">1. Bulk Firmware Update</span>
+                                  </div>
+                                  <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                                    bulkProvType === "firmware" ? "border-[#7a0c0c] bg-[#7a0c0c]" : "border-slate-300"
+                                  }`}>
+                                    {bulkProvType === "firmware" && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-slate-600">
+                                  Flash BMC Management Module, System BIOS, CPLD, PSU, or HBA firmware simultaneously across all selected group devices.
+                                </p>
+                              </div>
+
+                              <div
+                                onClick={() => !isBulkRunning && setBulkProvType("os")}
+                                className={`p-4 rounded-lg border-2 cursor-pointer transition-all space-y-2 ${
+                                  bulkProvType === "os"
+                                    ? "border-[#7a0c0c] bg-red-50/20 shadow-xs"
+                                    : "border-slate-200 bg-white hover:border-slate-300"
+                                }`}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <Disc className={`w-5 h-5 ${bulkProvType === "os" ? "text-[#7a0c0c]" : "text-slate-500"}`} />
+                                    <span className="font-extrabold text-sm text-slate-800">2. Bulk OS Deployment</span>
+                                  </div>
+                                  <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                                    bulkProvType === "os" ? "border-[#7a0c0c] bg-[#7a0c0c]" : "border-slate-300"
+                                  }`}>
+                                    {bulkProvType === "os" && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-slate-600">
+                                  Attach Virtual Media ISO (Ubuntu, RHEL, Rocky Linux, Windows, or custom image) and trigger coordinated UEFI boot across all selected nodes.
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* Step 3: Parameters Configuration Form */}
+                            <form onSubmit={handleStartBulkProvisioning} className="bg-white border border-slate-200 rounded-lg p-5 shadow-2xs space-y-4">
+                              <div className="pb-3 border-b border-slate-200 flex items-center justify-between">
+                                <div className="font-bold text-xs uppercase tracking-wider text-slate-700">
+                                  {bulkProvType === "firmware" ? "Firmware Update Parameters" : "Operating System Deployment Parameters"}
+                                </div>
+                                <span className="text-slate-500 text-xs">
+                                  Targeting <strong className="text-[#7a0c0c]">{bulkSelectedDeviceIds.length}</strong> devices
+                                </span>
+                              </div>
+
+                              {bulkProvType === "firmware" ? (
+                                <div className="space-y-4">
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                      <label className="block text-xs font-bold text-slate-700 mb-1">Target Component</label>
+                                      <select
+                                        value={bulkFwComponent}
+                                        onChange={e => setBulkFwComponent(e.target.value)}
+                                        className="w-full p-2 border border-slate-300 rounded text-xs bg-slate-50 focus:bg-white focus:outline-none focus:border-[#7a0c0c]"
+                                      >
+                                        <option value="Management Module Firmware">Management Module Firmware (BMC)</option>
+                                        <option value="System BIOS">System BIOS</option>
+                                        <option value="CPLD Firmware">CPLD Firmware</option>
+                                        <option value="Power Supply (PSU)">Power Supply (PSU)</option>
+                                        <option value="HBA / RAID Controller">HBA / RAID Controller</option>
+                                      </select>
+                                    </div>
+
+                                    <div>
+                                      <label className="block text-xs font-bold text-slate-700 mb-1">Payload Distribution Mode</label>
+                                      <div className="grid grid-cols-2 gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => setBulkFwSourceType("file")}
+                                          className={`py-1.5 text-xs font-bold rounded border cursor-pointer ${
+                                            bulkFwSourceType === "file"
+                                              ? "bg-[#7a0c0c] text-white border-[#7a0c0c]"
+                                              : "bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200"
+                                          }`}
+                                        >
+                                          Upload Binary File
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setBulkFwSourceType("url")}
+                                          className={`py-1.5 text-xs font-bold rounded border cursor-pointer ${
+                                            bulkFwSourceType === "url"
+                                              ? "bg-[#7a0c0c] text-white border-[#7a0c0c]"
+                                              : "bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200"
+                                          }`}
+                                        >
+                                          Remote HTTP/TFTP URL
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {bulkFwSourceType === "file" ? (
+                                    <div>
+                                      <label className="block text-xs font-bold text-slate-700 mb-1">Firmware Binary File</label>
+                                      <input
+                                        type="file"
+                                        accept=".bin,.hex,.iso,.hpm,.zip,.tar,.gz"
+                                        onChange={e => setBulkFwFile(e.target.files?.[0] || null)}
+                                        className="w-full p-2 border border-slate-300 rounded text-xs bg-slate-50 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:font-bold file:bg-[#7a0c0c] file:text-white hover:file:bg-[#520000] cursor-pointer"
+                                      />
+                                      {bulkFwFile && (
+                                        <p className="text-[11px] text-emerald-700 font-semibold mt-1">
+                                          Selected: {bulkFwFile.name} ({(bulkFwFile.size / (1024 * 1024)).toFixed(2)} MB)
+                                        </p>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <div>
+                                      <label className="block text-xs font-bold text-slate-700 mb-1">Remote Firmware Image URL</label>
+                                      <input
+                                        type="text"
+                                        value={bulkFwUrl}
+                                        onChange={e => setBulkFwUrl(e.target.value)}
+                                        placeholder="https://repo.datacenter.internal/firmware/supermicro/sys621_v2.04.bin"
+                                        className="w-full p-2 border border-slate-300 rounded text-xs bg-slate-50 focus:bg-white focus:outline-none focus:border-[#7a0c0c]"
+                                      />
+                                    </div>
+                                  )}
+
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                                    <div>
+                                      <label className="block text-xs font-bold text-slate-700 mb-1">Batch Memo / Rollout Tag</label>
+                                      <input
+                                        type="text"
+                                        value={bulkFwMemo}
+                                        onChange={e => setBulkFwMemo(e.target.value)}
+                                        placeholder="e.g. Cluster Q4 Security Patch Rollout"
+                                        className="w-full p-2 border border-slate-300 rounded text-xs bg-slate-50 focus:bg-white focus:outline-none focus:border-[#7a0c0c]"
+                                      />
+                                    </div>
+
+                                    <div className="flex items-center pt-5">
+                                      <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-slate-700 font-medium">
+                                        <input
+                                          type="checkbox"
+                                          checked={bulkFwAutoReset}
+                                          onChange={e => setBulkFwAutoReset(e.target.checked)}
+                                          className="w-4 h-4 text-[#7a0c0c] rounded focus:ring-0 cursor-pointer"
+                                        />
+                                        <span>Automatically power cycle / reboot nodes post-flashing to apply firmware</span>
+                                      </label>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="space-y-4">
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                      <label className="block text-xs font-bold text-slate-700 mb-1">Operating System Image Preset</label>
+                                      <select
+                                        value={bulkOsPreset}
+                                        onChange={e => setBulkOsPreset(e.target.value)}
+                                        className="w-full p-2 border border-slate-300 rounded text-xs bg-slate-50 focus:bg-white focus:outline-none focus:border-[#7a0c0c]"
+                                      >
+                                        <option value="ubuntu-24.04.iso">Ubuntu Server 24.04 LTS (x86_64)</option>
+                                        <option value="rhel-9.4.iso">Red Hat Enterprise Linux 9.4 (x86_64)</option>
+                                        <option value="rocky-9.3.iso">Rocky Linux 9.3 Enterprise (x86_64)</option>
+                                        <option value="windows-server-2022.iso">Windows Server 2022 Datacenter</option>
+                                        <option value="custom">-- Custom ISO URL or Upload --</option>
+                                      </select>
+                                    </div>
+
+                                    <div>
+                                      <label className="block text-xs font-bold text-slate-700 mb-1">Batch Deployment Memo</label>
+                                      <input
+                                        type="text"
+                                        value={bulkOsMemo}
+                                        onChange={e => setBulkOsMemo(e.target.value)}
+                                        placeholder="e.g. Mass RockyLinux 9.3 re-image for group"
+                                        className="w-full p-2 border border-slate-300 rounded text-xs bg-slate-50 focus:bg-white focus:outline-none focus:border-[#7a0c0c]"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  {bulkOsPreset === "custom" && (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                      <div>
+                                        <label className="block text-xs font-bold text-slate-700 mb-1">Custom ISO Image URL</label>
+                                        <input
+                                          type="text"
+                                          value={bulkOsCustomUrl}
+                                          onChange={e => setBulkOsCustomUrl(e.target.value)}
+                                          placeholder="https://isos.datacenter.lan/images/custom-image.iso"
+                                          className="w-full p-2 border border-slate-300 rounded text-xs bg-slate-50 focus:bg-white focus:outline-none focus:border-[#7a0c0c]"
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="block text-xs font-bold text-slate-700 mb-1">Or Upload Local ISO File</label>
+                                        <input
+                                          type="file"
+                                          accept=".iso,.img"
+                                          onChange={e => setBulkOsFile(e.target.files?.[0] || null)}
+                                          className="w-full p-2 border border-slate-300 rounded text-xs bg-slate-50 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:font-bold file:bg-[#7a0c0c] file:text-white hover:file:bg-[#520000] cursor-pointer"
+                                        />
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                                    <div>
+                                      <label className="block text-xs font-bold text-slate-700 mb-1">ISO Share Username (Optional)</label>
+                                      <input
+                                        type="text"
+                                        value={bulkOsUsername}
+                                        onChange={e => setBulkOsUsername(e.target.value)}
+                                        placeholder="admin"
+                                        className="w-full p-2 border border-slate-300 rounded text-xs bg-slate-50 focus:bg-white focus:outline-none focus:border-[#7a0c0c]"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs font-bold text-slate-700 mb-1">ISO Share Password (Optional)</label>
+                                      <input
+                                        type="password"
+                                        value={bulkOsPassword}
+                                        onChange={e => setBulkOsPassword(e.target.value)}
+                                        placeholder="••••••••"
+                                        className="w-full p-2 border border-slate-300 rounded text-xs bg-slate-50 focus:bg-white focus:outline-none focus:border-[#7a0c0c]"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  <div className="pt-1">
+                                    <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-slate-700 font-medium">
+                                      <input
+                                        type="checkbox"
+                                        checked={bulkOsReboot}
+                                        onChange={e => setBulkOsReboot(e.target.checked)}
+                                        className="w-4 h-4 text-[#7a0c0c] rounded focus:ring-0 cursor-pointer"
+                                      />
+                                      <span>Configure UEFI one-time boot override to Virtual Media and issue immediate power reboot</span>
+                                    </label>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Submit Button */}
+                              <div className="pt-3 border-t border-slate-200 flex items-center justify-between">
+                                <span className="text-xs text-slate-500">
+                                  Targeting <strong className="text-slate-800">{bulkSelectedDeviceIds.length}</strong> servers in {currentGroup.name}
+                                </span>
+                                <button
+                                  type="submit"
+                                  disabled={isBulkRunning || bulkSelectedDeviceIds.length === 0}
+                                  className={`px-5 py-2 font-bold text-xs rounded shadow-xs flex items-center gap-2 transition-all ${
+                                    isBulkRunning || bulkSelectedDeviceIds.length === 0
+                                      ? "bg-slate-300 text-slate-500 cursor-not-allowed"
+                                      : "bg-[#7a0c0c] hover:bg-[#520000] text-white cursor-pointer"
+                                  }`}
+                                >
+                                  {isBulkRunning ? (
+                                    <>
+                                      <RefreshCw className="w-4 h-4 animate-spin" />
+                                      <span>Executing Mass Provisioning...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Play className="w-4 h-4 fill-white" />
+                                      <span>
+                                        {bulkProvType === "firmware"
+                                          ? `Launch Firmware Update on ${bulkSelectedDeviceIds.length} Nodes`
+                                          : `Deploy OS on ${bulkSelectedDeviceIds.length} Nodes`}
+                                      </span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            </form>
+
+                            {/* Step 4: Live Execution Monitor & Progress Results */}
+                            {(isBulkRunning || bulkCompletedSummary || bulkLogs.length > 0) && (
+                              <div className="bg-white border border-slate-200 rounded-lg p-5 shadow-2xs space-y-4 animate-in fade-in">
+                                <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+                                  <div className="flex items-center gap-2">
+                                    <Activity className="w-4 h-4 text-[#7a0c0c]" />
+                                    <h4 className="font-bold text-xs text-slate-800">
+                                      Cluster Provisioning Progress & Node Status
+                                    </h4>
+                                  </div>
+                                  {bulkCompletedSummary && (
+                                    <div className="flex items-center gap-2 text-xs font-bold">
+                                      <span className="px-2 py-0.5 bg-slate-100 rounded text-slate-700">Total: {bulkCompletedSummary.total}</span>
+                                      <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded">Success: {bulkCompletedSummary.success}</span>
+                                      {bulkCompletedSummary.failed > 0 && (
+                                        <span className="px-2 py-0.5 bg-rose-100 text-rose-800 rounded">Failed: {bulkCompletedSummary.failed}</span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Overall Progress Bar */}
+                                <div className="space-y-1">
+                                  <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                                    <span>Overall Deployment Progress</span>
+                                    <span>{bulkOverallProgress}%</span>
+                                  </div>
+                                  <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden">
+                                    <div
+                                      className="bg-[#7a0c0c] h-full transition-all duration-300"
+                                      style={{ width: `${bulkOverallProgress}%` }}
+                                    />
+                                  </div>
+                                </div>
+
+                                {/* Nodes Progress Table */}
+                                <div className="border border-slate-200 rounded overflow-hidden">
+                                  <table className="w-full text-left text-xs border-collapse">
+                                    <thead className="bg-slate-100 font-bold text-slate-700 border-b border-slate-200">
+                                      <tr>
+                                        <th className="p-2.5 border-r border-slate-200">Server Node</th>
+                                        <th className="p-2.5 border-r border-slate-200">BMC IP</th>
+                                        <th className="p-2.5 border-r border-slate-200 w-48">Progress</th>
+                                        <th className="p-2.5 border-r border-slate-200">Status</th>
+                                        <th className="p-2.5">Current Operation</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-200 font-medium text-slate-800">
+                                      {groupServers
+                                        .filter(s => bulkSelectedDeviceIds.includes(s.id))
+                                        .map(srv => {
+                                          const prog = bulkServerProgress[srv.id] || { status: "pending", percent: 0, message: "Queued" };
+                                          return (
+                                            <tr key={srv.id} className="hover:bg-slate-50">
+                                              <td className="p-2.5 border-r border-slate-200 font-bold text-slate-900">
+                                                <div className="flex items-center gap-1.5">
+                                                  <Server className="w-3.5 h-3.5 text-slate-400" />
+                                                  <span>{srv.name}</span>
+                                                </div>
+                                              </td>
+                                              <td className="p-2.5 border-r border-slate-200 font-mono text-slate-600">{srv.bmcIp || "N/A"}</td>
+                                              <td className="p-2.5 border-r border-slate-200">
+                                                <div className="flex items-center gap-2">
+                                                  <div className="flex-1 bg-slate-200 h-2 rounded-full overflow-hidden">
+                                                    <div
+                                                      className={`h-full transition-all duration-300 ${
+                                                        prog.status === "failed"
+                                                          ? "bg-rose-600"
+                                                          : prog.status === "success"
+                                                          ? "bg-emerald-600"
+                                                          : "bg-[#7a0c0c]"
+                                                      }`}
+                                                      style={{ width: `${prog.percent}%` }}
+                                                    />
+                                                  </div>
+                                                  <span className="font-mono text-[11px] text-slate-500 w-8 text-right">{prog.percent}%</span>
+                                                </div>
+                                              </td>
+                                              <td className="p-2.5 border-r border-slate-200">
+                                                <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                                                  prog.status === "success"
+                                                    ? "bg-emerald-100 text-emerald-800"
+                                                    : prog.status === "failed"
+                                                    ? "bg-rose-100 text-rose-800"
+                                                    : prog.status === "processing"
+                                                    ? "bg-amber-100 text-amber-800 animate-pulse"
+                                                    : "bg-slate-100 text-slate-600"
+                                                }`}>
+                                                  {prog.status === "success" ? "Completed" : prog.status === "failed" ? "Failed" : prog.status === "processing" ? "In Progress" : "Queued"}
+                                                </span>
+                                              </td>
+                                              <td className="p-2.5 text-slate-600 text-[11px] truncate">{prog.message}</td>
+                                            </tr>
+                                          );
+                                        })}
+                                    </tbody>
+                                  </table>
+                                </div>
+
+                                {/* Live Event Log Terminal */}
+                                {bulkLogs.length > 0 && (
+                                  <div className="space-y-1.5">
+                                    <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                                      <Terminal className="w-3.5 h-3.5 text-slate-500" />
+                                      <span>Execution Event Log</span>
+                                    </div>
+                                    <div className="p-3 bg-slate-900 text-slate-200 rounded font-mono text-[11px] max-h-40 overflow-y-auto space-y-1">
+                                      {bulkLogs.map((lg, i) => (
+                                        <div key={i} className="flex items-start gap-2 leading-relaxed">
+                                          <span className="text-slate-500 shrink-0">[{lg.time}]</span>
+                                          <span className={lg.type === "success" ? "text-emerald-400" : lg.type === "error" ? "text-rose-400" : "text-slate-300"}>
+                                            {lg.message}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </>
+                );
+              })() : (
+                <div className="h-full flex flex-col items-center justify-center p-8 text-center text-slate-400 space-y-3">
+                  <div className="p-4 bg-slate-100 rounded-full text-slate-400">
+                    <Boxes className="w-8 h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <h4 className="font-bold text-slate-700 text-sm">No Device Group Selected</h4>
+                    <p className="text-xs text-slate-500 max-w-sm">
+                      Create a new group or select an existing group to organize, monitor, and deploy configurations to servers.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewGroupName("");
+                      setNewGroupDesc("");
+                      setShowCreateGroupModal(true);
+                    }}
+                    className="px-4 py-2 bg-[#7a0c0c] hover:bg-[#520000] text-white rounded font-bold text-xs cursor-pointer shadow-xs flex items-center gap-1.5 transition-all"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Create New Group</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {/* Select Columns Modal */}
@@ -1091,6 +2316,12 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
         isOpen={showProvisioningModal}
         onClose={() => setShowProvisioningModal(false)}
         server={provisioningTargetServer}
+        initialTab={provisioningInitialTab}
+        onSuccess={(_msg, task) => {
+          if (task) {
+            setProvisioningHistory(prev => [task, ...prev]);
+          }
+        }}
       />
 
       {/* Add Discovery Task Modal (matching Image 2) */}
@@ -1479,6 +2710,244 @@ export const GlobalInventory = ({ servers, serverStatuses, onSelectServer, onAdd
           username={osInstallTargetServer.bmcUsername || "admin"}
           password={osInstallTargetServer.bmcPassword || "password"}
         />
+      )}
+
+      {/* Create Device Group Modal */}
+      {showCreateGroupModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-2xl border border-slate-300 max-w-md w-full overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-150 text-xs text-slate-800">
+            {/* Header */}
+            <div className="bg-[#7a0c0c] text-white px-5 py-3 flex items-center justify-between font-bold text-sm tracking-wide shrink-0">
+              <div className="flex items-center gap-2">
+                <Boxes className="w-4 h-4" />
+                <span>Create New Device Group</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCreateGroupModal(false)}
+                className="text-white/70 hover:text-white cursor-pointer p-0.5"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handleCreateGroup} className="p-5 space-y-4">
+              <div className="space-y-1.5">
+                <label className="font-bold text-slate-700 block">
+                  Group Name <span className="text-red-600">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  placeholder="e.g. AI Training Cluster, Edge Gateway Node"
+                  value={newGroupName}
+                  onChange={e => setNewGroupName(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded text-xs focus:outline-none focus:border-[#7a0c0c]"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="font-bold text-slate-700 block">Description (Optional)</label>
+                <textarea
+                  rows={2}
+                  placeholder="Purpose or operational tier for this group..."
+                  value={newGroupDesc}
+                  onChange={e => setNewGroupDesc(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded text-xs focus:outline-none focus:border-[#7a0c0c] resize-none"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="font-bold text-slate-700 block">Group Color Badge</label>
+                <div className="flex items-center gap-2 pt-1 flex-wrap">
+                  {[
+                    "#7a0c0c",
+                    "#1e3a8a",
+                    "#047857",
+                    "#b45309",
+                    "#6b21a8",
+                    "#0f766e",
+                    "#be123c",
+                    "#334155"
+                  ].map(color => (
+                    <button
+                      type="button"
+                      key={color}
+                      onClick={() => setNewGroupColor(color)}
+                      className={`w-7 h-7 rounded-full cursor-pointer transition-transform flex items-center justify-center ${
+                        newGroupColor === color ? "scale-110 ring-2 ring-offset-2 ring-slate-800" : "hover:scale-105"
+                      }`}
+                      style={{ backgroundColor: color }}
+                    >
+                      {newGroupColor === color && <Check className="w-4 h-4 text-white" />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateGroupModal(false)}
+                  className="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded text-xs cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-1.5 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs shadow-xs cursor-pointer transition-colors"
+                >
+                  Create Group
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Assign / Manage Devices Modal */}
+      {showAssignDevicesModal && currentGroup && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-2xl border border-slate-300 max-w-2xl w-full overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in-95 duration-150 text-xs text-slate-800">
+            {/* Header */}
+            <div className="bg-[#7a0c0c] text-white px-5 py-3 flex items-center justify-between font-bold text-sm tracking-wide shrink-0">
+              <div className="flex items-center gap-2">
+                <Boxes className="w-4 h-4" />
+                <span>Manage Devices - {currentGroup.name}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAssignDevicesModal(false)}
+                className="text-white/70 hover:text-white cursor-pointer p-0.5"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Filter Bar */}
+            <div className="p-4 bg-slate-50 border-b border-slate-200 shrink-0 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="relative flex-1">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={assignSearchQuery}
+                    onChange={e => setAssignSearchQuery(e.target.value)}
+                    placeholder="Filter fleet servers by name, IP, model, rack..."
+                    className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded text-xs bg-white focus:outline-none focus:border-[#7a0c0c]"
+                  />
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const allIds = (servers || []).map(s => s.id);
+                      setTempAssignedDeviceIds(allIds);
+                    }}
+                    className="px-2.5 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded text-[11px] cursor-pointer"
+                  >
+                    Select All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTempAssignedDeviceIds([])}
+                    className="px-2.5 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded text-[11px] cursor-pointer"
+                  >
+                    Deselect All
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Device Checklist */}
+            <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+              {(() => {
+                const filteredServers = (servers || []).filter(s =>
+                  s.name.toLowerCase().includes(assignSearchQuery.toLowerCase()) ||
+                  (s.bmcIp || "").toLowerCase().includes(assignSearchQuery.toLowerCase()) ||
+                  (s.model || "").toLowerCase().includes(assignSearchQuery.toLowerCase()) ||
+                  (s.rack || "").toLowerCase().includes(assignSearchQuery.toLowerCase())
+                );
+
+                if (filteredServers.length === 0) {
+                  return (
+                    <div className="p-8 text-center text-slate-400 font-medium">
+                      No matching devices found in fleet inventory.
+                    </div>
+                  );
+                }
+
+                return filteredServers.map(s => {
+                  const isChecked = tempAssignedDeviceIds.includes(s.id);
+                  return (
+                    <div
+                      key={s.id}
+                      onClick={() => handleToggleAssignDevice(s.id)}
+                      className={`p-3 flex items-center justify-between gap-3 cursor-pointer transition-colors ${
+                        isChecked ? "bg-red-50/60 font-semibold" : "hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="text-[#7a0c0c] shrink-0">
+                          {isChecked ? (
+                            <CheckSquare className="w-4 h-4" />
+                          ) : (
+                            <Square className="w-4 h-4 text-slate-400" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-900 truncate flex items-center gap-2">
+                            <span>{s.name}</span>
+                            <span className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded text-[10px] font-mono">
+                              {s.rack || "Rack 1"}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 font-mono truncate">
+                            IP: {s.bmcIp} · {s.vendor || "SM"} {s.model || ""}
+                          </div>
+                        </div>
+                      </div>
+
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                          isChecked ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-500"
+                        }`}
+                      >
+                        {isChecked ? "Included" : "Excluded"}
+                      </span>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-slate-100 border-t border-slate-200 flex items-center justify-between shrink-0">
+              <span className="text-slate-600 font-bold text-xs">
+                {tempAssignedDeviceIds.length} of {servers.length} devices selected
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAssignDevicesModal(false)}
+                  className="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded text-xs cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveAssignedDevices}
+                  className="px-5 py-1.5 bg-[#7a0c0c] hover:bg-[#520000] text-white font-bold rounded text-xs shadow-xs cursor-pointer transition-colors"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -79,6 +79,7 @@ export interface HierarchyViewProps {
   selectedServerId?: string;
   alerts?: any[];
   onEditServer?: (server: ServerProfile) => void;
+  onDeleteServer?: (id: string) => void;
 }
 
 // 1. React.memo: Navigation Tree Node Component for Left Sidebar Tree
@@ -86,17 +87,19 @@ export const NavigationServerItem = React.memo(function NavigationServerItem({
   sId,
   sName,
   isActive,
-  onSelect
+  onSelect,
+  onDelete
 }: {
   sId: string;
   sName: string;
   isActive: boolean;
   onSelect: (id: string) => void;
+  onDelete?: (id: string, e: React.MouseEvent) => void;
 }) {
   return (
     <div
       onClick={() => onSelect(sId)}
-      className={`px-3 py-1.5 rounded cursor-pointer font-medium flex items-center justify-between gap-2 transition-all virtual-table-row ${
+      className={`group px-3 py-1.5 rounded cursor-pointer font-medium flex items-center justify-between gap-2 transition-all virtual-table-row ${
         isActive ? "bg-[#7a0c0c] text-white font-bold shadow-sm" : "hover:bg-slate-200/70 text-slate-700"
       }`}
     >
@@ -104,7 +107,21 @@ export const NavigationServerItem = React.memo(function NavigationServerItem({
         <Server className="w-3.5 h-3.5 shrink-0 opacity-80" />
         <span className="truncate">{sName}</span>
       </div>
-      {isActive && <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" title="Active Server" />}
+      <div className="flex items-center gap-1.5 shrink-0">
+        {onDelete && (
+          <button
+            type="button"
+            onClick={(e) => onDelete(sId, e)}
+            className={`p-1 rounded hover:bg-red-800/80 transition-colors ${
+              isActive ? "text-white/80 hover:text-white" : "text-slate-400 hover:text-red-600 opacity-0 group-hover:opacity-100"
+            }`}
+            title={`Delete Device "${sName}"`}
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        )}
+        {isActive && <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" title="Active Server" />}
+      </div>
     </div>
   );
 });
@@ -142,7 +159,7 @@ export const NavigationDeviceCard = React.memo(function NavigationDeviceCard({
   );
 });
 
-export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServer, onOpenInventoryDetails, selectedServerId, alerts = [], onEditServer }: HierarchyViewProps) {
+export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServer, onOpenInventoryDetails, selectedServerId, alerts = [], onEditServer, onDeleteServer }: HierarchyViewProps) {
   const [topTab, setTopTab] = useState<"datacenter" | "layout" | "capacity">("datacenter");
   const [selectedDC, setSelectedDC] = useState<string>("DC1");
   const [selectedRoom, setSelectedRoom] = useState<string>("");
@@ -382,6 +399,27 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
     return {};
   });
 
+  const isDeletedServer = (item: any) => {
+    try {
+      const raw = localStorage.getItem("tyrone_deleted_keys");
+      const deletedKeys = raw ? new Set<string>(JSON.parse(raw)) : new Set<string>();
+      const k1 = String(item.id || "").toLowerCase().trim();
+      const rawIp = String(item.bmcIp || item.ip || "").toLowerCase().trim();
+      const cleanIp = rawIp.replace(/^https?:\/\//, '').replace(/:.*$/, '').trim();
+      const k3 = String(item.name || "").toLowerCase().trim();
+      if (k1 && deletedKeys.has(k1)) return true;
+      if (rawIp && deletedKeys.has(rawIp)) return true;
+      if (cleanIp && deletedKeys.has(cleanIp)) return true;
+      if (k3 && deletedKeys.has(k3)) return true;
+      for (const dk of deletedKeys) {
+        if (!dk) continue;
+        if (cleanIp && (dk === cleanIp || dk.includes(cleanIp) || cleanIp.includes(dk))) return true;
+        if (k1 && (dk === k1 || k1.replace(/^(srv-|fleet-|server-)/, '') === dk)) return true;
+      }
+    } catch (_) { }
+    return false;
+  };
+
   const getMergedLocalServers = (serversProp: ServerProfile[]) => {
     const savedFleet = (() => {
       try {
@@ -397,24 +435,10 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
       } catch { return {}; }
     })();
 
-    const deletedKeys = (() => {
-      try {
-        const raw = localStorage.getItem("tyrone_deleted_keys");
-        return raw ? new Set<string>(JSON.parse(raw)) : new Set<string>();
-      } catch { return new Set<string>(); }
-    })();
-
-    const isDeleted = (item: any) => {
-      const k1 = String(item.id || "").toLowerCase();
-      const k2 = String(item.bmcIp || item.ip || "").toLowerCase();
-      const k3 = String(item.name || "").toLowerCase();
-      return (k1 && deletedKeys.has(k1)) || (k2 && deletedKeys.has(k2)) || (k3 && deletedKeys.has(k3));
-    };
-
     const combinedMap = new Map<string, ServerProfile>();
 
     (serversProp || []).forEach(s => {
-      if (!isDeleted(s)) {
+      if (!isDeletedServer(s)) {
         const cleanIp = (s.bmcIp || (s as any).ip || "").trim();
         const rk = savedRacks[s.id] || savedRacks[cleanIp] || s.rack || "";
         combinedMap.set(s.id, { ...s, bmcIp: cleanIp, rack: rk });
@@ -422,12 +446,13 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
     });
 
     savedFleet.forEach((f: any) => {
-      if (!isDeleted(f)) {
+      if (!isDeletedServer(f)) {
         const cleanIp = (f.bmcIp || f.ip || "").trim();
         const fId = f.id || `server-${cleanIp}`;
         if (!combinedMap.has(fId)) {
           const rk = savedRacks[fId] || savedRacks[cleanIp] || f.rack || "";
           combinedMap.set(fId, {
+            ...f,
             id: fId,
             name: f.name || `Server (${cleanIp})`,
             bmcIp: cleanIp,
@@ -435,6 +460,10 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
             bmcUsername: f.bmcUsername || f.username || "admin",
             bmcPassword: f.bmcPassword || f.password || ""
           });
+        } else {
+          const existing = combinedMap.get(fId)!;
+          const rk = savedRacks[fId] || savedRacks[cleanIp] || f.rack || existing.rack || "";
+          combinedMap.set(fId, { ...existing, ...f, rack: rk });
         }
       }
     });
@@ -447,9 +476,15 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
   useEffect(() => {
     setLocalServers(prev => {
       const merged = getMergedLocalServers(servers);
-      // Keep any newly added local servers in memory if not yet reflected
-      const prevExtra = prev.filter(p => !merged.some(m => m.id === p.id || (m.bmcIp && m.bmcIp === p.bmcIp)));
-      return [...merged, ...prevExtra];
+      const prevExtra = prev.filter(p => !isDeletedServer(p) && !merged.some(m => m.id === p.id || (m.bmcIp && m.bmcIp === p.bmcIp)));
+      const next = [...merged, ...prevExtra];
+      if (
+        prev.length === next.length &&
+        prev.every((p, i) => p.id === next[i].id && p.rack === next[i].rack)
+      ) {
+        return prev;
+      }
+      return next;
     });
   }, [servers]);
 
@@ -459,9 +494,9 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
       if (srv) {
         setSelectedInspectNode({
           type: "Server Device",
-          name: srv.name || srv.bmcIp || srv.ip || "172.16.12.50",
+          name: srv.name || srv.bmcIp || srv.ip || "Server",
           id: srv.id,
-          bmcIp: srv.bmcIp || srv.ip || "172.16.12.50",
+          bmcIp: srv.bmcIp || srv.ip || "",
           server: srv
         });
       }
@@ -589,58 +624,45 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
 
   useEffect(() => {
     localStorage.setItem("tyrone_server_racks", JSON.stringify(serverRacks));
-    window.dispatchEvent(new CustomEvent("hierarchy-updated"));
   }, [serverRacks]);
 
   // Sync servers if prop updates while maintaining user assigned racks
   useEffect(() => {
     const syncLocalFleet = (e?: any) => {
       try {
-        const deletedKeys = (() => {
-          const raw = localStorage.getItem("tyrone_deleted_keys");
-          return raw ? new Set<string>(JSON.parse(raw)) : new Set<string>();
-        })();
-
-        const fleetRaw = localStorage.getItem("tyrone_fleet");
-        const sourceFleet = fleetRaw ? JSON.parse(fleetRaw) : (servers || []);
-        if (Array.isArray(sourceFleet)) {
-          const valid = sourceFleet.filter((s: any) =>
-            !deletedKeys.has(String(s.id).toLowerCase()) &&
-            !deletedKeys.has(String(s.bmcIp).toLowerCase()) &&
-            !deletedKeys.has(String(s.name).toLowerCase())
-          );
-          const mapped = valid.map(s => ({
-            ...s,
-            rack: serverRacks[s.id] || s.rack || "Rack 1"
-          }));
-          setLocalServers(mapped);
-
-          // If a new device was just added, auto-select it and start fetching telemetry immediately!
-          const addedDev = e?.detail?.newDevice;
-          if (addedDev && addedDev.id) {
-            setActiveServerId(addedDev.id);
-            const targetRack = addedDev.rack || serverRacks[addedDev.id] || "Rack 1";
-            setSelectedRack(targetRack);
-            if (typeof (fetchServerTelemetry as any) === "function") {
-              (fetchServerTelemetry as any)(addedDev, true);
-            }
+        const merged = getMergedLocalServers(servers);
+        setLocalServers(prev => {
+          if (
+            prev.length === merged.length &&
+            prev.every((p, i) => p.id === merged[i].id && p.rack === merged[i].rack)
+          ) {
+            return prev;
           }
-        } else {
-          setLocalServers([]);
+          return merged;
+        });
+
+        // If a new device was just added, auto-select it and start fetching telemetry immediately!
+        const addedDev = e?.detail?.newDevice;
+        if (addedDev && addedDev.id) {
+          setActiveServerId(addedDev.id);
+          const targetRack = addedDev.rack || "Rack 1";
+          setSelectedRack(targetRack);
+          if (typeof (fetchServerTelemetry as any) === "function") {
+            (fetchServerTelemetry as any)(addedDev, true);
+          }
         }
-      } catch {
-        setLocalServers([]);
+      } catch (err) {
+        console.warn("syncLocalFleet error:", err);
       }
     };
 
-    syncLocalFleet();
     window.addEventListener("fleet-updated", syncLocalFleet);
     window.addEventListener("hierarchy-updated", syncLocalFleet);
     return () => {
       window.removeEventListener("fleet-updated", syncLocalFleet);
       window.removeEventListener("hierarchy-updated", syncLocalFleet);
     };
-  }, [servers, serverRacks]);
+  }, [servers]);
 
   // Hierarchy Modals State
   const [showAddDCModal, setShowAddDCModal] = useState(false);
@@ -766,24 +788,39 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
     if (serversToDelete.length > 0) {
       setLocalServers(prev => prev.filter(s => !idsToDelete.has(s.id)));
 
-      // 2. Add to tyrone_deleted_keys
+      // 2. Add to tyrone_deleted_keys with all aliases
       try {
         const rawDel = localStorage.getItem("tyrone_deleted_keys");
         const delSet = rawDel ? new Set<string>(JSON.parse(rawDel)) : new Set<string>();
+        const addKey = (k?: string) => {
+          if (!k) return;
+          const str = String(k).trim().toLowerCase();
+          if (str) {
+            delSet.add(str);
+            const clean = str.replace(/^https?:\/\//, '').replace(/:.*$/, '').replace(/^(srv-|fleet-|server-)/, '').trim();
+            if (clean) {
+              delSet.add(clean);
+              delSet.add(`srv-${clean}`);
+              delSet.add(`fleet-${clean}`);
+              delSet.add(`server-${clean}`);
+            }
+          }
+        };
         serversToDelete.forEach(s => {
-          if (s.id) delSet.add(String(s.id).toLowerCase());
-          if (s.bmcIp) delSet.add(String(s.bmcIp).toLowerCase());
-          if (s.name) delSet.add(String(s.name).toLowerCase());
+          addKey(s.id);
+          addKey(s.bmcIp);
+          addKey(s.name);
         });
         localStorage.setItem("tyrone_deleted_keys", JSON.stringify(Array.from(delSet)));
       } catch (_) { }
 
       // 3. Update tyrone_fleet
+      let updatedFleet: any[] = [];
       try {
         const fleetRaw = localStorage.getItem("tyrone_fleet");
         if (fleetRaw) {
           const fleet = JSON.parse(fleetRaw);
-          const updatedFleet = fleet.filter((f: any) => !idsToDelete.has(f.id));
+          updatedFleet = fleet.filter((f: any) => !idsToDelete.has(f.id));
           localStorage.setItem("tyrone_fleet", JSON.stringify(updatedFleet));
           fetch("/api/local/fleet", {
             method: "POST",
@@ -798,11 +835,28 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
         const sRacksRaw = localStorage.getItem("tyrone_server_racks");
         if (sRacksRaw) {
           const sRacks = JSON.parse(sRacksRaw);
-          serversToDelete.forEach(s => delete sRacks[s.id]);
+          serversToDelete.forEach(s => {
+            delete sRacks[s.id];
+            if (s.bmcIp) delete sRacks[s.bmcIp];
+          });
           localStorage.setItem("tyrone_server_racks", JSON.stringify(sRacks));
           setServerRacks(sRacks);
         }
       } catch (_) { }
+
+      // 5. Backend deletion calls
+      serversToDelete.forEach(s => {
+        if (s.id) {
+          fetch(`/api/local/fleet/${encodeURIComponent(s.id)}`, { method: "DELETE" }).catch(() => null);
+          fetch(`/api/servers/${encodeURIComponent(s.id)}`, { method: "DELETE" }).catch(() => null);
+        }
+        if (s.bmcIp) {
+          const clean = s.bmcIp.replace(/^https?:\/\//, '').replace(/:.*$/, '').trim();
+          fetch(`/api/local/fleet/${encodeURIComponent(clean)}`, { method: "DELETE" }).catch(() => null);
+          fetch(`/api/servers/${encodeURIComponent(clean)}`, { method: "DELETE" }).catch(() => null);
+        }
+        if (onDeleteServer && s.id) onDeleteServer(s.id);
+      });
     }
 
     // 5. Update tyrone_rack_capacities
@@ -987,6 +1041,116 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
     window.dispatchEvent(new CustomEvent("fleet-updated"));
   };
 
+  const handleDeleteDevice = (serverIdToDelete: string) => {
+    if (!serverIdToDelete) return;
+    const target = localServers.find(s => s.id === serverIdToDelete || s.bmcIp === serverIdToDelete) || (activeServerId === serverIdToDelete ? activeServer : null);
+    const targetName = target?.name || serverIdToDelete;
+    if (!window.confirm(`Delete Device "${targetName}"?`)) return;
+
+    const id = target?.id || serverIdToDelete;
+    const bmcIp = target?.bmcIp || "";
+    const cleanIp = bmcIp.replace(/^https?:\/\//, '').replace(/:.*$/, '').trim().toLowerCase();
+    const name = target?.name || "";
+
+    // 1. Update localServers state
+    const updatedLocal = localServers.filter(s => s.id !== id && (!cleanIp || (s.bmcIp || "").toLowerCase().replace(/^https?:\/\//, '').replace(/:.*$/, '').trim() !== cleanIp));
+    setLocalServers(updatedLocal);
+
+    if (activeServerId === id || (cleanIp && (target?.bmcIp || "").toLowerCase().includes(cleanIp))) {
+      const nextServer = updatedLocal.find(s => matchesRack(s.rack, selectedRack)) || updatedLocal[0];
+      const nextId = nextServer?.id || "";
+      setActiveServerId(nextId);
+      if (nextId) {
+        localStorage.setItem("tyrone_active_server_id", nextId);
+      } else {
+        localStorage.removeItem("tyrone_active_server_id");
+      }
+    }
+
+    // 2. Add to tyrone_deleted_keys with all aliases
+    try {
+      const rawDel = localStorage.getItem("tyrone_deleted_keys");
+      const delSet = rawDel ? new Set<string>(JSON.parse(rawDel)) : new Set<string>();
+      const addKey = (k?: string) => {
+        if (!k) return;
+        const str = String(k).trim().toLowerCase();
+        if (str) {
+          delSet.add(str);
+          const clean = str.replace(/^https?:\/\//, '').replace(/:.*$/, '').replace(/^(srv-|fleet-|server-)/, '').trim();
+          if (clean) {
+            delSet.add(clean);
+            delSet.add(`srv-${clean}`);
+            delSet.add(`fleet-${clean}`);
+            delSet.add(`server-${clean}`);
+          }
+        }
+      };
+      addKey(id);
+      addKey(bmcIp);
+      addKey(name);
+      if (cleanIp) addKey(cleanIp);
+      localStorage.setItem("tyrone_deleted_keys", JSON.stringify(Array.from(delSet)));
+    } catch (_) { }
+
+    // 3. Update tyrone_fleet in localStorage and sync to backend
+    let updatedFleet: any[] = [];
+    try {
+      const fleetRaw = localStorage.getItem("tyrone_fleet");
+      if (fleetRaw) {
+        const fleet = JSON.parse(fleetRaw);
+        updatedFleet = fleet.filter((f: any) => {
+          const fId = String(f.id || "").toLowerCase();
+          const fIp = String(f.bmcIp || f.ip || "").replace(/^https?:\/\//, '').replace(/:.*$/, '').trim().toLowerCase();
+          const fName = String(f.name || "").toLowerCase();
+          if (id && fId === id.toLowerCase()) return false;
+          if (cleanIp && (fIp === cleanIp || fId.includes(cleanIp))) return false;
+          if (name && fName === name.toLowerCase()) return false;
+          return true;
+        });
+        localStorage.setItem("tyrone_fleet", JSON.stringify(updatedFleet));
+      }
+    } catch (_) { }
+
+    // 4. Update tyrone_server_racks
+    try {
+      const sRacksRaw = localStorage.getItem("tyrone_server_racks");
+      if (sRacksRaw) {
+        const sRacks = JSON.parse(sRacksRaw);
+        delete sRacks[id];
+        if (bmcIp) delete sRacks[bmcIp];
+        if (cleanIp) delete sRacks[cleanIp];
+        localStorage.setItem("tyrone_server_racks", JSON.stringify(sRacks));
+        setServerRacks(sRacks);
+      }
+    } catch (_) { }
+
+    // 5. Backend deletion API calls
+    try {
+      if (id) {
+        fetch(`/api/local/fleet/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => null);
+        fetch(`/api/servers/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => null);
+      }
+      if (cleanIp && cleanIp !== id.toLowerCase()) {
+        fetch(`/api/local/fleet/${encodeURIComponent(cleanIp)}`, { method: "DELETE" }).catch(() => null);
+        fetch(`/api/servers/${encodeURIComponent(cleanIp)}`, { method: "DELETE" }).catch(() => null);
+      }
+      fetch("/api/local/fleet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updatedFleet)
+      }).catch(() => null);
+    } catch (_) { }
+
+    // 6. Notify parent component via onDeleteServer prop if provided
+    if (onDeleteServer) {
+      onDeleteServer(id);
+    }
+
+    // 7. Dispatch events so all tabs/views update synchronously
+    window.dispatchEvent(new CustomEvent("fleet-updated"));
+    window.dispatchEvent(new CustomEvent("hierarchy-updated"));
+  };
+
   const allExistingRacks = (() => {
     const set = new Set<string>();
     (dataCenters || []).forEach(dc => {
@@ -1005,6 +1169,13 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
         });
       });
     });
+    Object.values(racks).forEach(rackList => {
+      (rackList as any[] || []).forEach(rk => {
+        const n = typeof rk === "string" ? rk : (rk?.name || rk?.id);
+        if (n && n.trim()) set.add(n.trim());
+      });
+    });
+    if (selectedRack && selectedRack.trim()) set.add(selectedRack.trim());
     return Array.from(set);
   })();
 
@@ -1396,9 +1567,9 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
         sData.processors.forEach((p: any, i: number) => {
           procDetails.push({
             name: p.Name || p.Id || `Processor CPU_${i + 1}`,
-            model: p.Model || "Intel Xeon Gold 6330",
-            serial: p.SerialNumber || `507F2DC${i + 1}`,
-            capacityOrSpeed: `${p.MaxSpeedMHz || 3400} MHz (${p.TotalCores || 16} Cores)`
+            model: p.Model || "N/A",
+            serial: p.SerialNumber || "N/A",
+            capacityOrSpeed: p.MaxSpeedMHz ? `${p.MaxSpeedMHz} MHz${p.TotalCores ? ` (${p.TotalCores} Cores)` : ""}` : (p.TotalCores ? `${p.TotalCores} Cores` : "N/A")
           });
         });
       } else if (sData?.system?.ProcessorSummary?.Count) {
@@ -1406,9 +1577,9 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
       } else if (sData?.system?.Processors?.count) {
         cpus = Number(sData.system.Processors.count) || 0;
       } else if ((s as any).cpus || (s as any).processorsCount) {
-        cpus = Number((s as any).cpus || (s as any).processorsCount) || 4;
+        cpus = Number((s as any).cpus || (s as any).processorsCount) || 0;
       } else {
-        cpus = 4; // Default processors count matching reference telemetry
+        cpus = 0;
       }
       totalProcessors += cpus;
 
@@ -1417,12 +1588,12 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
       if (sData?.memory && Array.isArray(sData.memory) && sData.memory.length > 0) {
         memMiB = sData.memory.reduce((acc: number, m: any) => acc + (Number(m.CapacityMiB) || 0), 0);
         sData.memory.forEach((m: any, i: number) => {
-          const capGb = m.CapacityMiB ? (m.CapacityMiB / 1024).toFixed(2) : "32.00";
+          const capGb = m.CapacityMiB ? (m.CapacityMiB / 1024).toFixed(2) : "N/A";
           memDetails.push({
-            name: m.Name || m.Id || `DDR5_${String.fromCharCode(65 + Math.floor(i / 2))}${i % 2}`,
-            model: m.PartNumber || m.Manufacturer || "SAMSUNG DDR5 SDRAM",
-            serial: m.SerialNumber || "48BFAD7B",
-            capacity: `${capGb} GB`
+            name: m.Name || m.Id || `DIMM_${i + 1}`,
+            model: m.PartNumber || m.Manufacturer || "N/A",
+            serial: m.SerialNumber || "N/A",
+            capacity: capGb !== "N/A" ? `${capGb} GB` : "N/A"
           });
         });
       } else if (sData?.system?.MemorySummary?.TotalSystemMemoryGiB) {
@@ -1434,10 +1605,10 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
         if (!isNaN(parsed)) {
           memMiB = parsed < 10 ? parsed * 1024 * 1024 : parsed * 1024;
         } else {
-          memMiB = 589824;
+          memMiB = 0;
         }
       } else {
-        memMiB = 1187840; // ~1.16 TiB default per fleet hardware spec
+        memMiB = 0;
       }
       totalMemoryMiB += memMiB;
 
@@ -1459,17 +1630,14 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
           if (Array.isArray(st.Devices)) st.Devices.forEach((dev: any) => { bytes += countBytes(dev); });
           const cap = st.CapacityBytes
             ? (st.CapacityBytes / (1000 * 1000 * 1000 * 1000)).toFixed(2) + " TB"
-            : (st.CapacityGB ? `${st.CapacityGB}.00 GB` : "4.00 TB");
+            : (st.CapacityGB ? `${st.CapacityGB}.00 GB` : "N/A");
           storageDetails.push({
-            name: st.Name || st.Id || `SATA ${st.MediaType || "HDD"} SATA3_${i + 3}`,
-            model: st.Model || st.PartNumber || "ST4000NM000B-2TF100",
-            serial: st.SerialNumber || "WX11NT5J",
+            name: st.Name || st.Id || `Storage_${i + 1}`,
+            model: st.Model || st.PartNumber || "N/A",
+            serial: st.SerialNumber || "N/A",
             capacity: cap
           });
         });
-      }
-      if (bytes === 0) {
-        bytes = 235.80 * 1000 * 1000 * 1000 * 1000; // ~235.80 TB default
       }
       totalStorageBytes += bytes;
 
@@ -1483,43 +1651,31 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
       totalGpuCount += gpus;
     });
 
-    // Default Fallbacks if empty
-    if (procDetails.length === 0) {
-      procDetails.push(
-        { name: "CPU 1 (Socket 1)", model: "Intel Xeon Gold 6330", serial: "507F2DC1", capacityOrSpeed: "3.40 GHz (16 Cores)" },
-        { name: "CPU 2 (Socket 2)", model: "Intel Xeon Gold 6330", serial: "507F2DC2", capacityOrSpeed: "3.40 GHz (16 Cores)" }
-      );
-    }
-    if (memDetails.length === 0) {
-      memDetails.push(
-        { name: "DDR5_A0", model: "SAMSUNG MZ7L31T9HBNA", serial: "S6ENNA0W302041", capacity: "64.00 GB" },
-        { name: "DDR5_B0", model: "SAMSUNG MZ7L31T9HBNA", serial: "S6ENNA0W302042", capacity: "64.00 GB" }
-      );
-    }
-    if (storageDetails.length === 0) {
-      storageDetails.push(
-        { name: "SATA HDD SATA3_3", model: "ST4000NM000B-2TF100", serial: "WX11NT5J", capacity: "4.00 TB" },
-        { name: "SATA SSD SATA3_4", model: "SAMSUNG MZ7L31T9HBNA-00A07", serial: "S6ENNA0W302042", capacity: "1.92 TB" }
-      );
-    }
-
     // Formatting Memory
     let totalMemoryFormatted = "";
-    const totalGiB = totalMemoryMiB / 1024;
-    if (totalGiB >= 1024) {
-      totalMemoryFormatted = `${(totalGiB / 1024).toFixed(2)} TiB`;
+    if (totalMemoryMiB === 0) {
+      totalMemoryFormatted = "0 GB";
     } else {
-      totalMemoryFormatted = `${totalGiB.toFixed(2)} GB`;
+      const totalGiB = totalMemoryMiB / 1024;
+      if (totalGiB >= 1024) {
+        totalMemoryFormatted = `${(totalGiB / 1024).toFixed(2)} TiB`;
+      } else {
+        totalMemoryFormatted = `${totalGiB.toFixed(2)} GB`;
+      }
     }
 
     // Formatting Storage
     let totalStorageFormatted = "";
-    const totalTB = totalStorageBytes / (1000 * 1000 * 1000 * 1000);
-    if (totalTB >= 1) {
-      totalStorageFormatted = `${totalTB.toFixed(2)} TB`;
+    if (totalStorageBytes === 0) {
+      totalStorageFormatted = "0 GB";
     } else {
-      const totalGB = totalStorageBytes / (1000 * 1000 * 1000);
-      totalStorageFormatted = `${totalGB.toFixed(2)} GB`;
+      const totalTB = totalStorageBytes / (1000 * 1000 * 1000 * 1000);
+      if (totalTB >= 1) {
+        totalStorageFormatted = `${totalTB.toFixed(2)} TB`;
+      } else {
+        const totalGB = totalStorageBytes / (1000 * 1000 * 1000);
+        totalStorageFormatted = `${totalGB.toFixed(2)} GB`;
+      }
     }
 
     const rackSet = new Set(filteredServers.map(s => s.rack || "Rack 1"));
@@ -1633,92 +1789,22 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
           Model: validModel,
           Manufacturer: validVendor,
           SystemType: (targetServer as any).deviceType || "Physical Server",
-          BiosVersion: "N/A",
-          PowerState: (targetServer as any).powerState || "On",
-          Status: { Health: "OK", State: "Enabled" }
+          BiosVersion: (targetServer as any).biosVersion || "N/A",
+          PowerState: (targetServer as any).powerStatus || (targetServer as any).powerState || "N/A",
+          Status: { Health: (targetServer as any).health || (targetServer as any).healthStatus || "OK", State: "Enabled" }
         },
-        processors: [{
-          Id: "CPU_1",
-          Name: "CPU 1",
-          Model: initCpuModel,
-          InstructionSet: "x86-64",
-          Manufacturer: validVendor,
-          MaxSpeedMHz: 0,
-          ProcessorType: "CPU",
-          SerialNumber: "N/A",
-          TotalCores: "N/A",
-          TotalThreads: "N/A",
-          Status: { Health: "OK", State: "Enabled" }
-        }],
-        memory: [{
-          Id: "System_Memory",
-          Name: "Total System Memory",
-          CapacityMiB: initMemGB ? initMemGB * 1024 : 0,
-          CapacityBytes: initMemGB ? initMemGB * 1024 * 1024 * 1024 : 0,
-          OperatingSpeedMhz: 0,
-          MemoryDeviceType: "System RAM",
-          Manufacturer: validVendor,
-          PartNumber: "N/A",
-          Status: { Health: "OK", State: "Enabled" }
-        }],
-        storage: [{
-          Id: "System_Storage_1",
-          Name: "Primary Storage",
-          CapacityBytes: initDriveGB ? initDriveGB * 1000 * 1000 * 1000 : 0,
-          Protocol: "SATA/NVMe",
-          MediaType: "SSD",
-          Status: { Health: "OK", State: "Enabled" }
-        }],
-        hbas: [{
-          Id: "PCIe_Storage_Controller",
-          Name: "Integrated Storage Controller",
-          Manufacturer: validVendor,
-          Model: "PCIe Gen4 Controller",
-          SerialNumber: "N/A",
-          PCIeInterface: { PCIeType: "PCIe Gen 4 / SAS 12G" },
-          FirmwareVersion: "N/A",
-          Status: { Health: "OK", State: "Enabled" }
-        }],
+        processors: [],
+        memory: [],
+        storage: [],
+        hbas: [],
         pcieDevices: [],
         pcieSlots: [],
-        nics: [{
-          Id: "Mgmt_NIC_1",
-          Name: "Management Network Interface",
-          MACAddress: "N/A",
-          SpeedMbps: 1000,
-          Status: { Health: "OK", State: "Enabled" }
-        }],
-        fans: [{
-          FanName: "System Thermal Fan 1",
-          Reading: 3200,
-          Status: { Health: "OK", State: "Enabled" }
-        }],
+        nics: [],
+        fans: [],
         sensors: [],
-        firmware: [
-          {
-            Id: "BMC",
-            Name: "BMC Firmware",
-            Version: (targetServer as any).firmwareVersion || (targetServer as any).bmcFw || "v1.0.0",
-            Updateable: true,
-            Status: { Health: "OK", State: "Enabled" }
-          },
-          {
-            Id: "BIOS",
-            Name: "BIOS Firmware",
-            Version: (targetServer as any).biosVersion || (targetServer as any).bios || "v2.1a",
-            Updateable: true,
-            Status: { Health: "OK", State: "Enabled" }
-          },
-          {
-            Id: "CPLD",
-            Name: "CPLD Firmware",
-            Version: (targetServer as any).cpldVersion || (targetServer as any).cpld || "v1.0.4",
-            Updateable: true,
-            Status: { Health: "OK", State: "Enabled" }
-          }
-        ],
+        firmware: [],
         virtualMedia: [],
-        lastCollected: new Date().toLocaleString(),
+        lastCollected: "Never",
         loading: true
       };
       setTelemetry(initialInstantTelemetry);
@@ -2442,11 +2528,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                       disabled={!activeServerId || !activeServer}
                       onClick={() => {
                         if (!activeServerId || !activeServer) return;
-                        if (window.confirm(`Delete Device "${activeServer?.name || activeServerId}"?`)) {
-                          const updated = localServers.filter(s => s.id !== activeServerId);
-                          setLocalServers(updated);
-                          setActiveServerId(updated[0]?.id || "");
-                        }
+                        handleDeleteDevice(activeServerId);
                       }}
                       className={`${!activeServerId || !activeServer ? "opacity-30 cursor-not-allowed" : "hover:text-red-600 cursor-pointer"} p-0.5`}
                       title="Delete Device"
@@ -2504,6 +2586,10 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                             sName={sName}
                             isActive={activeServerId === sId}
                             onSelect={handleServerClick}
+                            onDelete={(id, e) => {
+                              e.stopPropagation();
+                              handleDeleteDevice(id);
+                            }}
                           />
                         );
                       });
@@ -2842,16 +2928,20 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                       {/* Tooltip Popup matching Image 1 */}
                       <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-white border border-slate-300 shadow-2xl rounded-md p-3.5 text-slate-900 text-xs z-50 min-w-[290px] max-w-[340px] pointer-events-none transition-all">
                         <div className="space-y-3">
-                          {(aggregateHardware.procDetails || []).map((item, idx) => (
-                            <div key={idx} className="border-b border-slate-200/80 pb-2 last:border-0 last:pb-0">
-                              <div className="font-bold text-slate-900 text-xs mb-1">{item.name}</div>
-                              <div className="text-slate-600 text-[11px] leading-relaxed">
-                                <div><span className="font-semibold text-slate-800">Model:</span> {item.model}</div>
-                                <div><span className="font-semibold text-slate-800">Serial Number:</span> {item.serial}</div>
-                                <div><span className="font-semibold text-slate-800">Speed/Cores:</span> {item.capacityOrSpeed}</div>
+                          {(aggregateHardware.procDetails && aggregateHardware.procDetails.length > 0) ? (
+                            aggregateHardware.procDetails.map((item, idx) => (
+                              <div key={idx} className="border-b border-slate-200/80 pb-2 last:border-0 last:pb-0">
+                                <div className="font-bold text-slate-900 text-xs mb-1">{item.name}</div>
+                                <div className="text-slate-600 text-[11px] leading-relaxed">
+                                  <div><span className="font-semibold text-slate-800">Model:</span> {item.model}</div>
+                                  <div><span className="font-semibold text-slate-800">Serial Number:</span> {item.serial}</div>
+                                  <div><span className="font-semibold text-slate-800">Speed/Cores:</span> {item.capacityOrSpeed}</div>
+                                </div>
                               </div>
-                            </div>
-                          ))}
+                            ))
+                          ) : (
+                            <div className="text-slate-500 italic text-[11px] py-1 text-center">No processor telemetry detected</div>
+                          )}
                         </div>
                       </div>
 
@@ -2870,16 +2960,20 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                       {/* Tooltip Popup matching Image 1 */}
                       <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-white border border-slate-300 shadow-2xl rounded-md p-3.5 text-slate-900 text-xs z-50 min-w-[290px] max-w-[340px] pointer-events-none transition-all">
                         <div className="space-y-3">
-                          {(aggregateHardware.memDetails || []).map((item, idx) => (
-                            <div key={idx} className="border-b border-slate-200/80 pb-2 last:border-0 last:pb-0">
-                              <div className="font-bold text-slate-900 text-xs mb-1">{item.name}</div>
-                              <div className="text-slate-600 text-[11px] leading-relaxed">
-                                <div><span className="font-semibold text-slate-800">Model:</span> {item.model}</div>
-                                <div><span className="font-semibold text-slate-800">Serial Number:</span> {item.serial}</div>
-                                <div><span className="font-semibold text-slate-800">Capacity:</span> {item.capacity}</div>
+                          {(aggregateHardware.memDetails && aggregateHardware.memDetails.length > 0) ? (
+                            aggregateHardware.memDetails.map((item, idx) => (
+                              <div key={idx} className="border-b border-slate-200/80 pb-2 last:border-0 last:pb-0">
+                                <div className="font-bold text-slate-900 text-xs mb-1">{item.name}</div>
+                                <div className="text-slate-600 text-[11px] leading-relaxed">
+                                  <div><span className="font-semibold text-slate-800">Model:</span> {item.model}</div>
+                                  <div><span className="font-semibold text-slate-800">Serial Number:</span> {item.serial}</div>
+                                  <div><span className="font-semibold text-slate-800">Capacity:</span> {item.capacity}</div>
+                                </div>
                               </div>
-                            </div>
-                          ))}
+                            ))
+                          ) : (
+                            <div className="text-slate-500 italic text-[11px] py-1 text-center">No memory telemetry detected</div>
+                          )}
                         </div>
                       </div>
 
@@ -2900,16 +2994,20 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
                       {/* Tooltip Popup matching Image 1 */}
                       <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-white border border-slate-300 shadow-2xl rounded-md p-3.5 text-slate-900 text-xs z-50 min-w-[290px] max-w-[340px] pointer-events-none transition-all">
                         <div className="space-y-3">
-                          {(aggregateHardware.storageDetails || []).map((item, idx) => (
-                            <div key={idx} className="border-b border-slate-200/80 pb-2 last:border-0 last:pb-0">
-                              <div className="font-bold text-slate-900 text-xs mb-1">{item.name}</div>
-                              <div className="text-slate-600 text-[11px] leading-relaxed">
-                                <div><span className="font-semibold text-slate-800">Model:</span> {item.model}</div>
-                                <div><span className="font-semibold text-slate-800">Serial Number:</span> {item.serial}</div>
-                                <div><span className="font-semibold text-slate-800">Capacity:</span> {item.capacity}</div>
+                          {(aggregateHardware.storageDetails && aggregateHardware.storageDetails.length > 0) ? (
+                            aggregateHardware.storageDetails.map((item, idx) => (
+                              <div key={idx} className="border-b border-slate-200/80 pb-2 last:border-0 last:pb-0">
+                                <div className="font-bold text-slate-900 text-xs mb-1">{item.name}</div>
+                                <div className="text-slate-600 text-[11px] leading-relaxed">
+                                  <div><span className="font-semibold text-slate-800">Model:</span> {item.model}</div>
+                                  <div><span className="font-semibold text-slate-800">Serial Number:</span> {item.serial}</div>
+                                  <div><span className="font-semibold text-slate-800">Capacity:</span> {item.capacity}</div>
+                                </div>
                               </div>
-                            </div>
-                          ))}
+                            ))
+                          ) : (
+                            <div className="text-slate-500 italic text-[11px] py-1 text-center">No storage telemetry detected</div>
+                          )}
                         </div>
                       </div>
 
@@ -5209,7 +5307,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
           }
 
           window.dispatchEvent(new CustomEvent("hierarchy-updated"));
-          window.dispatchEvent(new CustomEvent("fleet-updated"));
+          window.dispatchEvent(new CustomEvent("fleet-updated", { detail: { newDevice: targets[0], devices: targets } }));
 
           if (onSelectServer && lastId) onSelectServer(lastId);
         }}
@@ -5219,6 +5317,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
       <AddDeviceModal
         isOpen={showAddNewDeviceModal}
         initialRack={selectedRack || "Rack 1"}
+        availableRacks={allExistingRacks}
         onClose={() => setShowAddNewDeviceModal(false)}
         onBackToDevicesNotInHierarchy={() => {
           setShowAddNewDeviceModal(false);
@@ -5227,7 +5326,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
         onAddDevice={(dev) => {
           if (!dev) return;
           const devId = dev.id || dev.bmcIp || dev.ip || `server-${Date.now()}`;
-          const targetRack = selectedRack || dev.rack || "Rack 1";
+          const targetRack = dev.rack || selectedRack || "Rack 1";
           setSelectedRack(targetRack);
           const newDev = { ...dev, id: devId, rack: targetRack };
 
@@ -5277,7 +5376,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
             try {
               const f = localStorage.getItem("tyrone_fleet");
               return f ? JSON.parse(f) : [];
-            } catch { return {}; }
+            } catch { return []; }
           })();
           const updatedFleet = [...(Array.isArray(currentFleet) ? currentFleet : []).filter((s: any) => s.id !== newDev.id && s.bmcIp !== newDev.bmcIp), newDev];
           localStorage.setItem("tyrone_fleet", JSON.stringify(updatedFleet));
@@ -5296,7 +5395,7 @@ export function HierarchyView({ servers = [], serverStatuses = {}, onSelectServe
           setShowAddDeviceChoiceModal(false);
 
           window.dispatchEvent(new CustomEvent("hierarchy-updated"));
-          window.dispatchEvent(new CustomEvent("fleet-updated"));
+          window.dispatchEvent(new CustomEvent("fleet-updated", { detail: { newDevice: newDev } }));
 
           if (onSelectServer) onSelectServer(newDev.id);
         }}

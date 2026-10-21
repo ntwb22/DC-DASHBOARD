@@ -188,6 +188,8 @@ class PostgresDatabase:
                                 rack = EXCLUDED.rack,
                                 updated_at = NOW();
                         """, server_id, name, clean_ip, vendor_tag, username, enc_pass, rack)
+                self._servers_cache = None
+                self._cache_time = 0
                 return True
             except Exception as e:
                 logger.error(f"Failed to save server to PostgreSQL: {e}")
@@ -289,9 +291,34 @@ class PostgresDatabase:
 
         target_str = str(server_id).strip()
         ip_clean = target_str.replace("https://", "").replace("http://", "").rstrip("/").split(":")[0].strip()
-        srv_id = f"srv-{ip_clean}" if ip_clean and not target_str.startswith("srv-") else target_str
+        raw_ip = ip_clean
+        for prefix in ("srv-", "fleet-", "server-"):
+            if raw_ip.lower().startswith(prefix):
+                raw_ip = raw_ip[len(prefix):]
+                break
 
-        targets = {target_str, ip_clean, srv_id}
+        targets = {target_str, ip_clean, raw_ip, f"srv-{raw_ip}", f"fleet-{raw_ip}", f"server-{raw_ip}"}
+
+        # Resolve all matching IDs, IPs, and names from existing in-memory servers
+        to_delete_keys = set()
+        for s_key, s_data in list(self.in_memory_fallback.get("servers", {}).items()):
+            s_id = str(s_data.get("id", "")).strip().lower()
+            s_ip = str(s_data.get("ip", "")).strip().lower()
+            s_name = str(s_data.get("name", "")).strip().lower()
+            raw_s_ip = s_ip.replace("https://", "").replace("http://", "").rstrip("/").split(":")[0].strip()
+
+            match = False
+            for t in list(targets):
+                tl = str(t).strip().lower()
+                if tl and (tl == s_id or tl == s_ip or tl == raw_s_ip or tl == s_name or (raw_ip and raw_ip == raw_s_ip)):
+                    match = True
+                    break
+            if match:
+                to_delete_keys.add(s_key)
+                if s_data.get("id"): targets.add(s_data["id"])
+                if s_data.get("ip"): targets.add(s_data["ip"])
+                if raw_s_ip: targets.add(raw_s_ip)
+                if s_data.get("name"): targets.add(s_data["name"])
 
         if self.pool:
             try:
@@ -327,7 +354,7 @@ class PostgresDatabase:
                 logger.error(f"Failed to delete server '{server_id}' from PostgreSQL: {e}")
 
         # Always clean up in-memory fallback store as well
-        for t in list(targets):
+        for t in targets | to_delete_keys:
             self.in_memory_fallback["servers"].pop(t, None)
 
         self.in_memory_fallback["raw_inventory"] = [

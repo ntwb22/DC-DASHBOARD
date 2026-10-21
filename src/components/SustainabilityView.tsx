@@ -44,7 +44,7 @@ interface SustainabilityViewProps {
 }
 
 // Storage Controller Interface
-export interface RaidControllerInfo {
+export interface ControllerInfo {
   id: string;
   serverId: string;
   serverName: string;
@@ -62,6 +62,7 @@ export interface RaidControllerInfo {
   driveCount: number;
   rawData?: any;
 }
+export type RaidControllerInfo = ControllerInfo;
 
 // Physical Drive Interface
 export interface PhysicalDriveInfo {

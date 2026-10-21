@@ -11,15 +11,31 @@ interface ServerProfile {
   bmcPassword?: string;
 }
 
+export interface ProvisioningTaskRecord {
+  id: string;
+  server: string;
+  type: string;
+  comp: string;
+  time: string;
+  status: string;
+}
+
 interface ProvisioningModalProps {
   isOpen: boolean;
   onClose: () => void;
   server?: ServerProfile | null;
-  onSuccess?: (message: string) => void;
+  onSuccess?: (message: string, task?: ProvisioningTaskRecord) => void;
+  initialTab?: "firmware" | "iso";
 }
 
-export const ProvisioningModal = ({ isOpen, onClose, server, onSuccess }: ProvisioningModalProps) => {
-  const [activeTab, setActiveTab] = useState<"firmware" | "iso">("firmware");
+export const ProvisioningModal = ({ isOpen, onClose, server, onSuccess, initialTab = "firmware" }: ProvisioningModalProps) => {
+  const [activeTab, setActiveTab] = useState<"firmware" | "iso">(initialTab);
+
+  React.useEffect(() => {
+    if (isOpen && initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [isOpen, initialTab]);
   
   // Firmware Update Form State
   const [firmwareMemo, setFirmwareMemo] = useState<string>("");
@@ -101,7 +117,21 @@ export const ProvisioningModal = ({ isOpen, onClose, server, onSuccess }: Provis
           setTimeout(() => {
             setIsProcessing(false);
             const msg = `Firmware '${selectedFirmwareFile.name}' uploaded & update completed successfully for target ${server?.name || "Server"} (${server?.bmcIp || "Host"}). Component: ${firmwareComponent}.`;
-            if (onSuccess) onSuccess(msg);
+            const task: ProvisioningTaskRecord = {
+              id: `TASK-FW-${Math.floor(1000 + Math.random() * 9000)}`,
+              server: `${server?.name || "Server"} (${server?.bmcIp || "Host"})`,
+              type: "Firmware Update",
+              comp: `${selectedFirmwareFile.name} (${firmwareComponent})`,
+              time: new Date().toISOString().replace("T", " ").slice(0, 19),
+              status: "Completed (100%)"
+            };
+            try {
+              const saved = localStorage.getItem("tyrone_provisioning_tasks");
+              const parsed = saved ? JSON.parse(saved) : [];
+              const updated = [task, ...(Array.isArray(parsed) ? parsed.filter((t: any) => t.id !== "TASK-FW-8092" && t.id !== "TASK-ISO-1044") : [])];
+              localStorage.setItem("tyrone_provisioning_tasks", JSON.stringify(updated));
+            } catch (_) {}
+            if (onSuccess) onSuccess(msg, task);
             else alert(msg);
             onClose();
           }, 500);
@@ -160,7 +190,21 @@ export const ProvisioningModal = ({ isOpen, onClose, server, onSuccess }: Provis
           setTimeout(() => {
             setIsProcessing(false);
             const msg = `Virtual Media ISO '${isoSource}' mounted successfully on ${server?.name || "Server"}.${rebootToIso ? " Host rebooted to ISO." : ""}`;
-            if (onSuccess) onSuccess(msg);
+            const task: ProvisioningTaskRecord = {
+              id: `TASK-ISO-${Math.floor(1000 + Math.random() * 9000)}`,
+              server: `${server?.name || "Server"} (${server?.bmcIp || "Host"})`,
+              type: "Mount ISO",
+              comp: isoSource,
+              time: new Date().toISOString().replace("T", " ").slice(0, 19),
+              status: "Mounted (Virtual CD/DVD)"
+            };
+            try {
+              const saved = localStorage.getItem("tyrone_provisioning_tasks");
+              const parsed = saved ? JSON.parse(saved) : [];
+              const updated = [task, ...(Array.isArray(parsed) ? parsed.filter((t: any) => t.id !== "TASK-FW-8092" && t.id !== "TASK-ISO-1044") : [])];
+              localStorage.setItem("tyrone_provisioning_tasks", JSON.stringify(updated));
+            } catch (_) {}
+            if (onSuccess) onSuccess(msg, task);
             else alert(msg);
             onClose();
           }, 500);

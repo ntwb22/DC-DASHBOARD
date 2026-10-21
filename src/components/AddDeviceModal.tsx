@@ -5,6 +5,7 @@ import { validateBmcCredentials, fetchServerDetailsForAddition } from "../servic
 export interface AddDeviceModalProps {
   isOpen: boolean;
   initialRack?: string;
+  availableRacks?: string[];
   onClose: () => void;
   onAddDevice: (deviceData: any) => void;
   onBackToDevicesNotInHierarchy?: () => void;
@@ -41,6 +42,7 @@ export function parseIpList(raw: string): string[] {
 export function AddDeviceModal({
   isOpen,
   initialRack,
+  availableRacks,
   onClose,
   onAddDevice,
   onBackToDevicesNotInHierarchy
@@ -95,7 +97,7 @@ export function AddDeviceModal({
 
 
   const quickValidateAndFetch = async (ip: string, u: string, p: string, cat: any) => {
-    const timeoutMs = 8000;
+    const timeoutMs = 2500;
     const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs));
     const validatePromise = (async () => {
       try {
@@ -602,6 +604,17 @@ or range: 172.16.12.50-60`}
                 >
                   {(() => {
                     const rackSet = new Set<string>();
+                    if (initialRack && initialRack.trim()) {
+                      rackSet.add(initialRack.trim());
+                    }
+                    if (rack && rack.trim()) {
+                      rackSet.add(rack.trim());
+                    }
+                    if (Array.isArray(availableRacks)) {
+                      availableRacks.forEach(r => {
+                        if (r && typeof r === "string" && r.trim()) rackSet.add(r.trim());
+                      });
+                    }
                     try {
                       const savedDCs = localStorage.getItem("tyrone_hierarchy_dcs");
                       const savedRooms = localStorage.getItem("tyrone_hierarchy_rooms");

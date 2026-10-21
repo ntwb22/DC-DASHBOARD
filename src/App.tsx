@@ -231,10 +231,17 @@ export default function App() {
           const staleIPs = new Set(["172.16.12.142", "172.16.15.202", "172.16.15.237", "172.16.12.250"]);
           const filtered = parsed
             .filter((item: any) => {
-              const k1 = String(item.id || "").toLowerCase();
-              const k2 = String(item.bmcIp || item.ip || "").toLowerCase();
-              const k3 = String(item.name || "").toLowerCase();
-              return !deletedKeys.has(k1) && !deletedKeys.has(k2) && !deletedKeys.has(k3) && !staleIPs.has(item.bmcIp || item.ip);
+              const k1 = String(item.id || "").toLowerCase().trim();
+              const rawIp = String(item.bmcIp || item.ip || "").toLowerCase().trim();
+              const cleanIp = rawIp.replace(/^https?:\/\//, '').replace(/:.*$/, '').trim();
+              const k3 = String(item.name || "").toLowerCase().trim();
+              if (deletedKeys.has(k1) || deletedKeys.has(rawIp) || deletedKeys.has(cleanIp) || deletedKeys.has(k3) || staleIPs.has(item.bmcIp || item.ip)) return false;
+              for (const dk of deletedKeys) {
+                if (!dk) continue;
+                if (cleanIp && (dk === cleanIp || dk.includes(cleanIp) || cleanIp.includes(dk))) return false;
+                if (k1 && (dk === k1 || k1.replace(/^(srv-|fleet-|server-)/, '') === dk)) return false;
+              }
+              return true;
             })
             .map((item: any) => ({
               id: item.id || `srv-${item.bmcIp || item.ip}`,
@@ -518,10 +525,20 @@ export default function App() {
       })();
 
       const isServerDeleted = (s: any) => {
-        const k1 = String(s.id || "").toLowerCase();
-        const k2 = String(s.bmcIp || s.ip || "").toLowerCase();
-        const k3 = String(s.name || "").toLowerCase();
-        return (k1 && deletedKeys.has(k1)) || (k2 && deletedKeys.has(k2)) || (k3 && deletedKeys.has(k3));
+        const k1 = String(s.id || "").toLowerCase().trim();
+        const rawIp = String(s.bmcIp || s.ip || "").toLowerCase().trim();
+        const cleanIp = rawIp.replace(/^https?:\/\//, '').replace(/:.*$/, '').trim();
+        const k3 = String(s.name || "").toLowerCase().trim();
+        if (k1 && deletedKeys.has(k1)) return true;
+        if (rawIp && deletedKeys.has(rawIp)) return true;
+        if (cleanIp && deletedKeys.has(cleanIp)) return true;
+        if (k3 && deletedKeys.has(k3)) return true;
+        for (const dk of deletedKeys) {
+          if (!dk) continue;
+          if (cleanIp && (dk === cleanIp || dk.includes(cleanIp) || cleanIp.includes(dk))) return true;
+          if (k1 && (dk === k1 || k1.replace(/^(srv-|fleet-|server-)/, '') === dk)) return true;
+        }
+        return false;
       };
 
       const merged: ServerProfile[] = [];
@@ -966,15 +983,30 @@ export default function App() {
 
   const handleDeleteNode = async (id: string, name?: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    const target = servers.find(s => s.id === id);
+    const target = servers.find(s => s.id === id || s.bmcIp === id);
 
-    // 1. Add to tyrone_deleted_keys
+    // 1. Add to tyrone_deleted_keys with all aliases
     try {
       const raw = localStorage.getItem("tyrone_deleted_keys");
       const delSet = raw ? new Set<string>(JSON.parse(raw)) : new Set<string>();
-      if (id) delSet.add(String(id).toLowerCase());
-      if (target?.bmcIp) delSet.add(String(target.bmcIp).toLowerCase());
-      if (target?.name) delSet.add(String(target.name).toLowerCase());
+      const addKey = (k?: string) => {
+        if (!k) return;
+        const str = String(k).trim().toLowerCase();
+        if (str) {
+          delSet.add(str);
+          const clean = str.replace(/^https?:\/\//, '').replace(/:.*$/, '').replace(/^(srv-|fleet-|server-)/, '').trim();
+          if (clean) {
+            delSet.add(clean);
+            delSet.add(`srv-${clean}`);
+            delSet.add(`fleet-${clean}`);
+            delSet.add(`server-${clean}`);
+          }
+        }
+      };
+      addKey(id);
+      addKey(target?.bmcIp);
+      addKey(target?.name);
+      addKey(name);
       localStorage.setItem("tyrone_deleted_keys", JSON.stringify(Array.from(delSet)));
     } catch (_) { }
 
@@ -985,15 +1017,26 @@ export default function App() {
       if (saved) {
         try { fleet = JSON.parse(saved); } catch (_) { }
       }
-      const updated = fleet.filter((item: any) =>
-        item.id !== id &&
-        String(item.bmcIp || "").toLowerCase() !== String(target?.bmcIp || "").toLowerCase() &&
-        String(item.name || "").toLowerCase() !== String(target?.name || "").toLowerCase()
-      );
+      const cleanTargetIp = (target?.bmcIp || (id.includes(".") ? id : "")).replace(/^https?:\/\//, '').replace(/:.*$/, '').trim().toLowerCase();
+      const updated = fleet.filter((item: any) => {
+        const fId = String(item.id || "").toLowerCase();
+        const fIp = String(item.bmcIp || item.ip || "").replace(/^https?:\/\//, '').replace(/:.*$/, '').trim().toLowerCase();
+        const fName = String(item.name || "").toLowerCase();
+        if (id && fId === id.toLowerCase()) return false;
+        if (cleanTargetIp && (fIp === cleanTargetIp || fId.includes(cleanTargetIp))) return false;
+        if (target?.name && fName === target.name.toLowerCase()) return false;
+        return true;
+      });
 
       localStorage.setItem("tyrone_fleet", JSON.stringify(updated));
-      if (id) await fetch(`/api/local/fleet/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => null);
-      if (target?.bmcIp) await fetch(`/api/local/fleet/${encodeURIComponent(target.bmcIp)}`, { method: "DELETE" }).catch(() => null);
+      if (id) {
+        await fetch(`/api/local/fleet/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => null);
+        await fetch(`/api/servers/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => null);
+      }
+      if (cleanTargetIp && cleanTargetIp !== id.toLowerCase()) {
+        await fetch(`/api/local/fleet/${encodeURIComponent(cleanTargetIp)}`, { method: "DELETE" }).catch(() => null);
+        await fetch(`/api/servers/${encodeURIComponent(cleanTargetIp)}`, { method: "DELETE" }).catch(() => null);
+      }
       await fetch("/api/local/fleet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1009,6 +1052,7 @@ export default function App() {
       if (savedRacks) {
         const sRacks = JSON.parse(savedRacks);
         delete sRacks[id];
+        if (target?.bmcIp) delete sRacks[target.bmcIp];
         localStorage.setItem("tyrone_server_racks", JSON.stringify(sRacks));
       }
     } catch (_) { }
@@ -1016,7 +1060,7 @@ export default function App() {
     // 4. Invalidate frontend cache store
     delete GLOBAL_INVENTORY_CACHE_STORE[id];
 
-    setServers(prev => prev.filter(s => s.id !== id));
+    setServers(prev => prev.filter(s => s.id !== id && (!target?.bmcIp || s.bmcIp !== target.bmcIp)));
     window.dispatchEvent(new CustomEvent("fleet-updated"));
     window.dispatchEvent(new CustomEvent("hierarchy-updated"));
     fetchServers();
@@ -1027,16 +1071,30 @@ export default function App() {
     const targets = servers.filter(s => ids.includes(s.id));
     const idSet = new Set(ids);
 
-    // 1. Add to tyrone_deleted_keys
+    // 1. Add to tyrone_deleted_keys with all aliases
     try {
       const raw = localStorage.getItem("tyrone_deleted_keys");
       const delSet = raw ? new Set<string>(JSON.parse(raw)) : new Set<string>();
+      const addKey = (k?: string) => {
+        if (!k) return;
+        const str = String(k).trim().toLowerCase();
+        if (str) {
+          delSet.add(str);
+          const clean = str.replace(/^https?:\/\//, '').replace(/:.*$/, '').replace(/^(srv-|fleet-|server-)/, '').trim();
+          if (clean) {
+            delSet.add(clean);
+            delSet.add(`srv-${clean}`);
+            delSet.add(`fleet-${clean}`);
+            delSet.add(`server-${clean}`);
+          }
+        }
+      };
       targets.forEach(s => {
-        if (s.id) delSet.add(String(s.id).toLowerCase());
-        if (s.bmcIp) delSet.add(String(s.bmcIp).toLowerCase());
-        if (s.name) delSet.add(String(s.name).toLowerCase());
+        addKey(s.id);
+        addKey(s.bmcIp);
+        addKey(s.name);
       });
-      ids.forEach(id => delSet.add(String(id).toLowerCase()));
+      ids.forEach(id => addKey(id));
       localStorage.setItem("tyrone_deleted_keys", JSON.stringify(Array.from(delSet)));
     } catch (_) { }
 
@@ -1047,20 +1105,26 @@ export default function App() {
       if (saved) {
         try { fleet = JSON.parse(saved); } catch (_) { }
       }
-      const bmcIpSet = new Set(targets.map(s => String(s.bmcIp || "").toLowerCase()));
+      const bmcIpSet = new Set(targets.map(s => String(s.bmcIp || "").toLowerCase().replace(/^https?:\/\//, '').replace(/:.*$/, '').trim()));
       const nameSet = new Set(targets.map(s => String(s.name || "").toLowerCase()));
-      const updated = fleet.filter((item: any) =>
-        !idSet.has(item.id) &&
-        !bmcIpSet.has(String(item.bmcIp || "").toLowerCase()) &&
-        !nameSet.has(String(item.name || "").toLowerCase())
-      );
+      const updated = fleet.filter((item: any) => {
+        const cleanIp = String(item.bmcIp || item.ip || "").toLowerCase().replace(/^https?:\/\//, '').replace(/:.*$/, '').trim();
+        return !idSet.has(item.id) &&
+          !bmcIpSet.has(cleanIp) &&
+          !nameSet.has(String(item.name || "").toLowerCase());
+      });
 
       localStorage.setItem("tyrone_fleet", JSON.stringify(updated));
       for (const id of ids) {
         await fetch(`/api/local/fleet/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => null);
+        await fetch(`/api/servers/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => null);
       }
       for (const t of targets) {
-        if (t.bmcIp) await fetch(`/api/local/fleet/${encodeURIComponent(t.bmcIp)}`, { method: "DELETE" }).catch(() => null);
+        if (t.bmcIp) {
+          const cleanIp = t.bmcIp.replace(/^https?:\/\//, '').replace(/:.*$/, '').trim();
+          await fetch(`/api/local/fleet/${encodeURIComponent(cleanIp)}`, { method: "DELETE" }).catch(() => null);
+          await fetch(`/api/servers/${encodeURIComponent(cleanIp)}`, { method: "DELETE" }).catch(() => null);
+        }
       }
       await fetch("/api/local/fleet", {
         method: "POST",
@@ -1077,19 +1141,17 @@ export default function App() {
       if (savedRacks) {
         const sRacks = JSON.parse(savedRacks);
         ids.forEach(id => delete sRacks[id]);
+        targets.forEach(t => { if (t.bmcIp) delete sRacks[t.bmcIp]; });
         localStorage.setItem("tyrone_server_racks", JSON.stringify(sRacks));
       }
     } catch (_) { }
 
     // 4. Invalidate frontend cache store
-    ids.forEach(id => {
-      delete GLOBAL_INVENTORY_CACHE_STORE[id];
-    });
+    ids.forEach(id => delete GLOBAL_INVENTORY_CACHE_STORE[id]);
 
     setServers(prev => prev.filter(s => !idSet.has(s.id)));
     window.dispatchEvent(new CustomEvent("fleet-updated"));
     window.dispatchEvent(new CustomEvent("hierarchy-updated"));
-    fetchServers();
   };
 
   const activeServer = servers.find(s => s.id === activeServerId) || servers[0] || null;
@@ -1557,6 +1619,7 @@ export default function App() {
                     selectedServerId={activeServerId}
                     alerts={alerts}
                     onEditServer={(server) => handleStartEditNode(server)}
+                    onDeleteServer={(id) => handleDeleteNode(id)}
                   />
                 </ErrorBoundary>
               </div>

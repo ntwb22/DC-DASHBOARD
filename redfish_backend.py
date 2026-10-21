@@ -1856,6 +1856,33 @@ async def get_local_fleet():
         })
     return fleet
 
+@app.get("/api/servers")
+async def get_servers_endpoint():
+    """Returns all registered servers from database."""
+    return await db.get_all_servers()
+
+@app.post("/api/servers")
+async def create_server_endpoint(payload: Dict[str, Any]):
+    """Registers or updates a server node in database and syncs background Redfish/SSE polling."""
+    sid = payload.get("id") or f"server-{int(time.time() * 1000)}"
+    ip = (payload.get("ip") or payload.get("bmcIp") or "").lstrip("http://").lstrip("https://").strip()
+    name = payload.get("name") or f"Server ({ip})"
+    vendor = payload.get("vendor", "SM")
+    username = payload.get("username") or payload.get("bmcUsername") or "admin"
+    password = payload.get("password") or payload.get("bmcPassword") or ""
+    rack = payload.get("rack", "Rack 1")
+    if not ip:
+        return JSONResponse(status_code=400, content={"error": "IP address is required"})
+    await db.save_server(sid, name, ip, vendor, username, password, rack)
+    servers = await db.get_all_servers()
+    await redfish_manager.sync_servers(servers)
+    await sse_manager.sync_servers(servers)
+    return {
+        "success": True,
+        "message": f"Server '{name}' registered successfully.",
+        "server": {"id": sid, "name": name, "ip": ip, "vendor": vendor, "rack": rack}
+    }
+
 @app.delete("/api/local/fleet/{server_id}")
 @app.delete("/api/servers/{server_id}")
 async def delete_server_endpoint(server_id: str):
@@ -1894,7 +1921,19 @@ async def update_local_fleet(fleet: List[Dict[str, Any]]):
         if ip:
             new_ids.add(sid)
             new_ips.add(ip)
+            new_ips.add(ip.split(":")[0].strip())
             await db.save_server(sid, name, ip, vendor, username, password, rack)
+
+    # Cleanly remove servers that are omitted from the posted fleet payload
+    for s in existing_servers:
+        s_id = s.get("id")
+        s_ip = (s.get("ip") or "").lstrip("http://").lstrip("https://").strip()
+        clean_s_ip = s_ip.split(":")[0].strip()
+        if (s_id not in new_ids) and (s_ip not in new_ips) and (clean_s_ip not in new_ips):
+            logger.info(f"[Fleet Sync] Deleting removed server '{s_id}' ({s_ip}) from database.")
+            await cancel_server_tasks(s_id or s_ip)
+            await db.delete_server(s_id or s_ip)
+
     servers = await db.get_all_servers()
     await redfish_manager.sync_servers(servers)
     await sse_manager.sync_servers(servers)

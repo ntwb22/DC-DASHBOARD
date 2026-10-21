@@ -525,7 +525,7 @@ export function AddDeviceHierarchyModal({
           });
         }
       }
-    } catch (_) {}
+    } catch (_) { }
     return rackSet;
   })();
 
@@ -568,7 +568,7 @@ export function AddDeviceHierarchyModal({
           });
         }
       }
-    } catch (_) {}
+    } catch (_) { }
     return Array.from(mergedMap.values());
   })();
 

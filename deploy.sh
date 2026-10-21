@@ -53,7 +53,7 @@ echo -e "${GREEN}[2/8] Detected Server IP:${NC} $SERVER_IP"
 echo -e "${GREEN}[3/8] Installing System Build Dependencies...${NC}"
 if [ "$PKG_MGR" = "apt" ]; then
     apt-get update -y
-    apt-get install -y build-essential libsqlite3-dev python3 python3-pip python3-dev git curl gpg
+    apt-get install -y build-essential libsqlite3-dev python3 python3-pip python3-dev python-is-python3 git curl gpg
 else
     $PKG_MGR install -y epel-release dnf-plugins-core || true
     $PKG_MGR install -y gcc gcc-c++ make sqlite-devel python3 python3-pip python3-devel git curl
@@ -77,7 +77,11 @@ echo -e "      NPM Version:  $(npm -v)"
 # 5. Install Python Async Dependencies for Redfish Engine
 echo -e "${GREEN}[5/8] Installing Python Async Backend Dependencies...${NC}"
 pip3 install --upgrade pip --quiet --break-system-packages 2>/dev/null || pip3 install --upgrade pip --quiet
-pip3 install aiohttp urllib3 fastapi uvicorn pydantic --quiet --break-system-packages 2>/dev/null || pip3 install aiohttp urllib3 fastapi uvicorn pydantic --quiet
+if [ -f "$PROJECT_DIR/requirements.txt" ]; then
+    pip3 install -r "$PROJECT_DIR/requirements.txt" --break-system-packages 2>/dev/null || pip3 install -r "$PROJECT_DIR/requirements.txt"
+else
+    pip3 install aiohttp urllib3 fastapi uvicorn pydantic httpx cryptography asyncpg --break-system-packages 2>/dev/null || pip3 install aiohttp urllib3 fastapi uvicorn pydantic httpx cryptography asyncpg
+fi
 
 # 6. Install & Configure Caddy Reverse Proxy
 echo -e "${GREEN}[6/8] Installing Caddy Web Server...${NC}"
